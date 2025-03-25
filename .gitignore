@@ -1,0 +1,4 @@
+bin/
+*.dSYM/
+raylib-5/
+*.py
