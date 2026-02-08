@@ -1,6 +1,8 @@
 .PHONY: all
 
-all: bin/back-propagation bin/game bin/graph
+BINDIR := bin
+SOURCES := $(wildcard *.c)
+PROGS := $(addprefix $(BINDIR)/, $(SOURCES:.c=))
 
 raylib-5/libraylib.a:
 	make -C raylib-5 RAYLIB_SRC_PATH=.
@@ -15,18 +17,18 @@ LDFLAGS=-L ./raylib-5 -lraylib -framework Foundation \
     -framework CoreServices -framework CoreGraphics \
     -framework AppKit -framework IOKit
 
-bin/back-propagation: back-propagation.c raylib-5/libraylib.a | bin
-	cc -O3 -g $(CFLAGS) back-propagation.c -o bin/back-propagation $(LDFLAGS)
+all: $(PROGS)
 
-bin/game: game.c raylib-5/libraylib.a | bin
-	cc -O3 -g $(CFLAGS) game.c -o bin/game $(LDFLAGS)
-
-bin/graph: graph.c raylib-5/libraylib.a | bin
-	cc -O3 -g $(CFLAGS) graph.c -o bin/graph $(LDFLAGS)
-
-bin/proof: proof.c raylib-5/libraylib.a | bin
-	cc -O3 -g $(CFLAGS) proof.c -o bin/proof $(LDFLAGS)
+$(BINDIR)/%: %.c nn.h | $(BINDIR) raylib-5/libraylib.a
+	cc -O3 -g $(CFLAGS) $< -o $@ $(LDFLAGS)
 
 bin:
 	mkdir -p $@
+
+
+# $@  The target            The file name of the target of the rule.
+# $<  The first dependency  The name of the first dependency (prerequisite).
+# $^  All dependencies      The names of all the dependencies, with spaces between them, and without duplicates.
+# $?  Newer dependencies    The names of all dependencies that are newer than the target.
+# $*  The stem              The part of the target name that matched the % in a pattern rule.
 

@@ -78,9 +78,9 @@ NMatrix target;
 
 void model_start(void) {
   Neuron_Layer layers[] = {
-    create_layer(.inputs = 11, .outputs = 10, .activation = sigmoid, .derivative = dsigmoid),
-    create_layer(.inputs = 10, .outputs = 10, .activation = sigmoid, .derivative = dsigmoid),
-    create_layer(.inputs = 10, .outputs = 3, .activation = softmax, .derivative = dsoftmax),
+    create_layer(.inputs = 11, .outputs = 10, .forward = sigmoid, .backward = dsigmoid),
+    create_layer(.inputs = 10, .outputs = 10, .forward = sigmoid, .backward = dsigmoid),
+    create_layer(.inputs = 10, .outputs = 3, .forward = softmax, .backward = dsoftmax),
   };
 
   nn = neuron_create(layers, ARRAY_LEN(layers));

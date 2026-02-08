@@ -32,9 +32,9 @@ int main(void) {
     test_data.elems[i] /= 255.0f;
 
   Neuron_Layer layers[] = {
-    create_layer(.inputs = 28*28, .outputs = 20, .activation = relu, .derivative = drelu),
-    create_layer(.inputs = 20, .outputs = 10, .activation = relu, .derivative = drelu),
-    create_layer(.inputs = 10, .outputs = 10, .activation = softmax, .derivative = dsoftmax)
+    create_layer(.inputs = 28*28, .outputs = 20, .forward = relu, .backward = drelu),
+    create_layer(.inputs = 20, .outputs = 10, .forward = relu, .backward = drelu),
+    create_layer(.inputs = 10, .outputs = 10, .forward = softmax, .backward = dsoftmax)
   };
 
   Neuron_Network nn = neuron_create(layers, ARRAY_LEN(layers));

@@ -371,22 +371,31 @@ void mat_print(NMatrix m) {
 }
 
 /*
- * Calculates the activation function on z.
+ * Calculates the forward function on x.
  *
- * h = f(z)
+ * y = f(x)
  */
-typedef void (*Activation_Fn)(NMatrix h, NMatrix z);
+typedef void (*Forward_Fn)(NMatrix y, NMatrix x);
 
 /*
- * Calculates dL/dz.
+ * Calculates dL/dx.
  *
- * Assumes h is the activation function: h = f(z)
+ * y = f(x)
+ * L = loss(y)
  *
- *       dh   dL
- * dst = -- * --
- *       dz   dh
+ * dL   dL   dy
+ * -- = -- * --
+ * dx   dy   dx
+ *
+ * dy
+ * -- = local derivative
+ * dx
+ *
+ * dL
+ * -- = gradient passed from the next layer to the current layer
+ * dy
  */
-typedef void (*Derivative_Fn)(NMatrix dst, NMatrix h, NMatrix dL_dh);
+typedef void (*Backward_Fn)(NMatrix dL_dx, NMatrix y, NMatrix dL_dy);
 
 /*
  * x = [ x1, x2, ... ]
@@ -400,8 +409,8 @@ typedef void (*Derivative_Fn)(NMatrix dst, NMatrix h, NMatrix dL_dh);
 typedef struct {
   NMatrix* w;
   NMatrix* b;
-  Activation_Fn* activation;
-  Derivative_Fn* derivative;
+  Forward_Fn* forward;
+  Backward_Fn* backward;
   int layers;
 } Neuron_Network;
 
@@ -539,14 +548,14 @@ void dlinear(NMatrix dst, NMatrix h, NMatrix dL_dh) {
 
 NMatrix forward(Neuron_Network* nn, NMatrix* h, NMatrix input) {
   // for (i from 0 to N) {
-  //   h[i] = activation( h[i-1] * w[i] + b[i] )
+  //   h[i] = forward( h[i-1] * w[i] + b[i] )
   // }
   for (int i = 0; i < nn->layers; i++) {
     NMatrix in = i == 0 ? input : h[i-1];
     
     mat_mult_add(h[i], in, nn->w[i], nn->b[i]);
 
-    nn->activation[i](h[i], h[i]);
+    nn->forward[i](h[i], h[i]);
   }
 
   return h[nn->layers-1];
@@ -619,7 +628,7 @@ float backward(
     NMatrix targets
 ) {
   //   z = h[-1] * w + b
-  //   h = activation(z)
+  //   h = forward(z)
   //
   //   dz
   //   -- = h[-1]
@@ -661,7 +670,7 @@ float backward(
   // dL[N-1] = 2( h[N-1] - y )
   //
   // for (i from N-1 to 0) {
-  //   delta = activation'( h[i] ) x dL[i]
+  //   delta = forward'( h[i] ) x dL[i]
   //
   //   dw[i] += h[i-1].T * delta
   //   db[i] += delta
@@ -682,8 +691,8 @@ float backward(
   for (int i = N-1; i >= 0; i--) {
     NMatrix act = i == 0 ? inputs : activations[i-1];
 
-    // delta_i = activation'(h[i]) * dL[i]
-    nn->derivative[i](delta[i], activations[i], dL_dh[i]);
+    // delta_i = forward'(h[i]) * dL[i]
+    nn->backward[i](delta[i], activations[i], dL_dh[i]);
 
     // db[i] = delta_i
     mat_copy(grad->b[i], delta[i]);
@@ -714,23 +723,23 @@ typedef struct {
   int32_t inputs;
   int32_t outputs;
   bool randomize;
-  Activation_Fn activation;
-  Derivative_Fn derivative;
+  Forward_Fn forward;
+  Backward_Fn backward;
 } Neuron_Layer;
 
-#define create_layer(...) ((Neuron_Layer) { .randomize = true, .activation = sigmoid, .derivative = dsigmoid, __VA_ARGS__ })
+#define create_layer(...) ((Neuron_Layer) { .randomize = true, .forward = sigmoid, .backward = dsigmoid, __VA_ARGS__ })
 
 Neuron_Network neuron_create(Neuron_Layer* layers, size_t layers_count) {
   NMatrix* w = malloc(sizeof(NMatrix) * layers_count);
   NMatrix* b = malloc(sizeof(NMatrix) * layers_count);
-  Activation_Fn* activation = malloc(sizeof(Activation_Fn) * layers_count);
-  Derivative_Fn* derivative = malloc(sizeof(Derivative_Fn) * layers_count);
+  Forward_Fn* forward = malloc(sizeof(Forward_Fn) * layers_count);
+  Backward_Fn* backward = malloc(sizeof(Backward_Fn) * layers_count);
 
   for (size_t i = 0; i < layers_count; i++) {
     Neuron_Layer layer = layers[i];
 
-    activation[i] = layer.activation;
-    derivative[i] = layer.derivative;
+    forward[i] = layer.forward;
+    backward[i] = layer.backward;
 
     // NxM
     w[i] = mat_alloc(layer.inputs, layer.outputs);
@@ -750,8 +759,8 @@ Neuron_Network neuron_create(Neuron_Layer* layers, size_t layers_count) {
   return (Neuron_Network) {
       .w = w,
       .b = b,
-      .activation = activation,
-      .derivative = derivative,
+      .forward = forward,
+      .backward = backward,
       .layers = layers_count,
   };
 }
