@@ -9,7 +9,7 @@ CFLAGS=-Werror -Wall -Wextra -Wno-initializer-overrides -pedantic \
     -I ./raylib-5 \
     -fsanitize=signed-integer-overflow \
     -fsanitize=unsigned-integer-overflow \
-    -fsanitize=address
+    -fsanitize=address -fassociative-math
 
 LDFLAGS=-L ./raylib-5 -lraylib -framework Foundation \
     -framework CoreServices -framework CoreGraphics \
@@ -18,11 +18,14 @@ LDFLAGS=-L ./raylib-5 -lraylib -framework Foundation \
 bin/back-propagation: back-propagation.c raylib-5/libraylib.a | bin
 	cc -O3 -g $(CFLAGS) back-propagation.c -o bin/back-propagation $(LDFLAGS)
 
-bin/game: game.c  raylib-5/libraylib.a | bin
+bin/game: game.c raylib-5/libraylib.a | bin
 	cc -O3 -g $(CFLAGS) game.c -o bin/game $(LDFLAGS)
 
-bin/graph: graph.c  raylib-5/libraylib.a | bin
+bin/graph: graph.c raylib-5/libraylib.a | bin
 	cc -O3 -g $(CFLAGS) graph.c -o bin/graph $(LDFLAGS)
+
+bin/proof: proof.c raylib-5/libraylib.a | bin
+	cc -O3 -g $(CFLAGS) proof.c -o bin/proof $(LDFLAGS)
 
 bin:
 	mkdir -p $@
