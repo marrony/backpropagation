@@ -5,9 +5,10 @@
 #include "raylib.h"
 
 #define IMG_SIZE 28
-#define KERN_SIZE 3
+#define KERN_SIZE 5
 #define CONV_OUT (IMG_SIZE - KERN_SIZE + 1)
 #define SCALE 8
+#define SCALE_FILTER 20
 #define FF 4
 #define FEATURES (FF*FF)
 #define DENSE_UNITS 1
@@ -228,14 +229,17 @@ void conv_to_pixels(float image[CONV_OUT][CONV_OUT], unsigned char* pixels) {
 }
 
 int main(void) {
-  int WindowWidth = IMG_SIZE*SCALE*FF + 100;
-  int WindowHeight = IMG_SIZE*SCALE*FF + 100;
+  int padding = 20;
+  int marging = 20;
+  int offset_filter = FF*(SCALE*IMG_SIZE + padding);
+  int WindowWidth = offset_filter + marging + FF*(SCALE_FILTER*KERN_SIZE + padding);
+  int WindowHeight = offset_filter + marging;
   InitWindow(WindowWidth, WindowHeight, "Tensors");
   SetWindowPosition(0, 0);
 
   Font font = LoadFontEx("fonts/MonacoNerdFont-Regular.ttf", 128, NULL, 95);
   unsigned char pixels[IMG_SIZE*IMG_SIZE] = {0};
-
+  unsigned char pixels_filter[KERN_SIZE*KERN_SIZE] = {0};
 
   Image image = {
     .data = pixels,
@@ -245,14 +249,25 @@ int main(void) {
     .mipmaps = 1,
   };
 
+  Image image_filter = {
+    .data = pixels_filter,
+    .width = KERN_SIZE,
+    .height = KERN_SIZE,
+    .format = PIXELFORMAT_UNCOMPRESSED_GRAYSCALE,
+    .mipmaps = 1,
+  };
+
   Texture2D textures[FEATURES];
-  for (int feature = 0; feature < FEATURES; feature++)
+  Texture2D textures_filter[FEATURES];
+  for (int feature = 0; feature < FEATURES; feature++) {
     textures[feature] = LoadTextureFromImage(image);
+    textures_filter[feature] = LoadTextureFromImage(image_filter);
+  }
 
   // --- DATA ---
   NMatrix train_data = read_idx("train-images-idx3-ubyte");
 
-  NMatrix input = mat_row(train_data, 7);
+  NMatrix input = mat_row(train_data, 4);
   // NMatrix input_texture = input;
   input.cols = IMG_SIZE;
   input.rows = IMG_SIZE;
@@ -314,20 +329,38 @@ int main(void) {
     dense_forward(flatten_output.flatten_out, dense.weight, dense_output.final_out);
 
     BeginDrawing();
-    ClearBackground(BLACK);
+    ClearBackground(BEIGE);
 
     for (int feature = 0; feature < FEATURES; feature++) {
       int feature_x = feature % FF;
       int feature_y = feature / FF;
 
+      // draw feature maps
       memset(pixels, 0, sizeof(pixels));
       conv_to_pixels(conv_output.conv_out[feature], pixels);
       UpdateTexture(textures[feature], pixels);
       DrawTextureEx(
           textures[feature],
-          (Vector2) {.x = feature_x*SCALE*IMG_SIZE + 50, .y = feature_y*SCALE*IMG_SIZE + 50},
+          (Vector2) {.x = feature_x*(SCALE*IMG_SIZE + padding) + marging, .y = feature_y*(SCALE*IMG_SIZE + padding) + marging},
           0,
           SCALE,
+          WHITE
+      );
+
+      // draw filters
+      memset(pixels_filter, 0, sizeof(pixels_filter));
+      for (int i = 0; i < KERN_SIZE; i++) {
+        for (int j = 0; j < KERN_SIZE; j++) {
+          pixels_filter[i*KERN_SIZE + j] = conv.weight[feature][i][j] * 255;
+        }
+      }
+      UpdateTexture(textures_filter[feature], pixels_filter);
+      int offset = offset_filter + padding;
+      DrawTextureEx(
+          textures_filter[feature],
+          (Vector2) {.x = offset + feature_x*(SCALE_FILTER*KERN_SIZE + padding), .y = feature_y*(SCALE*IMG_SIZE + padding) + marging},
+          0,
+          SCALE_FILTER,
           WHITE
       );
     }
