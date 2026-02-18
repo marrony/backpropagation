@@ -278,6 +278,18 @@ void mat_memberwise_mult(NMatrix dst, NMatrix a, NMatrix b) {
   }
 }
 
+void mat_memberwise_div(NMatrix dst, NMatrix a, NMatrix b) {
+  assert(dst.cols == a.cols);
+  assert(dst.rows == a.rows);
+  assert(dst.cols == b.cols);
+  assert(dst.rows == b.rows);
+
+  for (int i = 0; i < dst.rows; i++) {
+    for (int j = 0; j < dst.cols; j++) {
+      MAT_AT(dst, i, j) = MAT_AT(a, i, j) / MAT_AT(b, i, j);
+    }
+  }
+}
 
 void mat_square(NMatrix dst, NMatrix src) {
   assert(dst.cols == src.cols);
@@ -484,7 +496,7 @@ void softmax(NMatrix dst, NMatrix x) {
   assert(x.rows == 1);
   assert(dst.rows == 1);
 
-  float m = -FLT_MAX;
+  float m = VEC_AT(x, 0);
 
   for (int j = 0; j < x.cols; j++) {
     if (VEC_AT(x, j) > m) m = VEC_AT(x, j);
@@ -688,6 +700,7 @@ float backward(
   // dL = 2( h[N-1] - y )
   mat_scale(dL_dh[N-1], dL_dh[N-1], 2.0f);
 
+  printf("what? %d\n", N);
   for (int i = N-1; i >= 0; i--) {
     NMatrix act = i == 0 ? inputs : activations[i-1];
 
@@ -699,6 +712,9 @@ float backward(
 
     // dw[i] = h[i-1].T * delta_i
     mat_transpose_mult(grad->w[i], act, delta[i]);
+
+    printf("\ndb[i] = "); mat_print(grad->b[i]);
+    printf("\ndw[i] = "); mat_print(grad->w[i]);
 
     if (i > 0) {
       // dL[i-1] = delta_i * w[i].T

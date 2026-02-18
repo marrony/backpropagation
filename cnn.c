@@ -287,9 +287,18 @@ float clampf(float x) {
   return x;
 }
 
-void conv_to_pixels(float image[CONV_OUT][CONV_OUT], unsigned char* pixels) {
-  float min = +FLT_MAX;
-  float max = -FLT_MAX;
+typedef struct {
+  unsigned char intensity;
+  unsigned char alpha;
+} Pixel_Alpha;
+
+typedef struct {
+  unsigned char intensity;
+} Pixel;
+
+void conv_to_pixels(float image[CONV_OUT][CONV_OUT], Pixel_Alpha* pixels) {
+  float min = image[0][0];
+  float max = image[0][0];
 
   for (int i = 0; i < CONV_OUT; i++) {
     for (int j = 0; j < CONV_OUT; j++) {
@@ -304,14 +313,16 @@ void conv_to_pixels(float image[CONV_OUT][CONV_OUT], unsigned char* pixels) {
   for (int i = 0; i < CONV_OUT; i++) {
     for (int j = 0; j < CONV_OUT; j++) {
       float v = (image[i][j] - min) / diff;
-      pixels[i*IMG_SIZE + j] = v * 255;
+      int index = i*IMG_SIZE + j;
+      pixels[index].intensity = v * 255;
+      pixels[index].alpha = 255;
     }
   }
 }
 
-void filter_to_pixels(float image[KERN_SIZE][KERN_SIZE], unsigned char* pixels) {
-  float min = +FLT_MAX;
-  float max = -FLT_MAX;
+void filter_to_pixels(float image[KERN_SIZE][KERN_SIZE], Pixel* pixels) {
+  float min = image[0][0];
+  float max = image[0][0];
 
   for (int i = 0; i < KERN_SIZE; i++) {
     for (int j = 0; j < KERN_SIZE; j++) {
@@ -326,7 +337,7 @@ void filter_to_pixels(float image[KERN_SIZE][KERN_SIZE], unsigned char* pixels) 
   for (int i = 0; i < KERN_SIZE; i++) {
     for (int j = 0; j < KERN_SIZE; j++) {
       float v = (image[i][j] - min) / diff;
-      pixels[i*KERN_SIZE + j] = v * 255;
+      pixels[i*KERN_SIZE + j].intensity = v * 255;
     }
   }
 }
@@ -341,14 +352,14 @@ int main(void) {
   SetWindowPosition(0, 0);
 
   Font font = LoadFontEx("fonts/MonacoNerdFont-Regular.ttf", 128, NULL, 95);
-  unsigned char pixels[IMG_SIZE*IMG_SIZE] = {0};
-  unsigned char pixels_filter[KERN_SIZE*KERN_SIZE] = {0};
+  Pixel_Alpha pixels[IMG_SIZE*IMG_SIZE] = {0};
+  Pixel pixels_filter[KERN_SIZE*KERN_SIZE] = {0};
 
   Image image = {
     .data = pixels,
     .width = IMG_SIZE,
     .height = IMG_SIZE,
-    .format = PIXELFORMAT_UNCOMPRESSED_GRAYSCALE,
+    .format = PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA,
     .mipmaps = 1,
   };
 
