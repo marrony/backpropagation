@@ -166,6 +166,19 @@ void mat_mult_transpose(NMatrix dst, NMatrix a, NMatrix b) {
   }
 }
 
+// dst = A x B.T + C
+void mat_mult_transpose_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
+  assert(a.cols == b.cols);
+  assert(dst.rows == a.rows);
+  assert(dst.cols == b.rows);
+
+  for (int i = 0; i < dst.rows; i++) {
+    for (int j = 0; j < dst.cols; j++) {
+      MAT_AT(dst, i, j) = mat_dot_row_row(a, b, i, j) + MAT_AT(c, i, j);
+    }
+  }
+}
+
 // dst = A.T x B
 void mat_transpose_mult(NMatrix dst, NMatrix a, NMatrix b) {
   assert(a.rows == b.rows);
@@ -175,6 +188,19 @@ void mat_transpose_mult(NMatrix dst, NMatrix a, NMatrix b) {
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = mat_dot_col_col(a, b, i, j);
+    }
+  }
+}
+
+// dst = A.T x B + C
+void mat_transpose_mult_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
+  assert(a.rows == b.rows);
+  assert(dst.rows == a.cols);
+  assert(dst.cols == b.cols);
+
+  for (int i = 0; i < dst.rows; i++) {
+    for (int j = 0; j < dst.cols; j++) {
+      MAT_AT(dst, i, j) = mat_dot_col_col(a, b, i, j) + MAT_AT(c, i, j);
     }
   }
 }
@@ -382,6 +408,11 @@ void mat_print(NMatrix m) {
   printf("]");
 }
 
+void mat_println(NMatrix m) {
+  mat_print(m);
+  printf("\n");
+}
+
 /*
  * Calculates the forward function on x.
  *
@@ -565,7 +596,8 @@ NMatrix forward(Neuron_Network* nn, NMatrix* h, NMatrix input) {
   for (int i = 0; i < nn->layers; i++) {
     NMatrix in = i == 0 ? input : h[i-1];
     
-    mat_mult_add(h[i], in, nn->w[i], nn->b[i]);
+    // f = x*W.T + b
+    mat_mult_transpose_add(h[i], in, nn->w[i], nn->b[i]);
 
     nn->forward[i](h[i], h[i]);
   }
@@ -700,7 +732,6 @@ float backward(
   // dL = 2( h[N-1] - y )
   mat_scale(dL_dh[N-1], dL_dh[N-1], 2.0f);
 
-  printf("what? %d\n", N);
   for (int i = N-1; i >= 0; i--) {
     NMatrix act = i == 0 ? inputs : activations[i-1];
 
@@ -710,15 +741,12 @@ float backward(
     // db[i] = delta_i
     mat_copy(grad->b[i], delta[i]);
 
-    // dw[i] = h[i-1].T * delta_i
-    mat_transpose_mult(grad->w[i], act, delta[i]);
-
-    printf("\ndb[i] = "); mat_print(grad->b[i]);
-    printf("\ndw[i] = "); mat_print(grad->w[i]);
+    // dw[i] = delta_i.T * h[i-1]
+    mat_transpose_mult(grad->w[i], delta[i], act);
 
     if (i > 0) {
-      // dL[i-1] = delta_i * w[i].T
-      mat_mult_transpose(dL_dh[i-1], delta[i], nn->w[i]);
+      // dL[i-1] = delta_i * w[i]
+      mat_mult(dL_dh[i-1], delta[i], nn->w[i]);
     }
   }
 
@@ -729,7 +757,7 @@ NMatrix* create_outputs(Neuron_Network nn) {
   NMatrix* h = malloc(sizeof(NMatrix) * nn.layers);
 
   for (int i = 0; i < nn.layers; i++) {
-    h[i] = mat_alloc(1, nn.w[i].cols);
+    h[i] = mat_alloc(1, nn.w[i].rows);
   }
 
   return h;
@@ -758,7 +786,7 @@ Neuron_Network neuron_create(Neuron_Layer* layers, size_t layers_count) {
     backward[i] = layer.backward;
 
     // NxM
-    w[i] = mat_alloc(layer.inputs, layer.outputs);
+    w[i] = mat_alloc(layer.outputs, layer.inputs);
 
     // 1xM
     b[i] = mat_alloc(1, layer.outputs);
