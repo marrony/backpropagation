@@ -26,6 +26,96 @@ typedef struct {
 #define MAT_AT(m, row, col) ((m).elems[((m).cols)*(row) + (col)])
 #define VEC_AT(v, idx) MAT_AT((v), 0, (idx))
 
+NMatrix mat_alloc(int rows, int cols) {
+  return (NMatrix) {
+    .elems = malloc(sizeof(float) * rows * cols),
+    .rows = rows,
+    .cols = cols,
+  };
+}
+
+NMatrix mat_init(int rows, int cols, float* data) {
+  return (NMatrix) {
+    .elems = data,
+    .rows = rows,
+    .cols = cols,
+  };
+}
+
+void mat_print(FILE* fp, NMatrix m) {
+  fprintf(fp, "[");
+  for (int i = 0; i < m.rows; i++) {
+    if (i > 0) fprintf(fp, " ");
+
+    if (m.rows > 1) fprintf(fp, "[");
+    for (int j = 0; j < m.cols; j++) {
+      if (j > 0) fprintf(fp, " ");
+      fprintf(fp, "%+.8f", MAT_AT(m, i, j));
+    }
+    if (m.rows > 1) fprintf(fp, "]");
+  }
+  fprintf(fp, "]");
+}
+
+void mat_println(FILE* fp, NMatrix m) {
+  mat_print(fp, m);
+  fprintf(fp, "\n");
+}
+
+void assert_fmt(
+    bool pred,
+    const char* pred_str,
+    const char* func,
+    const char* file,
+    int line,
+    const char* fmt,
+    ...
+) {
+  if (!pred) {
+    va_list args;
+    va_start(args, fmt);
+    fprintf(stderr,
+        "\nAssertion failed: (%s), function %s, file %s, line %d.\n",
+        pred_str, func, file, line);
+    vfprintf(stderr, fmt, args);
+    fprintf(stderr, "\n");
+    va_end(args);
+    exit(1);
+  }
+}
+
+void assert_eq(const char* func, const char* file, int line, float a, float b) {
+  float x = a - b;
+  bool eq = (x*x) <= (0.001f*0.001f);
+  if (!eq) {
+    fprintf(stderr,
+        "\nAssertion failed: (%+.8f == %+.8f), function %s, file %s, line %d.\n",
+        a, b, func, file, line);
+    exit(1);
+  }
+}
+
+void assert_vec_eq(const char* func, const char* file, int line, NMatrix va, const float* vb) {
+  for (int i = 0; i < va.cols; i++) {
+    float a = VEC_AT(va, i);
+    float b = vb[i];
+    float x = a - b;
+    bool eq = (x*x) <= (0.001f*0.001f);
+    if (!eq) {
+      fprintf(stderr, "\nAssertion failed: (");
+      mat_print(stderr, va);
+      fprintf(stderr, " != ");
+      mat_print(stderr, mat_init(va.rows, va.cols, (float*)vb));
+      fprintf(stderr, "), function %s, file %s, line %d.\n", func, file, line);
+      exit(1);
+    }
+  }
+}
+
+#define ASSERT_FMT(pred, fmt, ...) assert_fmt((pred), #pred, __func__, __FILE__, __LINE__, fmt, __VA_ARGS__)
+#define ASSERT_EQ(a, b) assert_eq(__func__, __FILE__, __LINE__, (a), (b))
+#define ASSERT_VEC_EQ(a, b) assert_vec_eq(__func__, __FILE__, __LINE__, (a), (b))
+
 void mat_print_sizes(size_t n, ...) {
   va_list args;
 
@@ -39,17 +129,11 @@ void mat_print_sizes(size_t n, ...) {
   va_end(args);
 }
 
-NMatrix mat_alloc(int rows, int cols) {
-  return (NMatrix) {
-    .elems = malloc(sizeof(float) * rows * cols),
-    .rows = rows,
-    .cols = cols,
-  };
-}
+NMatrix mat_reshape(NMatrix x, int rows, int cols) {
+  assert(x.rows*x.cols == rows*cols);
 
-NMatrix mat_init(int rows, int cols, float* data) {
   return (NMatrix) {
-    .elems = data,
+    .elems = x.elems,
     .rows = rows,
     .cols = cols,
   };
@@ -129,9 +213,18 @@ void mat_sum_row(NMatrix dst, NMatrix src) {
 
 // dst = A x B
 void mat_mult(NMatrix dst, NMatrix a, NMatrix b) {
-  assert(a.cols == b.rows);
-  assert(dst.rows == a.rows);
-  assert(dst.cols == b.cols);
+  ASSERT_FMT(
+      a.cols == b.rows,
+      "[%dx%d] * [%dx%d] = [%dx%d]",
+      a.rows, a.cols, b.rows, b.cols, dst.rows, dst.cols);
+  ASSERT_FMT(
+      dst.rows == a.rows,
+      "[%dx%d] * [%dx%d] = [%dx%d]",
+      a.rows, a.cols, b.rows, b.cols, dst.rows, dst.cols);
+  ASSERT_FMT(
+      dst.cols == b.cols,
+      "[%dx%d] * [%dx%d] = [%dx%d]",
+      a.rows, a.cols, b.rows, b.cols, dst.rows, dst.cols);
 
 #if 1
   for (int i = 0; i < dst.rows; i++) {
@@ -155,9 +248,18 @@ void mat_mult(NMatrix dst, NMatrix a, NMatrix b) {
 
 // dst = A x B.T
 void mat_mult_transpose(NMatrix dst, NMatrix a, NMatrix b) {
-  assert(a.cols == b.cols);
-  assert(dst.rows == a.rows);
-  assert(dst.cols == b.rows);
+  ASSERT_FMT(
+      a.cols == b.cols,
+      "[%dx%d] * [%dx%d] = [%dx%d]",
+      a.rows, a.cols, b.cols, b.rows, dst.rows, dst.cols);
+  ASSERT_FMT(
+      dst.rows == a.rows,
+      "[%dx%d] * [%dx%d] = [%dx%d]",
+      a.rows, a.cols, b.cols, b.rows, dst.rows, dst.cols);
+  ASSERT_FMT(
+      dst.cols == b.rows,
+      "[%dx%d] * [%dx%d] = [%dx%d]",
+      a.rows, a.cols, b.cols, b.rows, dst.rows, dst.cols);
 
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
@@ -168,9 +270,18 @@ void mat_mult_transpose(NMatrix dst, NMatrix a, NMatrix b) {
 
 // dst = A x B.T + C
 void mat_mult_transpose_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
-  assert(a.cols == b.cols);
-  assert(dst.rows == a.rows);
-  assert(dst.cols == b.rows);
+  ASSERT_FMT(
+      a.cols == b.cols,
+      "[%dx%d] * [%dx%d] = [%dx%d]",
+      a.rows, a.cols, b.cols, b.rows, dst.rows, dst.cols);
+  ASSERT_FMT(
+      dst.rows == a.rows,
+      "[%dx%d] * [%dx%d] = [%dx%d]",
+      a.rows, a.cols, b.cols, b.rows, dst.rows, dst.cols);
+  ASSERT_FMT(
+      dst.cols == b.rows,
+      "[%dx%d] * [%dx%d] = [%dx%d]",
+      a.rows, a.cols, b.cols, b.rows, dst.rows, dst.cols);
 
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
@@ -181,9 +292,22 @@ void mat_mult_transpose_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
 
 // dst = A.T x B
 void mat_transpose_mult(NMatrix dst, NMatrix a, NMatrix b) {
-  assert(a.rows == b.rows);
-  assert(dst.rows == a.cols);
-  assert(dst.cols == b.cols);
+  // assert(a.rows == b.rows);
+  // assert(dst.rows == a.cols);
+  // assert(dst.cols == b.cols);
+
+  ASSERT_FMT(
+      a.rows == b.rows,
+      "[%dx%d] * [%dx%d] = [%dx%d]",
+      a.cols, a.rows, b.rows, b.cols, dst.rows, dst.cols);
+  ASSERT_FMT(
+      dst.rows == a.cols,
+      "[%dx%d] * [%dx%d] = [%dx%d]",
+      a.cols, a.rows, b.rows, b.cols, dst.rows, dst.cols);
+  ASSERT_FMT(
+      dst.cols == b.cols,
+      "[%dx%d] * [%dx%d] = [%dx%d]",
+      a.cols, a.rows, b.rows, b.cols, dst.rows, dst.cols);
 
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
@@ -339,11 +463,14 @@ void mat_scale(NMatrix dst, NMatrix src, float k) {
   }
 }
 
-NMatrix mat_row(NMatrix m, int row) {
+NMatrix mat_row_slice(NMatrix m, int start, int size) {
+  assert(m.rows == 1);
+  assert(start+size <= m.cols);
+
   return (NMatrix) {
-    .elems = &(MAT_AT(m, row, 0)),
+    .elems = &(VEC_AT(m, start)),
     .rows = 1,
-    .cols = m.cols,
+    .cols = size,
   };
 }
 
@@ -353,6 +480,10 @@ NMatrix mat_slice(NMatrix m, int start, int size) {
     .rows = size,
     .cols = m.cols,
   };
+}
+
+NMatrix mat_row(NMatrix m, int row) {
+  return mat_slice(m, row, 1);
 }
 
 int mat_row_max(NMatrix row) {
@@ -391,26 +522,6 @@ void mat_rand(NMatrix m) {
       MAT_AT(m, i, j) = r * 2.0f - 1.0f;
     }
   }
-}
-
-void mat_print(NMatrix m) {
-  printf("[");
-  for (int i = 0; i < m.rows; i++) {
-    if (i > 0) printf(" ");
-
-    if (m.rows > 1) printf("[");
-    for (int j = 0; j < m.cols; j++) {
-      if (j > 0) printf(" ");
-      printf("%+.8f", MAT_AT(m, i, j));
-    }
-    if (m.rows > 1) printf("]");
-  }
-  printf("]");
-}
-
-void mat_println(NMatrix m) {
-  mat_print(m);
-  printf("\n");
 }
 
 /*
@@ -888,7 +999,11 @@ void weights_to_pixels(NMatrix weights, int neuron, unsigned char* pixels) {
   }
 }
 
-NMatrix read_idx(const char* filename) {
+typedef struct {
+  bool normalize;
+} Read_Idx_Opts;
+
+NMatrix read_idx_opt(const char* filename, Read_Idx_Opts opts) {
   FILE* fp = fopen(filename, "rb");
 
   uint32_t magic;
@@ -952,14 +1067,20 @@ NMatrix read_idx(const char* filename) {
 
   output = mat_alloc(rows, cols);
 
-  for (size_t i = 0; i < size; i++)
+  for (size_t i = 0; i < size; i++) {
     output.elems[i] = (float)data[i];
+
+    if (opts.normalize)
+      output.elems[i] /= 255.0f;
+  }
 
   free(data);
 
   fclose(fp);
   return output;
 }
+
+#define read_idx(filename, ...) read_idx_opt((filename), (Read_Idx_Opts){ __VA_ARGS__ })
 
 #define MICRO_TO_NS 1000ull
 #define MILLI_TO_NS 1000000ull

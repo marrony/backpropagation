@@ -379,18 +379,16 @@ int main(void) {
   }
 
   // --- DATA ---
-  NMatrix train_data = read_idx("train-images-idx3-ubyte");
-  NMatrix label_data = read_idx("train-labels-idx1-ubyte");
+  NMatrix train_data = read_idx("train-images-idx3-ubyte", .normalize = true);
+  NMatrix label_data = read_idx("train-labels-idx1-ubyte", .normalize = false);
 
   assert(train_data.rows == label_data.rows);
 
-  int train_data_size = 100; //train_data.rows;
+  int train_data_size = 2000; //train_data.rows;
 
   // mat_scale(input, input, 1.0/255.0);
   // output = (input - mean) / std.
   // Normalize((0.1307,), (0.3081,)),
-
-  mat_scale(train_data, train_data, 1.0/255.0);
 
   static ConvLayer_W conv_weight = {0};
   static ConvLayer_W grad_conv_weight = {0};
@@ -549,93 +547,101 @@ int main(void) {
 
         Color color = index == (int)MAT_AT(label, 0, 0) ? GREEN : RED;
 
+        DrawTextEx(font, text, (Vector2) {.x = 22, .y = 21}, 30, 0, BLACK);
         DrawTextEx(font, text, (Vector2) {.x = 20, .y = 20}, 30, 0, color);
+
+        snprintf(text, sizeof(text), "Learning = %s", learning ? "yes" : "no");
+        DrawTextEx(font, text, (Vector2) {.x = 22, .y = 51}, 30, 0, BLACK);
+        DrawTextEx(font, text, (Vector2) {.x = 20, .y = 50}, 30, 0, color);
 
         EndDrawing();
       }
 
       // --- BACKWARD PASS (The "grad" Chain) ---
-
-      // 1. Loss Gradient (dL/dfinal_out) - MSE Loss: (out - target)^2
-      static float delta_loss[DENSE_UNITS];
-      for (int i = 0; i < DENSE_UNITS; i++) {
-        delta_loss[i] = 2 * (softmax_output.softmax_out[i] - target[i]);
-      }
-
-      CHECK_ARRAY(delta_loss, DENSE_UNITS);
-
-      // 2. Softmax
-      static float delta_softmax[DENSE_UNITS];
-      softmax_backward(
-          delta_loss,
-          softmax_output.softmax_out,
-          delta_softmax
-      );
-
-      CHECK_ARRAY(delta_softmax, DENSE_UNITS);
-
-      // 3. Dense
-      static float delta_dense[DENSE_IN];
-      dense_backward(
-        delta_softmax,              // float delta_out[DENSE_UNITS],
-        flatten_output.flatten_out, // float flat[DENSE_IN],
-        dense_weight,               // float dense_w[DENSE_UNITS][DENSE_IN],
-        // outputs
-        grad_dense_weight,          // float grad_w[DENSE_UNITS][DENSE_IN],
-                                    // float grad_b[DENSE_UNITS],
-        delta_dense                 // float delta_in[DENSE_IN]
-      );
-
-      CHECK_MATRIX(grad_dense_weight, DENSE_UNITS, DENSE_IN);
-      CHECK_ARRAY(delta_dense, DENSE_IN);
-
-      // 4. Unflatten
-      static float delta_dense_unflatten[FEATURES][CONV_OUT][CONV_OUT];
-      flatten_backward(
-        delta_dense,
-        delta_dense_unflatten
-      );
-
-      for (int f = 0; f < FEATURES; f++)
-        CHECK_MATRIX(delta_dense_unflatten[f], CONV_OUT, CONV_OUT);
-
-      // 5. Relu
-      static float delta_relu[FEATURES][CONV_OUT][CONV_OUT];
-      relu_backward(
-          delta_dense_unflatten,
-          conv_output.conv_out,
-          delta_relu
-      );
-
-      for (int f = 0; f < FEATURES; f++)
-        CHECK_MATRIX(delta_relu[f], CONV_OUT, CONV_OUT);
-
-      // 6. Conv
-      static float delta_conv[IMG_SIZE][IMG_SIZE];
-      conv_backward(
-         delta_relu,       // float delta_out[FEATURES][CONV_OUT][CONV_OUT],
-         input_image,      // float image[IMG_SIZE][IMG_SIZE],
-         conv_weight,      // float conv_w[FEATURES][KERN_SIZE][KERN_SIZE],
-         grad_conv_weight, // float grad_w[FEATURES][KERN_SIZE][KERN_SIZE],
-                           // float grad_b[FEATURES],
-         delta_conv        // float delta_in[IMG_SIZE][IMG_SIZE]
-      );
-
-      for (int f = 0; f < FEATURES; f++)
-        CHECK_MATRIX(grad_conv_weight[f], KERN_SIZE, KERN_SIZE);
-
-      CHECK_MATRIX(delta_conv, IMG_SIZE, IMG_SIZE);
-
-      for (int d = 0; d < DENSE_UNITS; d++) {
-        for (int i = 0; i < DENSE_IN; i++) {
-          g_grad_dense_weight[d][i] += grad_dense_weight[d][i];
+      if (learning) {
+        // 1. Loss Gradient (dL/dfinal_out) - MSE Loss: (out - target)^2
+        static float delta_loss[DENSE_UNITS];
+        for (int i = 0; i < DENSE_UNITS; i++) {
+          delta_loss[i] = 2 * (softmax_output.softmax_out[i] - target[i]);
         }
-      }
 
-      for (int feature = 0; feature < FEATURES; feature++) {
-        for (int i = 0; i < KERN_SIZE; i++) {
-          for (int j = 0; j < KERN_SIZE; j++) {
-            g_grad_conv_weight[feature][i][j] += grad_conv_weight[feature][i][j];
+        CHECK_ARRAY(delta_loss, DENSE_UNITS);
+
+        // 2. Softmax
+        static float delta_softmax[DENSE_UNITS];
+        softmax_backward(
+            delta_loss,
+            softmax_output.softmax_out,
+            delta_softmax
+        );
+
+        CHECK_ARRAY(delta_softmax, DENSE_UNITS);
+
+        // 3. Dense
+        static float delta_dense[DENSE_IN];
+        dense_backward(
+          delta_softmax,              // float delta_out[DENSE_UNITS],
+          flatten_output.flatten_out, // float flat[DENSE_IN],
+          dense_weight,               // float dense_w[DENSE_UNITS][DENSE_IN],
+          // outputs
+          grad_dense_weight,          // float grad_w[DENSE_UNITS][DENSE_IN],
+                                      // float grad_b[DENSE_UNITS],
+          delta_dense                 // float delta_in[DENSE_IN]
+        );
+
+        CHECK_MATRIX(grad_dense_weight, DENSE_UNITS, DENSE_IN);
+        CHECK_ARRAY(delta_dense, DENSE_IN);
+
+        // 4. Unflatten
+        static float delta_dense_unflatten[FEATURES][CONV_OUT][CONV_OUT];
+        flatten_backward(
+          delta_dense,
+          delta_dense_unflatten
+        );
+
+        for (int f = 0; f < FEATURES; f++)
+          CHECK_MATRIX(delta_dense_unflatten[f], CONV_OUT, CONV_OUT);
+
+        // 5. Relu
+        static float delta_relu[FEATURES][CONV_OUT][CONV_OUT];
+        relu_backward(
+            delta_dense_unflatten,
+            conv_output.conv_out,
+            delta_relu
+        );
+
+        for (int f = 0; f < FEATURES; f++)
+          CHECK_MATRIX(delta_relu[f], CONV_OUT, CONV_OUT);
+
+        // 6. Conv
+        static float delta_conv[IMG_SIZE][IMG_SIZE];
+        conv_backward(
+           // inputs
+           delta_relu,       // float delta_out[FEATURES][CONV_OUT][CONV_OUT],
+           input_image,      // float image[IMG_SIZE][IMG_SIZE],
+           conv_weight,      // float conv_w[FEATURES][KERN_SIZE][KERN_SIZE],
+           // outputs
+           grad_conv_weight, // float grad_w[FEATURES][KERN_SIZE][KERN_SIZE],
+                             // float grad_b[FEATURES],
+           delta_conv        // float delta_in[IMG_SIZE][IMG_SIZE]
+        );
+
+        for (int f = 0; f < FEATURES; f++)
+          CHECK_MATRIX(grad_conv_weight[f], KERN_SIZE, KERN_SIZE);
+
+        CHECK_MATRIX(delta_conv, IMG_SIZE, IMG_SIZE);
+
+        for (int d = 0; d < DENSE_UNITS; d++) {
+          for (int i = 0; i < DENSE_IN; i++) {
+            g_grad_dense_weight[d][i] += grad_dense_weight[d][i];
+          }
+        }
+
+        for (int feature = 0; feature < FEATURES; feature++) {
+          for (int i = 0; i < KERN_SIZE; i++) {
+            for (int j = 0; j < KERN_SIZE; j++) {
+              g_grad_conv_weight[feature][i][j] += grad_conv_weight[feature][i][j];
+            }
           }
         }
       }

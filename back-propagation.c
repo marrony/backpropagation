@@ -16,11 +16,11 @@ float accuracy(Neuron_Network nn, NMatrix* outputs, NMatrix test_data, NMatrix t
 int main(void) {
   srand(getpid());
 
-  NMatrix train_data = read_idx("train-images-idx3-ubyte");
-  NMatrix train_labels = read_idx("train-labels-idx1-ubyte");
+  NMatrix train_data = read_idx("train-images-idx3-ubyte", .normalize = true);
+  NMatrix train_labels = read_idx("train-labels-idx1-ubyte", .normalize = false);
 
-  NMatrix test_data = read_idx("t10k-images-idx3-ubyte");
-  NMatrix test_labels = read_idx("t10k-labels-idx1-ubyte");
+  NMatrix test_data = read_idx("t10k-images-idx3-ubyte", .normalize = true);
+  NMatrix test_labels = read_idx("t10k-labels-idx1-ubyte", .normalize = false);
 
   train_data.rows = train_labels.rows = 10000;
   test_data.rows = test_labels.rows = 1000;
