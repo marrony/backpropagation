@@ -1,3 +1,6 @@
+#ifndef NN_H
+#define NN_H
+
 #include <math.h>
 #include <float.h>
 #include <stdarg.h>
@@ -148,8 +151,14 @@ void mat_fill(NMatrix dst, float k) {
 }
 
 void mat_copy(NMatrix dst, NMatrix src) {
-  assert(dst.cols == src.cols);
-  assert(dst.rows == src.rows);
+  ASSERT_FMT(
+      dst.cols == src.cols,
+      "[%dx%d] != [%dx%d]",
+      dst.rows, dst.cols, src.rows, src.cols);
+  ASSERT_FMT(
+      dst.rows == src.rows,
+      "[%dx%d] != [%dx%d]",
+      dst.rows, dst.cols, src.rows, src.cols);
 
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
@@ -612,20 +621,18 @@ static inline float dreluf(float x) {
 // returns if x > 0  : x
 //         if x <= 0 : 0
 void relu(NMatrix dst, NMatrix x) {
-  assert(x.rows == 1);
-  assert(dst.rows == 1);
-
-  for (int j = 0; j < x.cols; j++) {
-    VEC_AT(dst, j) = reluf(VEC_AT(x, j));
+  for (int i = 0; i < x.rows; i++) {
+    for (int j = 0; j < x.cols; j++) {
+      MAT_AT(dst, i, j) = reluf(MAT_AT(x, i, j));
+    }
   }
 }
 
 void drelu(NMatrix dst, NMatrix h, NMatrix dL_dh) {
-  assert(h.rows == 1);
-  assert(dst.rows == 1);
-
-  for (int j = 0; j < h.cols; j++) {
-    VEC_AT(dst, j) = dreluf(VEC_AT(h, j)) * VEC_AT(dL_dh, j);
+  for (int i = 0; i < h.rows; i++) {
+    for (int j = 0; j < h.cols; j++) {
+      MAT_AT(dst, i, j) = dreluf(MAT_AT(h, i, j)) * MAT_AT(dL_dh, i, j);
+    }
   }
 }
 
@@ -1100,3 +1107,4 @@ int infer(Neuron_Network nn, NMatrix* outputs, NMatrix input) {
   return mat_row_max(output);
 }
 
+#endif //NN_H

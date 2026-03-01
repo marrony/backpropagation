@@ -19,7 +19,7 @@ LDFLAGS=-L ./raylib-5 -lraylib -framework Foundation \
 
 all: $(PROGS)
 
-$(BINDIR)/%: %.c nn.h | $(BINDIR) raylib-5/libraylib.a
+$(BINDIR)/%: %.c nn.h node.h | $(BINDIR) raylib-5/libraylib.a
 	cc -O3 -g $(CFLAGS) $< -o $@ $(LDFLAGS)
 
 bin:

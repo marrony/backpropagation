@@ -10,7 +10,7 @@
 #define CONV_OUT (IMG_SIZE - KERN_SIZE + 1)
 #define SCALE 6
 #define SCALE_FILTER 20
-#define FF 4
+#define FF 3
 #define FEATURES (FF*FF)
 #define DENSE_UNITS 10
 #define DENSE_IN (FEATURES*CONV_OUT*CONV_OUT)
@@ -209,8 +209,7 @@ void conv_backward(
     for (int i = 0; i < CONV_OUT; i++) {
       for (int j = 0; j < CONV_OUT; j++) {
         float delta = delta_out[f][i][j];
-        // CHECK_FLOAT(delta);
-
+        
         // Bias gradient
         // grad_b[f] += delta;
 
@@ -384,7 +383,7 @@ int main(void) {
 
   assert(train_data.rows == label_data.rows);
 
-  int train_data_size = 2000; //train_data.rows;
+  int train_data_size = 1000; //train_data.rows;
 
   // mat_scale(input, input, 1.0/255.0);
   // output = (input - mean) / std.
@@ -420,8 +419,8 @@ int main(void) {
 
   int index_to_draw = 0;
 
-  // SetTargetFPS(10);
   bool learning = true;
+  int iteration = 0;
 
   while (!WindowShouldClose()) {
 
@@ -554,6 +553,10 @@ int main(void) {
         DrawTextEx(font, text, (Vector2) {.x = 22, .y = 51}, 30, 0, BLACK);
         DrawTextEx(font, text, (Vector2) {.x = 20, .y = 50}, 30, 0, color);
 
+        snprintf(text, sizeof(text), "Iteration = %d", iteration);
+        DrawTextEx(font, text, (Vector2) {.x = 22, .y = 81}, 30, 0, BLACK);
+        DrawTextEx(font, text, (Vector2) {.x = 20, .y = 80}, 30, 0, color);
+
         EndDrawing();
       }
 
@@ -561,6 +564,7 @@ int main(void) {
       if (learning) {
         // 1. Loss Gradient (dL/dfinal_out) - MSE Loss: (out - target)^2
         static float delta_loss[DENSE_UNITS];
+
         for (int i = 0; i < DENSE_UNITS; i++) {
           delta_loss[i] = 2 * (softmax_output.softmax_out[i] - target[i]);
         }
@@ -644,6 +648,25 @@ int main(void) {
             }
           }
         }
+
+        // if (iteration == 0) {
+        //   printf("output  ="); mat_println(stdout, mat_init(1, DENSE_UNITS, softmax_output.softmax_out));
+        //   printf("softmax ="); mat_println(stdout, mat_init(1, DENSE_UNITS, delta_softmax));
+        //   printf("linear.x="); mat_println(stdout, mat_init(1, DENSE_UNITS, delta_dense));
+        //   for (int i = 0; i < DENSE_UNITS/5; i++) {
+        //      printf("linear.w="); mat_println(stdout, mat_init(1, DENSE_UNITS, grad_dense_weight[i]));
+        //   }
+        //   for (int i = 0; i < FEATURES; i++) {
+        //      printf("relu    ="); mat_println(stdout, mat_init(1, 10, delta_relu[i][0]));
+        //   }
+        //   for (int i = 0; i < FEATURES; i++) {
+        //      printf("conv.w  ="); mat_println(stdout, mat_init(KERN_SIZE, KERN_SIZE, &grad_conv_weight[i][0][0]));
+        //   }
+        //   printf("=================\n");
+        //   if (train_index == 0)
+        //     exit(0);
+        // }
+
       }
     }
 
@@ -662,6 +685,8 @@ int main(void) {
         }
       }
     }
+
+    iteration += 1;
   }
 
   UnloadFont(font);
