@@ -49,14 +49,18 @@ static const char* Node_Type_Str[__MAX_NODES+1] = {
 
 #define MAX_INPUTS 16
 
+typedef struct {
+  NMatrix value;
+  NMatrix grad;
+  NMatrix g_grad;
+} Tensor;
+
 typedef struct Node Node;
 struct Node {
   Node_Type type;
   Node* input[MAX_INPUTS];   // u, v
   int input_size;
-  NMatrix output[3]; // x, w, b
-  NMatrix delta[3];  // dx, dw, db
-  NMatrix g_delta[3];  // dx, dw, db
+  Tensor params[3]; // x, w, b
 };
 
 #define X_SLOT 0
@@ -66,14 +70,14 @@ struct Node {
 #define B_SLOT 2
 #define KERN_SLOT 1
 
-#define THIS_VALUE(slot) (node->output[(slot)])
-#define THIS_DELTA(slot) (node->delta[(slot)])
-#define THIS_G_DELTA(slot) (node->g_delta[(slot)])
+#define THIS_VALUE(slot) (node->params[(slot)].value)
+#define THIS_DELTA(slot) (node->params[(slot)].grad)
+#define THIS_G_DELTA(slot) (node->params[(slot)].g_grad)
 
 #define NULL_MATRIX (NMatrix) {0}
 
-#define IN_VALUE(slot) (node->input[(slot)] ? node->input[(slot)]->output[0] : NULL_MATRIX)
-#define IN_DELTA(slot) (node->input[(slot)] ? node->input[(slot)]->delta[0] : NULL_MATRIX)
+#define IN_VALUE(slot) (node->input[(slot)] ? node->input[(slot)]->params[0].value : NULL_MATRIX)
+#define IN_DELTA(slot) (node->input[(slot)] ? node->input[(slot)]->params[0].grad : NULL_MATRIX)
 
 #define FX_VALUE THIS_VALUE(X_SLOT)
 
@@ -131,7 +135,7 @@ Node* create_variable(NMatrix value) {
   THIS_DELTA(X_SLOT) = mat_alloc(value.rows, value.cols);
   THIS_G_DELTA(X_SLOT) = mat_alloc(value.rows, value.cols);
 
-  mat_copy(node->output[0], value);
+  mat_copy(THIS_VALUE(X_SLOT), value);
   return node;
 }
 
@@ -331,8 +335,8 @@ void node_forward(Node* node) {
 
         Node* input = node->input[i];
 
-        int rows = input->output[X_SLOT].rows;
-        int cols = input->output[X_SLOT].cols;
+        int rows = input->params[X_SLOT].value.rows;
+        int cols = input->params[X_SLOT].value.cols;
         int size = node_get_value_size(input);
 
         NMatrix dst = mat_reshape(
@@ -341,7 +345,7 @@ void node_forward(Node* node) {
             cols
         );
 
-        mat_copy(dst, input->output[X_SLOT]);
+        mat_copy(dst, input->params[X_SLOT].value);
       }
       break;
 
@@ -433,13 +437,6 @@ void node_forward(Node* node) {
   }
 }
 
-// softmax(
-//  linear(
-//    relu(
-//      flatten(conv2d)
-//    )
-//  )
-// )
 void node_backward(Node* node, NMatrix dL) {
   // upstream
   NMatrix dL_df = THIS_DELTA(X_SLOT);
@@ -473,7 +470,7 @@ void node_backward(Node* node, NMatrix dL) {
       //
       // downstream:
       //   dL/dx = d(c)/dx * dL = 0*dL
-      mat_copy(dL_df, dL);
+      // mat_copy(dL_df, dL);
       mat_fill(dL_dx, 0);
       break;
 
@@ -487,7 +484,7 @@ void node_backward(Node* node, NMatrix dL) {
       // downstream:
       //   dL/dx = d(x)/dx * dL = 1*dL
       mat_copy(dL_df, dL);
-      mat_copy(dL_dx, dL);
+      // mat_copy(dL_dx, dL);
       break;
 
     case NODE_LINEAR:
@@ -557,8 +554,8 @@ void node_backward(Node* node, NMatrix dL) {
       for (int i = 0; i < node->input_size; i++) {
         Node* input = node->input[i];
 
-        int rows = input->output[X_SLOT].rows;
-        int cols = input->output[X_SLOT].cols;
+        int rows = input->params[X_SLOT].value.rows;
+        int cols = input->params[X_SLOT].value.cols;
         int size = node_get_value_size(input);
 
         NMatrix ith_dL_dx = mat_reshape(

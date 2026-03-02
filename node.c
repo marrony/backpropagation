@@ -21,19 +21,19 @@ void test_add(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x       = "); mat_print(stdout, x->output[X_SLOT]);
-  printf(" d(x)     = "); mat_println(stdout, x->delta[X_SLOT]);
+  printf("x       = "); mat_print(stdout, x->params[X_SLOT].value);
+  printf(" d(x)     = "); mat_println(stdout, x->params[X_SLOT].grad);
 
-  printf("y       = "); mat_print(stdout, y->output[X_SLOT]);
-  printf(" d(y)     = "); mat_println(stdout, y->delta[X_SLOT]);
+  printf("y       = "); mat_print(stdout, y->params[X_SLOT].value);
+  printf(" d(y)     = "); mat_println(stdout, y->params[X_SLOT].value);
 
-  printf("(x + y) = "); mat_print(stdout, op->output[X_SLOT]);
-  printf(" d(x + y) = "); mat_println(stdout, op->delta[X_SLOT]);
+  printf("(x + y) = "); mat_print(stdout, op->params[X_SLOT].value);
+  printf(" d(x + y) = "); mat_println(stdout, op->params[X_SLOT].grad);
 
-  ASSERT_EQ(MAT_AT(op->output[X_SLOT], 0, 0), 3.0);
-  ASSERT_EQ(MAT_AT(op->delta[X_SLOT], 0, 0),  MAT_AT(dL, 0, 0));
-  ASSERT_EQ(MAT_AT(x->delta[X_SLOT], 0, 0), 2.0);
-  ASSERT_EQ(MAT_AT(y->delta[X_SLOT], 0, 0), 2.0);
+  ASSERT_EQ(MAT_AT(op->params[X_SLOT].value, 0, 0), 3.0);
+  ASSERT_EQ(MAT_AT(op->params[X_SLOT].grad, 0, 0),  MAT_AT(dL, 0, 0));
+  ASSERT_EQ(MAT_AT(x->params[X_SLOT].grad, 0, 0), 2.0);
+  ASSERT_EQ(MAT_AT(y->params[X_SLOT].grad, 0, 0), 2.0);
 
   destroy_node(&x);
   destroy_node(&y);
@@ -58,19 +58,19 @@ void test_sub(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x       = "); mat_print(stdout, x->output[X_SLOT]);
-  printf(" d(x)     = "); mat_println(stdout, x->delta[X_SLOT]);
+  printf("x       = "); mat_print(stdout, x->params[X_SLOT].value);
+  printf(" d(x)     = "); mat_println(stdout, x->params[X_SLOT].grad);
 
-  printf("y       = "); mat_print(stdout, y->output[X_SLOT]);
-  printf(" d(y)     = "); mat_println(stdout, y->delta[X_SLOT]);
+  printf("y       = "); mat_print(stdout, y->params[X_SLOT].value);
+  printf(" d(y)     = "); mat_println(stdout, y->params[X_SLOT].grad);
 
-  printf("(x - y) = "); mat_print(stdout, op->output[X_SLOT]);
-  printf(" d(x - y) = "); mat_println(stdout, op->delta[X_SLOT]);
+  printf("(x - y) = "); mat_print(stdout, op->params[X_SLOT].value);
+  printf(" d(x - y) = "); mat_println(stdout, op->params[X_SLOT].grad);
 
-  ASSERT_EQ(MAT_AT(op->output[X_SLOT], 0, 0), 1.0);
-  ASSERT_EQ(MAT_AT(op->delta[X_SLOT], 0, 0),  MAT_AT(dL, 0, 0));
-  ASSERT_EQ(MAT_AT(x->delta[X_SLOT], 0, 0), +2.0);
-  ASSERT_EQ(MAT_AT(y->delta[X_SLOT], 0, 0), -2.0);
+  ASSERT_EQ(MAT_AT(op->params[X_SLOT].value, 0, 0), 1.0);
+  ASSERT_EQ(MAT_AT(op->params[X_SLOT].grad, 0, 0),  MAT_AT(dL, 0, 0));
+  ASSERT_EQ(MAT_AT(x->params[X_SLOT].grad, 0, 0), +2.0);
+  ASSERT_EQ(MAT_AT(y->params[X_SLOT].grad, 0, 0), -2.0);
 
   destroy_node(&x);
   destroy_node(&y);
@@ -97,32 +97,32 @@ void test_mult(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x         = "); mat_println(stdout, x->output[X_SLOT]);
-  printf("d(x*y)/dx = "); mat_println(stdout, x->delta[X_SLOT]);
+  printf("x         = "); mat_println(stdout, x->params[X_SLOT].value);
+  printf("d(x*y)/dx = "); mat_println(stdout, x->params[X_SLOT].grad);
 
-  printf("y         = "); mat_println(stdout, y->output[X_SLOT]);
-  printf("d(x*y)/dy = "); mat_println(stdout, y->delta[X_SLOT]);
+  printf("y         = "); mat_println(stdout, y->params[X_SLOT].value);
+  printf("d(x*y)/dy = "); mat_println(stdout, y->params[X_SLOT].grad);
 
-  printf("x*y       = "); mat_println(stdout, op->output[X_SLOT]);
-  printf("dL/d(x*y) = "); mat_println(stdout, op->delta[X_SLOT]);
+  printf("x*y       = "); mat_println(stdout, op->params[X_SLOT].value);
+  printf("dL/d(x*y) = "); mat_println(stdout, op->params[X_SLOT].grad);
 
   //           u   *   v
   // [1x2] = [1x2] * [2x2]
-  ASSERT_VEC_EQ(op->output[X_SLOT], ((float[]) {12, 12}));
+  ASSERT_VEC_EQ(op->params[X_SLOT].value, ((float[]) {12, 12}));
 
   // [1x2] = [1x2] * [2x2].T
   // dL/du = dL * d(u*v)/du.T = dL * v.T
-  ASSERT_VEC_EQ(op->delta[U_SLOT], ((float[]) {2, 2}));
+  ASSERT_VEC_EQ(op->params[U_SLOT].grad, ((float[]) {2, 2}));
 
   // [2x2] = [1x2].T * [1x2]
   // dL/dv = d(u*v)/dv.T * dL = u.T * dL
-  ASSERT_VEC_EQ(op->delta[V_SLOT], ((float[]) {18, 18, 18, 18}));
+  ASSERT_VEC_EQ(op->params[V_SLOT].grad, ((float[]) {18, 18, 18, 18}));
 
   // [1x2]
-  ASSERT_VEC_EQ(x->delta[X_SLOT], ((float[]) {12, 12}));
+  ASSERT_VEC_EQ(x->params[X_SLOT].grad, ((float[]) {12, 12}));
 
   // [2x2]
-  ASSERT_VEC_EQ(y->delta[X_SLOT], ((float[]) {4, 4, 4, 4}));
+  ASSERT_VEC_EQ(y->params[X_SLOT].grad, ((float[]) {4, 4, 4, 4}));
 
 
   destroy_node(&x);
@@ -148,21 +148,21 @@ void test_div(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x       = "); mat_print(stdout, x->output[X_SLOT]);
-  printf(" d(x)     = "); mat_println(stdout, x->delta[X_SLOT]);
+  printf("x       = "); mat_print(stdout, x->params[X_SLOT].value);
+  printf(" d(x)     = "); mat_println(stdout, x->params[X_SLOT].grad);
 
-  printf("y       = "); mat_print(stdout, y->output[X_SLOT]);
-  printf(" d(y)     = "); mat_println(stdout, y->delta[X_SLOT]);
+  printf("y       = "); mat_print(stdout, y->params[X_SLOT].value);
+  printf(" d(y)     = "); mat_println(stdout, y->params[X_SLOT].grad);
 
-  printf("(x * y) = "); mat_print(stdout, op->output[X_SLOT]);
-  printf(" d(x / y) = "); mat_println(stdout, op->delta[X_SLOT]);
+  printf("(x * y) = "); mat_print(stdout, op->params[X_SLOT].value);
+  printf(" d(x / y) = "); mat_println(stdout, op->params[X_SLOT].grad);
 
-  ASSERT_EQ(MAT_AT(op->output[X_SLOT], 0, 0), +0.66666669f);
+  ASSERT_EQ(MAT_AT(op->params[X_SLOT].value, 0, 0), +0.66666669f);
   // dL/du = d(u/v)/du * dL = [1 / v]*dL
   // dL/dv = d(u/v)/dv * dL = [-u / v^2]*dL
-  ASSERT_EQ(MAT_AT(op->delta[X_SLOT], 0, 0),  MAT_AT(dL, 0, 0));
-  ASSERT_EQ(MAT_AT(x->delta[X_SLOT], 0, 0),   +0.66666669f);
-  ASSERT_EQ(MAT_AT(y->delta[X_SLOT], 0, 0),   -0.44444448f);
+  ASSERT_EQ(MAT_AT(op->params[X_SLOT].grad, 0, 0),  MAT_AT(dL, 0, 0));
+  ASSERT_EQ(MAT_AT(x->params[X_SLOT].grad, 0, 0),   +0.66666669f);
+  ASSERT_EQ(MAT_AT(y->params[X_SLOT].grad, 0, 0),   -0.44444448f);
 
   destroy_node(&x);
   destroy_node(&y);
@@ -183,27 +183,27 @@ void test_linear(void) {
 
   Node* x = create_variable(x_mat);
   Node* op = create_linear(x, 3);
-  mat_copy(op->output[W_SLOT], w_mat);
-  mat_copy(op->output[B_SLOT], b_mat);
+  mat_copy(op->params[W_SLOT].value, w_mat);
+  mat_copy(op->params[B_SLOT].value, b_mat);
 
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x       = "); mat_print(stdout, x->output[X_SLOT]);
-  printf(" d(x)     = "); mat_println(stdout, x->delta[X_SLOT]);
+  printf("x       = "); mat_print(stdout, x->params[X_SLOT].value);
+  printf(" d(x)     = "); mat_println(stdout, x->params[X_SLOT].grad);
 
-  printf("(x*w + b) = "); mat_print(stdout, op->output[X_SLOT]);
-  printf(" d(x*w + b) = "); mat_println(stdout, op->delta[X_SLOT]);
+  printf("(x*w + b) = "); mat_print(stdout, op->params[X_SLOT].value);
+  printf(" d(x*w + b) = "); mat_println(stdout, op->params[X_SLOT].grad);
 
   // f(x) = x*W.T + b
-  ASSERT_VEC_EQ(op->output[X_SLOT], ((float[]) {6, 13, 20}));
+  ASSERT_VEC_EQ(op->params[X_SLOT].value, ((float[]) {6, 13, 20}));
   // dL/dw = dL * d(x*W.T + b)/dw = dL.T*x
   // dL/db = dL * d(x*W.T + b)/db = I*dL
   // dL/dx = dL * d(x*W.T + b)/dx = dL*W
-  ASSERT_VEC_EQ(op->delta[X_SLOT],  dL.elems);
-  ASSERT_VEC_EQ(op->delta[W_SLOT],  ((float[]) {8, 16, 22, 44, 36, 72}));
-  ASSERT_VEC_EQ(op->delta[B_SLOT],  ((float[]) {8, 22, 36}));
-  ASSERT_VEC_EQ(x->delta[X_SLOT],   ((float[]) {254, 320}));
+  ASSERT_VEC_EQ(op->params[X_SLOT].grad,  dL.elems);
+  ASSERT_VEC_EQ(op->params[W_SLOT].grad,  ((float[]) {8, 16, 22, 44, 36, 72}));
+  ASSERT_VEC_EQ(op->params[B_SLOT].grad,  ((float[]) {8, 22, 36}));
+  ASSERT_VEC_EQ(x->params[X_SLOT].grad,   ((float[]) {254, 320}));
 
   destroy_node(&x);
   destroy_node(&op);
@@ -224,17 +224,17 @@ void test_sigmoid(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x       = "); mat_print(stdout, x->output[X_SLOT]);
-  printf(" d(x)     = "); mat_println(stdout, x->delta[X_SLOT]);
+  printf("x       = "); mat_print(stdout, x->params[X_SLOT].value);
+  printf(" d(x)     = "); mat_println(stdout, x->params[X_SLOT].grad);
 
-  printf("sigmoid(x) = "); mat_print(stdout, op->output[X_SLOT]);
-  printf(" d(sigmoid(x)) = "); mat_println(stdout, op->delta[X_SLOT]);
+  printf("sigmoid(x) = "); mat_print(stdout, op->params[X_SLOT].value);
+  printf(" d(sigmoid(x)) = "); mat_println(stdout, op->params[X_SLOT].grad);
 
   // sigmoid(x) = 1/(1+exp(-x))
-  ASSERT_VEC_EQ(op->output[X_SLOT], ((float[]) {+0.62245935, +0.62245935}));
+  ASSERT_VEC_EQ(op->params[X_SLOT].value, ((float[]) {+0.62245935, +0.62245935}));
   // dL/dx = sigmoid(x)*(1 - sigmoid(x)) * dL
-  ASSERT_VEC_EQ(op->delta[X_SLOT], ((float[]) {2, 2}));
-  ASSERT_VEC_EQ(x->delta[X_SLOT], ((float[]) {+0.47000742, +0.47000742}));
+  ASSERT_VEC_EQ(op->params[X_SLOT].grad, ((float[]) {2, 2}));
+  ASSERT_VEC_EQ(x->params[X_SLOT].grad, ((float[]) {+0.47000742, +0.47000742}));
 
   destroy_node(&x);
   destroy_node(&op);
@@ -257,17 +257,17 @@ void test_softmax(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x       = "); mat_print(stdout, x->output[X_SLOT]);
-  printf(" d(x)     = "); mat_println(stdout, x->delta[X_SLOT]);
+  printf("x       = "); mat_print(stdout, x->params[X_SLOT].value);
+  printf(" d(x)     = "); mat_println(stdout, x->params[X_SLOT].grad);
 
-  printf("softmax(x) = "); mat_print(stdout, op->output[X_SLOT]);
-  printf(" d(softmax(x)) = "); mat_println(stdout, op->delta[X_SLOT]);
+  printf("softmax(x) = "); mat_print(stdout, op->params[X_SLOT].value);
+  printf(" d(softmax(x)) = "); mat_println(stdout, op->params[X_SLOT].grad);
 
   // softmax(x)
-  ASSERT_VEC_EQ(op->output[X_SLOT], ((float[]) {0.4013123399, 0.5986876601}));
+  ASSERT_VEC_EQ(op->params[X_SLOT].value, ((float[]) {0.4013123399, 0.5986876601}));
   // dL/dx = softmax(z) * [ dL/dh - dot(softmax(z), dL/dh) ]
-  ASSERT_VEC_EQ(op->delta[X_SLOT], ((float[]) {1, 2}));
-  ASSERT_VEC_EQ(x->delta[X_SLOT], ((float[]) {-0.5986876601*0.4013123399, 0.4013123399*0.5986876601}));
+  ASSERT_VEC_EQ(op->params[X_SLOT].grad, ((float[]) {1, 2}));
+  ASSERT_VEC_EQ(x->params[X_SLOT].grad, ((float[]) {-0.5986876601*0.4013123399, 0.4013123399*0.5986876601}));
 
   destroy_node(&x);
   destroy_node(&op);
@@ -300,13 +300,13 @@ void test_nmist(void) {
   for (int i = 0; i < 1; i++) {
     NMatrix label = mat_row(train_labels, i);
 
-    mat_copy(x->output[X_SLOT], mat_row(train_data, i));
+    mat_copy(x->params[X_SLOT].value, mat_row(train_data, i));
     node_forward(layer_03);
 
     mat_fill(target, 0);
     VEC_AT(target, (int)VEC_AT(label, 0)) = 1;
 
-    mat_sub(dL, layer_03->output[X_SLOT], target);
+    mat_sub(dL, layer_03->params[X_SLOT].value, target);
     mat_scale(dL, dL, 2.0);
 
     node_backward(layer_03, dL);
@@ -314,20 +314,20 @@ void test_nmist(void) {
     printf("target  = "); mat_println(stdout, target);
     printf("dL      = "); mat_println(stdout, dL);
 
-    printf("layer 0 = "); mat_println(stdout, layer_01->output[X_SLOT]);
-    printf("          "); mat_println(stdout, layer_01_linear->delta[X_SLOT]);
+    printf("layer 0 = "); mat_println(stdout, layer_01->params[X_SLOT].value);
+    printf("          "); mat_println(stdout, layer_01_linear->params[X_SLOT].grad);
 
-    printf("layer 1 = "); mat_println(stdout, layer_02->output[X_SLOT]);
-    printf("          "); mat_println(stdout, layer_02_linear->delta[X_SLOT]);
+    printf("layer 1 = "); mat_println(stdout, layer_02->params[X_SLOT].value);
+    printf("          "); mat_println(stdout, layer_02_linear->params[X_SLOT].grad);
 
-    printf("layer 2 = "); mat_println(stdout, layer_03->output[X_SLOT]);
-    printf("          "); mat_println(stdout, layer_03_linear->delta[X_SLOT]);
+    printf("layer 2 = "); mat_println(stdout, layer_03->params[X_SLOT].value);
+    printf("          "); mat_println(stdout, layer_03_linear->params[X_SLOT].grad);
 
-    // int arg = mat_row_max(layer_03->output[X_SLOT]);
+    // int arg = mat_row_max(layer_03->params[X_SLOT]);
     // printf("%d ", arg);
     // mat_print(mat_row(train_labels, i));
     // printf(" = ");
-    // mat_println(layer_03->output[X_SLOT]);
+    // mat_println(layer_03->params[X_SLOT]);
   }
 
   // node_backward(layer_03, dL);

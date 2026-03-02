@@ -183,14 +183,14 @@ int main(void) {
     for (int i = 0; i < KERN_SIZE*KERN_SIZE; i++) {
       int r = i / KERN_SIZE;
       int c = i % KERN_SIZE;
-      MAT_AT(conv[f]->output[KERN_SLOT], r, c) = random_normal(0, std_conv);
+      MAT_AT(conv[f]->params[KERN_SLOT].value, r, c) = random_normal(0, std_conv);
     }
   }
 
   for (int d = 0; d < DENSE_UNITS; d++) {
     for (int i = 0; i < DENSE_IN; i++) {
-      MAT_AT(linear->output[W_SLOT], d, i) = random_normal(0, std_dense);
-      VEC_AT(linear->output[B_SLOT], d) = 0;
+      MAT_AT(linear->params[W_SLOT].value, d, i) = random_normal(0, std_dense);
+      VEC_AT(linear->params[B_SLOT].value, d) = 0;
     }
   }
 
@@ -219,7 +219,7 @@ int main(void) {
       float target[DENSE_UNITS] = {0};
       target[(int)MAT_AT(label, 0, 0)] = 1;
 
-      mat_copy(input_img->output[X_SLOT], input);
+      mat_copy(input_img->params[X_SLOT].value, input);
       node_forward(softmax);
 
       if (train_index == index_to_draw) {
@@ -232,7 +232,7 @@ int main(void) {
 
           // draw feature maps
           memset(pixels, 0, sizeof(pixels));
-          conv_to_pixels(conv[feature]->output[X_SLOT], pixels);
+          conv_to_pixels(conv[feature]->params[X_SLOT].value, pixels);
           UpdateTexture(textures[feature], pixels);
           DrawTextureEx(
               textures[feature],
@@ -244,7 +244,7 @@ int main(void) {
 
           // draw filters
           memset(pixels_filter, 0, sizeof(pixels_filter));
-          filter_to_pixels(conv[feature]->output[W_SLOT], pixels_filter);
+          filter_to_pixels(conv[feature]->params[W_SLOT].value, pixels_filter);
           UpdateTexture(textures_filter[feature], pixels_filter);
           int offset = offset_filter + padding;
           DrawTextureEx(
@@ -261,19 +261,19 @@ int main(void) {
             text,
             sizeof(text),
             "0=%+.2f 1=%+.2f 2=%+.2f 3=%+.2f 4=%+.2f 5=%+.2f 6=%+.2f 7=%+.2f 8=%+.2f 9=%+.2f",
-            VEC_AT(softmax->output[X_SLOT], 0),
-            VEC_AT(softmax->output[X_SLOT], 1),
-            VEC_AT(softmax->output[X_SLOT], 2),
-            VEC_AT(softmax->output[X_SLOT], 3),
-            VEC_AT(softmax->output[X_SLOT], 4),
-            VEC_AT(softmax->output[X_SLOT], 5),
-            VEC_AT(softmax->output[X_SLOT], 6),
-            VEC_AT(softmax->output[X_SLOT], 7),
-            VEC_AT(softmax->output[X_SLOT], 8),
-            VEC_AT(softmax->output[X_SLOT], 9)
+            VEC_AT(softmax->params[X_SLOT].value, 0),
+            VEC_AT(softmax->params[X_SLOT].value, 1),
+            VEC_AT(softmax->params[X_SLOT].value, 2),
+            VEC_AT(softmax->params[X_SLOT].value, 3),
+            VEC_AT(softmax->params[X_SLOT].value, 4),
+            VEC_AT(softmax->params[X_SLOT].value, 5),
+            VEC_AT(softmax->params[X_SLOT].value, 6),
+            VEC_AT(softmax->params[X_SLOT].value, 7),
+            VEC_AT(softmax->params[X_SLOT].value, 8),
+            VEC_AT(softmax->params[X_SLOT].value, 9)
         );
 
-        int index = mat_row_max(softmax->output[X_SLOT]);
+        int index = mat_row_max(softmax->params[X_SLOT].value);
 
         Color color = index == (int)MAT_AT(label, 0, 0) ? GREEN : RED;
 
@@ -293,7 +293,7 @@ int main(void) {
 
       if (learning) {
         for (int i = 0; i < DENSE_UNITS; i++)
-          VEC_AT(dL, i) = 2 * (VEC_AT(softmax->output[X_SLOT], i) - target[i]);
+          VEC_AT(dL, i) = 2 * (VEC_AT(softmax->params[X_SLOT].value, i) - target[i]);
 
         node_backward(softmax, dL);
 
