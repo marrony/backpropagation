@@ -296,29 +296,28 @@ int main(void) {
           VEC_AT(dL, i) = 2 * (VEC_AT(softmax->params[X_SLOT].value, i) - target[i]);
 
         node_backward(softmax, dL);
+        acc_grads(softmax);
 
         // if (iteration == 0) {
-        //   printf("output  ="); mat_println(stdout, softmax->output[X_SLOT]);
-        //   printf("softmax ="); mat_println(stdout, softmax->input[0]->delta[X_SLOT]);
-        //   printf("linear.x="); mat_println(stdout, mat_row_slice(linear->input[0]->delta[X_SLOT], 0, DENSE_UNITS));
+        //   printf("output  ="); mat_println(softmax->params[X_SLOT].value);
+        //   printf("softmax ="); mat_println(softmax->input[0]->params[X_SLOT].grad);
+        //   printf("linear.x="); mat_println(mat_row_slice(linear->input[0]->params[X_SLOT].grad, 0, DENSE_UNITS));
         //   for (int i = 0; i < DENSE_UNITS/5; i++) {
         //     printf("linear.w=");
-        //     mat_println(stdout, mat_row_slice(mat_row(linear->delta[W_SLOT], i), 0, DENSE_UNITS));
+        //     mat_println(mat_row_slice(mat_row(linear->params[W_SLOT].grad, i), 0, DENSE_UNITS));
         //   }
         //   for (int i = 0; i < FEATURES; i++) {
         //     printf("relu    =");
-        //     mat_println(stdout, mat_row_slice(mat_row(relu[i]->input[0]->delta[X_SLOT], 0), 0, 10));
+        //     mat_println(mat_row_slice(mat_row(relu[i]->input[0]->params[X_SLOT].grad, 0), 0, 10));
         //   }
         //   for (int i = 0; i < FEATURES; i++) {
         //     printf("conv.w  =");
-        //     //mat_println(stdout, conv[i]->delta[KERN_SLOT]);
-        //     mat_println(stdout, conv[i]->delta[KERN_SLOT]);
+        //     mat_println(conv[i]->params[KERN_SLOT].grad);
         //   }
         //   printf("=================\n");
         //   if (train_index == 0)
         //     exit(0);
         // }
-        acc_grads(softmax);
       }
     }
 

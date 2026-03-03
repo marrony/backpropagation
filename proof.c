@@ -33,11 +33,11 @@ int main(void) {
   // b[2] = 0
   // h[2] = sig(0.6203436024*0.5 + 0) = 0.5769271953
 
-  mat_print(stdout, X);
+  mat_print(X);
   printf(" = ");
-  mat_print(stdout, h[0]);
-  mat_print(stdout, h[1]);
-  mat_print(stdout, h[2]);
+  mat_print(h[0]);
+  mat_print(h[1]);
+  mat_print(h[2]);
   printf("\n");
 
   NMatrix T = mat_init(1, 1, (float[]) { 0.7 });
@@ -61,24 +61,24 @@ int main(void) {
   // dL/dz[0] = sig'(h[0]) * dL/dh[0] = 0.01766270625 * -0.003537457683 = -0.00006248107593
 
   printf("dL/dh = ");
-  mat_print(stdout, dL_dh[0]);
-  mat_print(stdout, dL_dh[1]);
-  mat_print(stdout, dL_dh[2]);
+  mat_print(dL_dh[0]);
+  mat_print(dL_dh[1]);
+  mat_print(dL_dh[2]);
   printf("\n");
   printf("dL/dz = ");
-  mat_print(stdout, dL_dz[0]);
-  mat_print(stdout, dL_dz[1]);
-  mat_print(stdout, dL_dz[2]);
+  mat_print(dL_dz[0]);
+  mat_print(dL_dz[1]);
+  mat_print(dL_dz[2]);
   printf("\n");
   printf("w = ");
-  mat_print(stdout, grad.w[0]);
-  mat_print(stdout, grad.w[1]);
-  mat_print(stdout, grad.w[2]);
+  mat_print(grad.w[0]);
+  mat_print(grad.w[1]);
+  mat_print(grad.w[2]);
   printf("\n");
   printf("b = ");
-  mat_print(stdout, grad.b[0]);
-  mat_print(stdout, grad.b[1]);
-  mat_print(stdout, grad.b[2]);
+  mat_print(grad.b[0]);
+  mat_print(grad.b[1]);
+  mat_print(grad.b[2]);
   printf("\n");
 
   /*for (int i = 0; i < 1; i++) {

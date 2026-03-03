@@ -45,7 +45,7 @@ NMatrix mat_init(int rows, int cols, float* data) {
   };
 }
 
-void mat_print(FILE* fp, NMatrix m) {
+void mat_fprint(FILE* fp, NMatrix m) {
   fprintf(fp, "[");
   for (int i = 0; i < m.rows; i++) {
     if (i > 0) fprintf(fp, " ");
@@ -60,9 +60,17 @@ void mat_print(FILE* fp, NMatrix m) {
   fprintf(fp, "]");
 }
 
-void mat_println(FILE* fp, NMatrix m) {
-  mat_print(fp, m);
+void mat_fprintln(FILE* fp, NMatrix m) {
+  mat_fprint(fp, m);
   fprintf(fp, "\n");
+}
+
+void mat_print(NMatrix m) {
+  mat_fprint(stdout, m);
+}
+
+void mat_println(NMatrix m) {
+  mat_fprintln(stdout, m);
 }
 
 void assert_fmt(
@@ -106,9 +114,9 @@ void assert_vec_eq(const char* func, const char* file, int line, NMatrix va, con
     bool eq = (x*x) <= (0.001f*0.001f);
     if (!eq) {
       fprintf(stderr, "\nAssertion failed: (");
-      mat_print(stderr, va);
+      mat_fprint(stderr, va);
       fprintf(stderr, " != ");
-      mat_print(stderr, mat_init(va.rows, va.cols, (float*)vb));
+      mat_fprint(stderr, mat_init(va.rows, va.cols, (float*)vb));
       fprintf(stderr, "), function %s, file %s, line %d.\n", func, file, line);
       exit(1);
     }
