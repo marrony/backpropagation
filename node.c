@@ -6,17 +6,15 @@
 void test_add(void) {
   int N = 2;
 
-  NMatrix dL    = mat_alloc(1, N);
-  NMatrix x_mat = mat_alloc(1, N);
-  NMatrix y_mat = mat_alloc(1, N);
-
-  mat_fill(x_mat, 2);
-  mat_fill(y_mat, 1);
-  mat_fill(dL, 2);
-
-  Node* x = create_variable(x_mat);
-  Node* y = create_variable(y_mat);
+  Node* x = create_variable(1, N);
+  Node* y = create_variable(1, N);
   Node* op = create_add(x, y);
+
+  NMatrix dL = mat_alloc(1, N);
+
+  mat_fill(x->params[X_SLOT].value, 2);
+  mat_fill(y->params[X_SLOT].value, 1);
+  mat_fill(dL, 2);
 
   node_forward(op);
   node_backward(op, dL);
@@ -43,17 +41,15 @@ void test_add(void) {
 void test_sub(void) {
   int N = 2;
 
-  NMatrix dL = mat_alloc(1, N);
-  NMatrix x_mat = mat_alloc(1, N);
-  NMatrix y_mat = mat_alloc(1, N);
-
-  mat_fill(x_mat, 2);
-  mat_fill(y_mat, 1);
-  mat_fill(dL, 2);
-
-  Node* x = create_variable(x_mat);
-  Node* y = create_variable(y_mat);
+  Node* x = create_variable(1, N);
+  Node* y = create_variable(1, N);
   Node* op = create_sub(x, y);
+
+  NMatrix dL = mat_alloc(1, N);
+
+  mat_fill(x->params[X_SLOT].value, 2);
+  mat_fill(y->params[X_SLOT].value, 1);
+  mat_fill(dL, 2);
 
   node_forward(op);
   node_backward(op, dL);
@@ -82,17 +78,15 @@ void test_mult(void) {
   int M = 2;
   int P = 2;
 
-  NMatrix x_mat = mat_alloc(N, M);
-  NMatrix y_mat = mat_alloc(M, P);
-  NMatrix dL    = mat_alloc(N, P);
-
-  mat_fill(x_mat, 2);
-  mat_fill(y_mat, 3);
-  mat_fill(dL, 2);
-
-  Node* x = create_variable(x_mat);
-  Node* y = create_variable(y_mat);
+  Node* x = create_variable(N, M);
+  Node* y = create_variable(M, P);
   Node* op = create_multiply(x, y);
+
+  NMatrix dL = mat_alloc(N, P);
+
+  mat_fill(x->params[X_SLOT].value, 2);
+  mat_fill(y->params[X_SLOT].value, 3);
+  mat_fill(dL, 2);
 
   node_forward(op);
   node_backward(op, dL);
@@ -133,17 +127,15 @@ void test_mult(void) {
 void test_div(void) {
   int N = 2;
 
-  NMatrix dL = mat_alloc(1, N);
-  NMatrix x_mat = mat_alloc(1, N);
-  NMatrix y_mat = mat_alloc(1, N);
-
-  mat_fill(x_mat, 2);
-  mat_fill(y_mat, 3);
-  mat_fill(dL, 2);
-
-  Node* x = create_variable(x_mat);
-  Node* y = create_variable(y_mat);
+  Node* x = create_variable(1, N);
+  Node* y = create_variable(1, N);
   Node* op = create_divide(x, y);
+
+  NMatrix dL = mat_alloc(1, N);
+
+  mat_fill(x->params[X_SLOT].value, 2);
+  mat_fill(y->params[X_SLOT].value, 3);
+  mat_fill(dL, 2);
 
   node_forward(op);
   node_backward(op, dL);
@@ -172,19 +164,15 @@ void test_div(void) {
 void test_linear(void) {
   // y = xW.T + b
   NMatrix dL = mat_alloc(1, 3);
-  NMatrix x_mat = mat_alloc(1, 2);
-  NMatrix w_mat = mat_alloc(3, 2);
-  NMatrix b_mat = mat_alloc(1, 3);
 
-  mat_copy(x_mat, mat_init(1, 2, (float[]){1, 2}));
-  mat_copy(w_mat, mat_init(3, 2, (float[]){1, 2, 3, 4, 5, 6}));
-  mat_copy(b_mat, mat_init(1, 3, (float[]){1, 2, 3}));
   mat_copy(dL, mat_init(1, 3, (float[]){8, 22, 36}));
 
-  Node* x = create_variable(x_mat);
+  Node* x = create_variable(1, 2);
+  mat_copy(x->params[X_SLOT].value, mat_init(1, 2, (float[]){1, 2}));
+
   Node* op = create_linear(x, 3);
-  mat_copy(op->params[W_SLOT].value, w_mat);
-  mat_copy(op->params[B_SLOT].value, b_mat);
+  mat_copy(op->params[W_SLOT].value, mat_init(3, 2, (float[]){1, 2, 3, 4, 5, 6}));
+  mat_copy(op->params[B_SLOT].value, mat_init(1, 3, (float[]){1, 2, 3}));
 
   node_forward(op);
   node_backward(op, dL);
@@ -213,13 +201,12 @@ void test_sigmoid(void) {
   int N = 2;
 
   NMatrix dL = mat_alloc(1, N);
-  NMatrix x_mat = mat_alloc(1, N);
 
-  mat_fill(x_mat, 0.5);
-  mat_fill(dL, 2);
-
-  Node* x = create_variable(x_mat);
+  Node* x = create_variable(1, N);
   Node* op = create_sigmoid(x);
+
+  mat_fill(x->params[X_SLOT].value, 0.5);
+  mat_fill(dL, 2);
 
   node_forward(op);
   node_backward(op, dL);
@@ -244,15 +231,12 @@ void test_softmax(void) {
   int N = 2;
 
   NMatrix dL = mat_alloc(1, N);
-  NMatrix x_mat = mat_alloc(1, N);
 
-  VEC_AT(x_mat, 0) = 0.1;
-  VEC_AT(x_mat, 1) = 0.5;
-  VEC_AT(dL, 0) = 1;
-  VEC_AT(dL, 1) = 2;
-
-  Node* x = create_variable(x_mat);
+  Node* x = create_variable(1, N);
   Node* op = create_softmax(x);
+
+  mat_copy(x->params[X_SLOT].value, mat_init(1, 2, (float[]){0.1, 0.5}));
+  mat_copy(dL, mat_init(1, 2, (float[]){1, 2}));
 
   node_forward(op);
   node_backward(op, dL);
@@ -283,7 +267,7 @@ void test_nmist(void) {
   train_data.rows = train_labels.rows = 1;
   test_data.rows = test_labels.rows = 1;
 
-  Node* x = create_constant(28*28);
+  Node* x = create_constant(1, 28*28);
 
   Node* layer_01_linear = create_linear(x, 20);
   Node* layer_01 = create_relu(layer_01_linear);

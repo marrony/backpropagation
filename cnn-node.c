@@ -166,7 +166,7 @@ int main(void) {
   Node* conv[FEATURES] = {0};
   Node* relu[FEATURES] = {0};
 
-  Node* input_img = create_constant(IMG_SIZE*IMG_SIZE);
+  Node* input_img = create_constant(1, IMG_SIZE*IMG_SIZE);
 
   for (int f = 0; f < FEATURES; f++) {
     conv[f] = create_conv2d(input_img, IMG_SIZE, KERN_SIZE);
