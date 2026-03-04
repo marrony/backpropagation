@@ -383,7 +383,7 @@ int main(void) {
 
   assert(train_data.rows == label_data.rows);
 
-  int train_data_size = 1000; //train_data.rows;
+  int train_data_size = 500; //train_data.rows;
 
   // mat_scale(input, input, 1.0/255.0);
   // output = (input - mean) / std.

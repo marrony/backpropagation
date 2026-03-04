@@ -150,7 +150,7 @@ int main(void) {
 
   assert(train_data.rows == label_data.rows);
 
-  int train_data_size = 1000; //train_data.rows;
+  int train_data_size = 500; //train_data.rows;
 
   // mat_scale(input, input, 1.0/255.0);
   // output = (input - mean) / std.
@@ -222,6 +222,38 @@ int main(void) {
       mat_copy(input_img->params[X_SLOT].value, input);
       node_forward(softmax);
 
+      // L = ( output - target )^2
+      // dL = 2 ( output - target )
+      mat_sub(dL, softmax->params[X_SLOT].value, mat_init(1, DENSE_UNITS, target));
+      float L = mat_dot(dL, dL);
+      mat_scale(dL, dL, 2);
+
+      if (learning) {
+        node_backward(softmax, dL);
+        acc_grads(softmax);
+
+        // if (iteration == 0) {
+        //   printf("output  ="); mat_println(softmax->params[X_SLOT].value);
+        //   printf("softmax ="); mat_println(softmax->input[0]->params[X_SLOT].grad);
+        //   printf("linear.x="); mat_println(mat_row_slice(linear->input[0]->params[X_SLOT].grad, 0, DENSE_UNITS));
+        //   for (int i = 0; i < DENSE_UNITS/5; i++) {
+        //     printf("linear.w=");
+        //     mat_println(mat_row_slice(mat_row(linear->params[W_SLOT].grad, i), 0, DENSE_UNITS));
+        //   }
+        //   for (int i = 0; i < FEATURES; i++) {
+        //     printf("relu    =");
+        //     mat_println(mat_row_slice(mat_row(relu[i]->input[0]->params[X_SLOT].grad, 0), 0, 10));
+        //   }
+        //   for (int i = 0; i < FEATURES; i++) {
+        //     printf("conv.w  =");
+        //     mat_println(conv[i]->params[KERN_SLOT].grad);
+        //   }
+        //   printf("=================\n");
+        //   if (train_index == 0)
+        //     exit(0);
+        // }
+      }
+
       if (train_index == index_to_draw) {
         BeginDrawing();
         ClearBackground(BEIGE);
@@ -284,40 +316,15 @@ int main(void) {
         DrawTextEx(font, text, (Vector2) {.x = 22, .y = 51}, 30, 0, BLACK);
         DrawTextEx(font, text, (Vector2) {.x = 20, .y = 50}, 30, 0, color);
 
-        snprintf(text, sizeof(text), "Iteration = %d", iteration);
+        snprintf(text, sizeof(text), "Cost = %+.8f", L);
         DrawTextEx(font, text, (Vector2) {.x = 22, .y = 81}, 30, 0, BLACK);
         DrawTextEx(font, text, (Vector2) {.x = 20, .y = 80}, 30, 0, color);
 
+        snprintf(text, sizeof(text), "Iteration = %d", iteration);
+        DrawTextEx(font, text, (Vector2) {.x = 22, .y = 111}, 30, 0, BLACK);
+        DrawTextEx(font, text, (Vector2) {.x = 20, .y = 110}, 30, 0, color);
+
         EndDrawing();
-      }
-
-      if (learning) {
-        for (int i = 0; i < DENSE_UNITS; i++)
-          VEC_AT(dL, i) = 2 * (VEC_AT(softmax->params[X_SLOT].value, i) - target[i]);
-
-        node_backward(softmax, dL);
-        acc_grads(softmax);
-
-        // if (iteration == 0) {
-        //   printf("output  ="); mat_println(softmax->params[X_SLOT].value);
-        //   printf("softmax ="); mat_println(softmax->input[0]->params[X_SLOT].grad);
-        //   printf("linear.x="); mat_println(mat_row_slice(linear->input[0]->params[X_SLOT].grad, 0, DENSE_UNITS));
-        //   for (int i = 0; i < DENSE_UNITS/5; i++) {
-        //     printf("linear.w=");
-        //     mat_println(mat_row_slice(mat_row(linear->params[W_SLOT].grad, i), 0, DENSE_UNITS));
-        //   }
-        //   for (int i = 0; i < FEATURES; i++) {
-        //     printf("relu    =");
-        //     mat_println(mat_row_slice(mat_row(relu[i]->input[0]->params[X_SLOT].grad, 0), 0, 10));
-        //   }
-        //   for (int i = 0; i < FEATURES; i++) {
-        //     printf("conv.w  =");
-        //     mat_println(conv[i]->params[KERN_SLOT].grad);
-        //   }
-        //   printf("=================\n");
-        //   if (train_index == 0)
-        //     exit(0);
-        // }
       }
     }
 
