@@ -491,86 +491,21 @@ int main(void) {
 
       CHECK_ARRAY(softmax_output.softmax_out, DENSE_UNITS);
 
-      if (train_index == index_to_draw) {
-        BeginDrawing();
-        ClearBackground(BEIGE);
+      // 1. Loss Gradient (dL/dfinal_out) - MSE Loss: (out - target)^2
+      static float delta_loss[DENSE_UNITS];
 
-        for (int feature = 0; feature < FEATURES; feature++) {
-          int feature_x = feature % FF;
-          int feature_y = feature / FF;
+      float L = 0;
 
-          // draw feature maps
-          memset(pixels, 0, sizeof(pixels));
-          conv_to_pixels(conv_output.conv_out[feature], pixels);
-          UpdateTexture(textures[feature], pixels);
-          DrawTextureEx(
-              textures[feature],
-              (Vector2) {.x = feature_x*(SCALE*IMG_SIZE + padding) + marging, .y = feature_y*(SCALE*IMG_SIZE + padding) + marging},
-              0,
-              SCALE,
-              WHITE
-          );
-
-          // draw filters
-          memset(pixels_filter, 0, sizeof(pixels_filter));
-          filter_to_pixels(conv_weight[feature], pixels_filter);
-          UpdateTexture(textures_filter[feature], pixels_filter);
-          int offset = offset_filter + padding;
-          DrawTextureEx(
-              textures_filter[feature],
-              (Vector2) {.x = offset + feature_x*(SCALE_FILTER*KERN_SIZE + padding), .y = feature_y*(SCALE*IMG_SIZE + padding) + marging},
-              0,
-              SCALE_FILTER,
-              WHITE
-          );
-        }
-
-        char text[1024];
-        snprintf(
-            text,
-            sizeof(text),
-            "0=%+.2f 1=%+.2f 2=%+.2f 3=%+.2f 4=%+.2f 5=%+.2f 6=%+.2f 7=%+.2f 8=%+.2f 9=%+.2f",
-            softmax_output.softmax_out[0],
-            softmax_output.softmax_out[1],
-            softmax_output.softmax_out[2],
-            softmax_output.softmax_out[3],
-            softmax_output.softmax_out[4],
-            softmax_output.softmax_out[5],
-            softmax_output.softmax_out[6],
-            softmax_output.softmax_out[7],
-            softmax_output.softmax_out[8],
-            softmax_output.softmax_out[9]
-        );
-
-        int index = mat_row_max(mat_init(1, DENSE_UNITS, softmax_output.softmax_out));
-
-        Color color = index == (int)MAT_AT(label, 0, 0) ? GREEN : RED;
-
-        DrawTextEx(font, text, (Vector2) {.x = 22, .y = 21}, 30, 0, BLACK);
-        DrawTextEx(font, text, (Vector2) {.x = 20, .y = 20}, 30, 0, color);
-
-        snprintf(text, sizeof(text), "Learning = %s", learning ? "yes" : "no");
-        DrawTextEx(font, text, (Vector2) {.x = 22, .y = 51}, 30, 0, BLACK);
-        DrawTextEx(font, text, (Vector2) {.x = 20, .y = 50}, 30, 0, color);
-
-        snprintf(text, sizeof(text), "Iteration = %d", iteration);
-        DrawTextEx(font, text, (Vector2) {.x = 22, .y = 81}, 30, 0, BLACK);
-        DrawTextEx(font, text, (Vector2) {.x = 20, .y = 80}, 30, 0, color);
-
-        EndDrawing();
+      for (int i = 0; i < DENSE_UNITS; i++) {
+        float diff = softmax_output.softmax_out[i] - target[i];
+        delta_loss[i] = 2 * diff;
+        L += diff * diff;
       }
+
+      CHECK_ARRAY(delta_loss, DENSE_UNITS);
 
       // --- BACKWARD PASS (The "grad" Chain) ---
       if (learning) {
-        // 1. Loss Gradient (dL/dfinal_out) - MSE Loss: (out - target)^2
-        static float delta_loss[DENSE_UNITS];
-
-        for (int i = 0; i < DENSE_UNITS; i++) {
-          delta_loss[i] = 2 * (softmax_output.softmax_out[i] - target[i]);
-        }
-
-        CHECK_ARRAY(delta_loss, DENSE_UNITS);
-
         // 2. Softmax
         static float delta_softmax[DENSE_UNITS];
         softmax_backward(
@@ -648,25 +583,79 @@ int main(void) {
             }
           }
         }
+      }
 
-        // if (iteration == 0) {
-        //   printf("output  ="); mat_println(stdout, mat_init(1, DENSE_UNITS, softmax_output.softmax_out));
-        //   printf("softmax ="); mat_println(stdout, mat_init(1, DENSE_UNITS, delta_softmax));
-        //   printf("linear.x="); mat_println(stdout, mat_init(1, DENSE_UNITS, delta_dense));
-        //   for (int i = 0; i < DENSE_UNITS/5; i++) {
-        //      printf("linear.w="); mat_println(stdout, mat_init(1, DENSE_UNITS, grad_dense_weight[i]));
-        //   }
-        //   for (int i = 0; i < FEATURES; i++) {
-        //      printf("relu    ="); mat_println(stdout, mat_init(1, 10, delta_relu[i][0]));
-        //   }
-        //   for (int i = 0; i < FEATURES; i++) {
-        //      printf("conv.w  ="); mat_println(stdout, mat_init(KERN_SIZE, KERN_SIZE, &grad_conv_weight[i][0][0]));
-        //   }
-        //   printf("=================\n");
-        //   if (train_index == 0)
-        //     exit(0);
-        // }
+      if (train_index == index_to_draw) {
+        BeginDrawing();
+        ClearBackground(BEIGE);
 
+        for (int feature = 0; feature < FEATURES; feature++) {
+          int feature_x = feature % FF;
+          int feature_y = feature / FF;
+
+          // draw feature maps
+          memset(pixels, 0, sizeof(pixels));
+          conv_to_pixels(conv_output.conv_out[feature], pixels);
+          UpdateTexture(textures[feature], pixels);
+          DrawTextureEx(
+              textures[feature],
+              (Vector2) {.x = feature_x*(SCALE*IMG_SIZE + padding) + marging, .y = feature_y*(SCALE*IMG_SIZE + padding) + marging},
+              0,
+              SCALE,
+              WHITE
+          );
+
+          // draw filters
+          memset(pixels_filter, 0, sizeof(pixels_filter));
+          filter_to_pixels(conv_weight[feature], pixels_filter);
+          UpdateTexture(textures_filter[feature], pixels_filter);
+          int offset = offset_filter + padding;
+          DrawTextureEx(
+              textures_filter[feature],
+              (Vector2) {.x = offset + feature_x*(SCALE_FILTER*KERN_SIZE + padding), .y = feature_y*(SCALE*IMG_SIZE + padding) + marging},
+              0,
+              SCALE_FILTER,
+              WHITE
+          );
+        }
+
+        char text[1024];
+        snprintf(
+            text,
+            sizeof(text),
+            "0=%+.2f 1=%+.2f 2=%+.2f 3=%+.2f 4=%+.2f 5=%+.2f 6=%+.2f 7=%+.2f 8=%+.2f 9=%+.2f",
+            softmax_output.softmax_out[0],
+            softmax_output.softmax_out[1],
+            softmax_output.softmax_out[2],
+            softmax_output.softmax_out[3],
+            softmax_output.softmax_out[4],
+            softmax_output.softmax_out[5],
+            softmax_output.softmax_out[6],
+            softmax_output.softmax_out[7],
+            softmax_output.softmax_out[8],
+            softmax_output.softmax_out[9]
+        );
+
+        int index = mat_row_max(mat_init(1, DENSE_UNITS, softmax_output.softmax_out));
+
+        Color color = index == (int)MAT_AT(label, 0, 0) ? GREEN : RED;
+
+        DrawTextEx(font, text, (Vector2) {.x = 22, .y = 21}, 30, 0, BLACK);
+        DrawTextEx(font, text, (Vector2) {.x = 20, .y = 20}, 30, 0, color);
+
+        snprintf(text, sizeof(text), "Learning = %s", learning ? "yes" : "no");
+        DrawTextEx(font, text, (Vector2) {.x = 22, .y = 51}, 30, 0, BLACK);
+        DrawTextEx(font, text, (Vector2) {.x = 20, .y = 50}, 30, 0, color);
+
+        snprintf(text, sizeof(text), "Cost = %+.8f", L);
+        DrawTextEx(font, text, (Vector2) {.x = 22, .y = 81}, 30, 0, BLACK);
+        DrawTextEx(font, text, (Vector2) {.x = 20, .y = 80}, 30, 0, color);
+
+        snprintf(text, sizeof(text), "Iteration = %d", iteration);
+        DrawTextEx(font, text, (Vector2) {.x = 22, .y = 111}, 30, 0, BLACK);
+        DrawTextEx(font, text, (Vector2) {.x = 20, .y = 110}, 30, 0, color);
+
+        EndDrawing();
       }
     }
 

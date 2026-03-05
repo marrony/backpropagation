@@ -48,19 +48,21 @@ static const char* Node_Type_Str[__MAX_NODES+1] = {
 };
 
 #define MAX_INPUTS 16
+#define MAX_PARAMS 3
 
 typedef struct {
   NMatrix value;
   NMatrix grad;
   NMatrix g_grad;
-} Tensor;
+} Param;
 
 typedef struct Node Node;
 struct Node {
   Node_Type type;
-  Node* input[MAX_INPUTS];   // u, v
+  Node* input[MAX_INPUTS];
   int input_size;
-  Tensor params[3]; // x, w, b
+  Param params[MAX_PARAMS];
+  int param_size;
 };
 
 #define X_SLOT 0
@@ -71,26 +73,26 @@ struct Node {
 #define KERN_SLOT 1
 
 #define NULL_MATRIX (NMatrix) {0}
-#define NULL_TENSOR (Tensor) {0}
+#define NULL_PARAM (Param) {0}
 
-#define THIS_TENSOR(node, slot) ((node)->params[(slot)])
-#define IN_TENSOR(node, slot) ((node)->input[(slot)] ? (node)->input[(slot)]->params[0] : NULL_TENSOR)
+#define THIS_PARAM(node, slot) ((node)->params[(slot)])
+#define IN_PARAM(node, slot) ((node)->input[(slot)] ? (node)->input[(slot)]->params[0] : NULL_PARAM)
 
 #define FORWARD(slot) node_forward(node->input[(slot)])
 #define BACKWARD(slot, dL) node_backward(node->input[(slot)], (dL))
 
-void init_tensor(Tensor* tensor, int rows, int cols) {
-  tensor->value  = mat_alloc(rows, cols);
-  tensor->grad   = mat_alloc(rows, cols);
-  tensor->g_grad = mat_alloc(rows, cols);
+void init_param(Param* param, int rows, int cols) {
+  param->value  = mat_alloc(rows, cols);
+  param->grad   = mat_alloc(rows, cols);
+  param->g_grad = mat_alloc(rows, cols);
 }
 
 int node_get_value_rows(Node* node) {
-  return THIS_TENSOR(node, X_SLOT).value.rows;
+  return THIS_PARAM(node, X_SLOT).value.rows;
 }
 
 int node_get_value_cols(Node* node) {
-  return THIS_TENSOR(node, X_SLOT).value.cols;
+  return THIS_PARAM(node, X_SLOT).value.cols;
 }
 
 void destroy_node(Node** node) {
@@ -108,7 +110,8 @@ Node* create_constant(int rows, int cols) {
   Node* node = create_node();
   node->type = NODE_CONSTANT;
   node->input_size = 0;
-  init_tensor(&THIS_TENSOR(node, X_SLOT), rows, cols);
+  node->param_size = 1;
+  init_param(&THIS_PARAM(node, X_SLOT), rows, cols);
   
   return node;
 }
@@ -117,7 +120,8 @@ Node* create_variable(int rows, int cols) {
   Node* node = create_node();
   node->type = NODE_VARIABLE;
   node->input_size = 0;
-  init_tensor(&THIS_TENSOR(node, X_SLOT), rows, cols);
+  node->param_size = 1;
+  init_param(&THIS_PARAM(node, X_SLOT), rows, cols);
 
   return node;
 }
@@ -132,12 +136,13 @@ Node* create_linear(Node* input, int out_size) {
   int cols = node_get_value_cols(input);
   int in_size = rows * cols;
 
-  init_tensor(&THIS_TENSOR(node, X_SLOT), 1, out_size);
-  init_tensor(&THIS_TENSOR(node, W_SLOT), out_size, in_size);
-  init_tensor(&THIS_TENSOR(node, B_SLOT), 1, out_size);
+  node->param_size = 3;
+  init_param(&THIS_PARAM(node, X_SLOT), 1, out_size);
+  init_param(&THIS_PARAM(node, W_SLOT), out_size, in_size);
+  init_param(&THIS_PARAM(node, B_SLOT), 1, out_size);
 
-  // mat_rand(THIS_TENSOR(W_SLOT));
-  // mat_rand(THIS_TENSOR(B_SLOT));
+  // mat_rand(THIS_PARAM(W_SLOT));
+  // mat_rand(THIS_PARAM(B_SLOT));
 
   return node;
 }
@@ -147,7 +152,8 @@ Node* create_unary(Node_Type type, Node* input, int rows, int cols) {
   node->type = type;
   node->input[0] = input;
   node->input_size = 1;
-  init_tensor(&THIS_TENSOR(node, X_SLOT), rows, cols);
+  node->param_size = 1;
+  init_param(&THIS_PARAM(node, X_SLOT), rows, cols);
   return node;
 }
 
@@ -157,7 +163,8 @@ Node* create_binary(Node_Type type, Node* input0, Node* input1, int rows, int co
   node->input[0] = input0;
   node->input[1] = input1;
   node->input_size = 2;
-  init_tensor(&THIS_TENSOR(node, X_SLOT), rows, cols);
+  node->param_size = 2;
+  init_param(&THIS_PARAM(node, X_SLOT), rows, cols);
   return node;
 }
 
@@ -187,10 +194,11 @@ Node* create_conv2d(Node* input, int img_size, int kern_size) {
 
   int conv_size = (img_size - kern_size + 1);
 
-  init_tensor(&THIS_TENSOR(node, X_SLOT), conv_size, conv_size);
-  init_tensor(&THIS_TENSOR(node, KERN_SLOT), kern_size, kern_size);
+  node->param_size = 2;
+  init_param(&THIS_PARAM(node, X_SLOT), conv_size, conv_size);
+  init_param(&THIS_PARAM(node, KERN_SLOT), kern_size, kern_size);
 
-  // mat_rand(THIS_TENSOR(KERN_SLOT));
+  // mat_rand(THIS_PARAM(KERN_SLOT));
 
   return node;
 }
@@ -209,7 +217,8 @@ Node* create_flatten(Node** inputs, int in_size) {
     size += rows * cols;
   }
 
-  init_tensor(&THIS_TENSOR(node, X_SLOT), 1, size);
+  node->param_size = 1;
+  init_param(&THIS_PARAM(node, X_SLOT), 1, size);
 
   return node;
 }
@@ -258,14 +267,14 @@ Node* create_sub(Node* input0, Node* input1) {
 }
 
 void node_forward(Node* node) {
-  Tensor fx   = THIS_TENSOR(node, X_SLOT);
-  Tensor w    = THIS_TENSOR(node, W_SLOT);
-  Tensor b    = THIS_TENSOR(node, B_SLOT);
-  Tensor kern = THIS_TENSOR(node, KERN_SLOT);
+  Param fx   = THIS_PARAM(node, X_SLOT);
+  Param w    = THIS_PARAM(node, W_SLOT);
+  Param b    = THIS_PARAM(node, B_SLOT);
+  Param kern = THIS_PARAM(node, KERN_SLOT);
 
-  Tensor x = IN_TENSOR(node, X_SLOT);
-  Tensor u = IN_TENSOR(node, U_SLOT);
-  Tensor v = IN_TENSOR(node, V_SLOT);
+  Param x = IN_PARAM(node, X_SLOT);
+  Param u = IN_PARAM(node, U_SLOT);
+  Param v = IN_PARAM(node, V_SLOT);
 
   switch (node->type) {
     case NODE_CONSTANT:
@@ -312,7 +321,7 @@ void node_forward(Node* node) {
             cols
         );
 
-        mat_copy(dst, THIS_TENSOR(input, X_SLOT).value);
+        mat_copy(dst, THIS_PARAM(input, X_SLOT).value);
       }
       break;
 
@@ -407,14 +416,14 @@ void node_forward(Node* node) {
 }
 
 void node_backward(Node* node, NMatrix dL) {
-  Tensor fx   = THIS_TENSOR(node, X_SLOT);
-  Tensor w    = THIS_TENSOR(node, W_SLOT);
-  Tensor b    = THIS_TENSOR(node, B_SLOT);
-  Tensor kern = THIS_TENSOR(node, KERN_SLOT);
+  Param fx   = THIS_PARAM(node, X_SLOT);
+  Param w    = THIS_PARAM(node, W_SLOT);
+  Param b    = THIS_PARAM(node, B_SLOT);
+  Param kern = THIS_PARAM(node, KERN_SLOT);
 
-  Tensor x    = IN_TENSOR(node, X_SLOT);
-  Tensor u    = IN_TENSOR(node, U_SLOT);
-  Tensor v    = IN_TENSOR(node, V_SLOT);
+  Param x    = IN_PARAM(node, X_SLOT);
+  Param u    = IN_PARAM(node, U_SLOT);
+  Param v    = IN_PARAM(node, V_SLOT);
 
   // printf("BACKWARD(%s) = [%dx%d]\n",
   //     Node_Type_Str[node->type],
@@ -525,7 +534,7 @@ void node_backward(Node* node, NMatrix dL) {
           cols
         );
 
-        mat_copy(IN_TENSOR(node, i).grad, ith_dL_dx);
+        mat_copy(IN_PARAM(node, i).grad, ith_dL_dx);
 
         BACKWARD(i, ith_dL_dx);
       }
@@ -747,139 +756,38 @@ void node_backward(Node* node, NMatrix dL) {
   }
 }
 
-// accumulate and zero grads
+// accumulate grads
 void acc_grads(Node* node) {
-  switch (node->type) {
-    case NODE_CONSTANT:
-      break;
+  for (int i = 0; i < node->input_size; i++)
+    acc_grads(node->input[i]);
 
-    case NODE_VARIABLE:
-      mat_add(THIS_TENSOR(node, X_SLOT).g_grad, THIS_TENSOR(node, X_SLOT).g_grad, THIS_TENSOR(node, X_SLOT).grad);
-      break;
-
-    case NODE_LINEAR:
-      acc_grads(node->input[X_SLOT]);
-      mat_add(THIS_TENSOR(node, W_SLOT).g_grad, THIS_TENSOR(node, W_SLOT).g_grad, THIS_TENSOR(node, W_SLOT).grad);
-      mat_add(THIS_TENSOR(node, B_SLOT).g_grad, THIS_TENSOR(node, B_SLOT).g_grad, THIS_TENSOR(node, B_SLOT).grad);
-      break;
-
-    case NODE_CONV2D:
-      acc_grads(node->input[X_SLOT]);
-      mat_add(THIS_TENSOR(node, KERN_SLOT).g_grad, THIS_TENSOR(node, KERN_SLOT).g_grad, THIS_TENSOR(node, KERN_SLOT).grad);
-      break;
-
-    case NODE_FLATTEN:
-      for (int i = 0; i < node->input_size; i++)
-        acc_grads(node->input[i]);
-      break;
-
-    case NODE_SIGMOID:
-    case NODE_SOFTMAX:
-    case NODE_RELU:
-    case NODE_SQUARE:
-    case NODE_CUBE:
-    case NODE_EXP:
-    case NODE_NEGATE:
-      acc_grads(node->input[X_SLOT]);
-      break;
-
-    case NODE_MULTIPLY:
-    case NODE_DIVIDE:
-    case NODE_ADD:
-    case NODE_SUB:
-      acc_grads(node->input[U_SLOT]);
-      acc_grads(node->input[V_SLOT]);
-      break;
-  }
+  for (int i = 0; i < node->param_size; i++)
+    mat_add(
+        THIS_PARAM(node, i).g_grad,
+        THIS_PARAM(node, i).g_grad,
+        THIS_PARAM(node, i).grad
+    );
 }
 
 void update_grads(Node* node, float lr) {
-  switch (node->type) {
-    case NODE_CONSTANT:
-      break;
+  for (int i = 0; i < node->input_size; i++)
+    update_grads(node->input[i], lr);
 
-    case NODE_VARIABLE:
-      mat_weighted_add(THIS_TENSOR(node, X_SLOT).value, THIS_TENSOR(node, X_SLOT).value, THIS_TENSOR(node, X_SLOT).g_grad, -lr);
-      break;
-
-    case NODE_LINEAR:
-      update_grads(node->input[X_SLOT], lr);
-      mat_weighted_add(THIS_TENSOR(node, W_SLOT).value, THIS_TENSOR(node, W_SLOT).value, THIS_TENSOR(node, W_SLOT).g_grad, -lr);
-      mat_weighted_add(THIS_TENSOR(node, B_SLOT).value, THIS_TENSOR(node, B_SLOT).value, THIS_TENSOR(node, B_SLOT).g_grad, -lr);
-      break;
-
-    case NODE_CONV2D:
-      update_grads(node->input[X_SLOT], lr);
-      mat_weighted_add(THIS_TENSOR(node, KERN_SLOT).value, THIS_TENSOR(node, KERN_SLOT).value, THIS_TENSOR(node, KERN_SLOT).g_grad, -lr);
-      break;
-
-    case NODE_FLATTEN:
-      for (int i = 0; i < node->input_size; i++)
-        update_grads(node->input[i], lr);
-      break;
-
-    case NODE_SIGMOID:
-    case NODE_SOFTMAX:
-    case NODE_RELU:
-    case NODE_SQUARE:
-    case NODE_CUBE:
-    case NODE_EXP:
-    case NODE_NEGATE:
-      update_grads(node->input[X_SLOT], lr);
-      break;
-
-    case NODE_MULTIPLY:
-    case NODE_DIVIDE:
-    case NODE_ADD:
-    case NODE_SUB:
-      update_grads(node->input[U_SLOT], lr);
-      update_grads(node->input[V_SLOT], lr);
-      break;
-  }
+  for (int i = 0; i < node->param_size; i++)
+    mat_weighted_add(
+        THIS_PARAM(node, i).value,
+        THIS_PARAM(node, i).value,
+        THIS_PARAM(node, i).g_grad,
+        -lr
+    );
 }
 
 void zero_grads(Node* node) {
-  switch (node->type) {
-    case NODE_CONSTANT:
-      break;
+  for (int i = 0; i < node->input_size; i++)
+    zero_grads(node->input[i]);
 
-    case NODE_VARIABLE:
-      mat_fill(THIS_TENSOR(node, X_SLOT).g_grad, 0);
-      break;
-
-    case NODE_LINEAR:
-      zero_grads(node->input[X_SLOT]);
-      mat_fill(THIS_TENSOR(node, W_SLOT).g_grad, 0);
-      mat_fill(THIS_TENSOR(node, B_SLOT).g_grad, 0);
-      break;
-
-    case NODE_CONV2D:
-      zero_grads(node->input[X_SLOT]);
-      mat_fill(THIS_TENSOR(node, KERN_SLOT).g_grad, 0);
-      break;
-
-    case NODE_FLATTEN:
-      for (int i = 0; i < node->input_size; i++)
-        zero_grads(node->input[i]);
-      break;
-
-    case NODE_SIGMOID:
-    case NODE_SOFTMAX:
-    case NODE_RELU:
-    case NODE_SQUARE:
-    case NODE_CUBE:
-    case NODE_EXP:
-    case NODE_NEGATE:
-      zero_grads(node->input[X_SLOT]);
-      break;
-
-    case NODE_MULTIPLY:
-    case NODE_DIVIDE:
-    case NODE_ADD:
-    case NODE_SUB:
-      zero_grads(node->input[U_SLOT]);
-      zero_grads(node->input[V_SLOT]);
-      break;
-  }
+  for (int i = 0; i < node->param_size; i++)
+    mat_fill(THIS_PARAM(node, i).g_grad, 0);
 }
+
 #endif // NODE_H

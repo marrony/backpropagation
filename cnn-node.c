@@ -231,27 +231,6 @@ int main(void) {
       if (learning) {
         node_backward(softmax, dL);
         acc_grads(softmax);
-
-        // if (iteration == 0) {
-        //   printf("output  ="); mat_println(softmax->params[X_SLOT].value);
-        //   printf("softmax ="); mat_println(softmax->input[0]->params[X_SLOT].grad);
-        //   printf("linear.x="); mat_println(mat_row_slice(linear->input[0]->params[X_SLOT].grad, 0, DENSE_UNITS));
-        //   for (int i = 0; i < DENSE_UNITS/5; i++) {
-        //     printf("linear.w=");
-        //     mat_println(mat_row_slice(mat_row(linear->params[W_SLOT].grad, i), 0, DENSE_UNITS));
-        //   }
-        //   for (int i = 0; i < FEATURES; i++) {
-        //     printf("relu    =");
-        //     mat_println(mat_row_slice(mat_row(relu[i]->input[0]->params[X_SLOT].grad, 0), 0, 10));
-        //   }
-        //   for (int i = 0; i < FEATURES; i++) {
-        //     printf("conv.w  =");
-        //     mat_println(conv[i]->params[KERN_SLOT].grad);
-        //   }
-        //   printf("=================\n");
-        //   if (train_index == 0)
-        //     exit(0);
-        // }
       }
 
       if (train_index == index_to_draw) {
