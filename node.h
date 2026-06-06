@@ -85,13 +85,18 @@ void init_param(Param* param, int rows, int cols) {
   param->value  = mat_alloc(rows, cols);
   param->grad   = mat_alloc(rows, cols);
   param->g_grad = mat_alloc(rows, cols);
+  mat_fill(param->value, 0);
+  mat_fill(param->grad, 0);
+  mat_fill(param->g_grad, 0);
 }
 
 int node_get_value_rows(Node* node) {
+  assert(node->param_size >= 1);
   return THIS_PARAM(node, X_SLOT).value.rows;
 }
 
 int node_get_value_cols(Node* node) {
+  assert(node->param_size >= 1);
   return THIS_PARAM(node, X_SLOT).value.cols;
 }
 
@@ -203,6 +208,10 @@ Node* create_conv2d(Node* input, int img_size, int kern_size) {
   return node;
 }
 
+// Create a flatten node that concatenates multiple input matrices.
+// IMPORTANT: This uses mat_reshape which is a VIEW operation, not a copy.
+// The flattened output shares the same data buffer with input matrices.
+// This is safe as long as the input matrices are not modified after flattening.
 Node* create_flatten(Node** inputs, int in_size) {
   Node* node = create_node();
   node->type = NODE_FLATTEN;

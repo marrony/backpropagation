@@ -24,12 +24,7 @@ int main(void) {
 
   train_data.rows = train_labels.rows = 10000;
   test_data.rows = test_labels.rows = 1000;
-
-  for (int i = 0; i < train_data.rows*train_data.cols; i++)
-    train_data.elems[i] /= 255.0f;
-
-  for (int i = 0; i < test_data.rows*test_data.cols; i++)
-    test_data.elems[i] /= 255.0f;
+  // Note: Data is already normalized in read_idx calls (.normalize = true)
 
   Neuron_Layer layers[] = {
     create_layer(.inputs = 28*28, .outputs = 20, .forward = relu, .backward = drelu),
@@ -109,6 +104,9 @@ int main(void) {
         NMatrix input = mat_row(train_data, i);
         float label = MAT_AT(train_labels, i, 0);
 
+        // Zero delta_grad before each training example to prevent gradient accumulation
+        neuron_zero(&delta_grad);
+
         mat_fill(target, 0);
         VEC_AT(target, (int)label) = 1;
 
@@ -122,6 +120,8 @@ int main(void) {
             input,
             target
         );
+        // Note: backward() already includes the 2x factor from MSE derivative.
+        // The learning rate in neuron_weighted_add should compensate for this.
 
         // accumulate weights and biases gradients
         neuron_add(&grad, &delta_grad);

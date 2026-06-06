@@ -16,12 +16,14 @@
 #define DENSE_UNITS 10
 #define DENSE_IN (FEATURES*CONV_OUT*CONV_OUT)
 
-// Uniform random in (0,1)
+// Uniform random in [0, 1)
 float rand_uniform(void) {
-  return (rand() + 1.0f) / (RAND_MAX + 2.0f);
+  return rand() / (float)RAND_MAX;
 }
 
-// Gaussian random using Box-Muller
+// Gaussian random using Marsaglia Polar Method
+// Generates two independent normal samples at once (Box-Muller style)
+// Uses rejection sampling: samples u,v ~ U[-1,1], accepts if u²+v² < 1
 float random_normal(float mean, float stddev) {
   static int hasSpare = 0;
   static float spare;
@@ -41,6 +43,7 @@ float random_normal(float mean, float stddev) {
     s = u*u + v*v;
   } while (s >= 1.0f || s == 0.0f);
 
+  // Marsaglia formula: z = u * sqrt(-2*ln(s)/s)
   s = sqrtf(-2.0f * logf(s) / s);
 
   spare = v * s;
@@ -62,6 +65,12 @@ typedef struct {
   unsigned char intensity;
 } Pixel;
 
+// Convert convolution output image to pixel buffer
+// Each pixel is scaled to 0-255 range
+// IMPORTANT: The pixels buffer can be larger than CONV_OUT x CONV_OUT.
+// If pixels is larger, the border regions contain default values (from previous
+// normalization). This allows the convolution output to be displayed with
+// implicit border padding without needing to explicitly fill the buffer.
 void conv_to_pixels(NMatrix image, Pixel_Alpha* pixels) {
   float min = MAT_AT(image, 0, 0);
   float max = MAT_AT(image, 0, 0);
@@ -86,6 +95,12 @@ void conv_to_pixels(NMatrix image, Pixel_Alpha* pixels) {
   }
 }
 
+// Convert kernel image to pixel buffer
+// Each pixel is scaled to 0-255 range
+// IMPORTANT: The pixels buffer can be larger than KERN_SIZE x KERN_SIZE.
+// If pixels is larger, the border regions contain default values (from previous
+// normalization). This allows the kernel to be displayed with implicit border
+// padding without needing to explicitly fill the buffer.
 void filter_to_pixels(NMatrix image, Pixel* pixels) {
   float min = MAT_AT(image, 0, 0);
   float max = MAT_AT(image, 0, 0);

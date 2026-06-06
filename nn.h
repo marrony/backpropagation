@@ -8,7 +8,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 #include <time.h>
 #include <assert.h>
 #include <unistd.h>
@@ -140,6 +139,11 @@ void mat_print_sizes(size_t n, ...) {
   va_end(args);
 }
 
+// Reshape matrix to new dimensions. This is a VIEW operation, not a copy.
+// The returned matrix points to the SAME data buffer as the input.
+// IMPORTANT: Changing shape does NOT change data layout. This is safe only if
+// the new dimensions produce the same memory layout (same row-major order).
+// If you need a different layout, use mat_copy with reshape.
 NMatrix mat_reshape(NMatrix x, int rows, int cols) {
   assert(x.rows*x.cols == rows*cols);
 
@@ -222,7 +226,7 @@ void mat_sum_row(NMatrix dst, NMatrix src) {
 
   for (int i = 0; i < src.rows; i++) {
     MAT_AT(dst, i, 0) = 0;
-    for (int j = 0; j < src.rows; j++) {
+    for (int j = 0; j < src.cols; j++) {
       MAT_AT(dst, i, 0) += MAT_AT(src, i, j);
     }
   }
@@ -589,6 +593,9 @@ static inline float sigmoidf(float x) {
   return 1.0f / (1.0f + expf(-x));
 }
 
+// Derivative of sigmoid function, where x is the sigmoid output (not input)
+// Returns: sigmoid'(x) = sigmoid(x) * (1 - sigmoid(x))
+// IMPORTANT: x must be the output of sigmoid() function (values in range 0-1)
 static inline float dsigmoidf(float x) {
   return x * (1.0f - x);
 }
@@ -662,6 +669,10 @@ void softmax(NMatrix dst, NMatrix x) {
   float sum = 0;
   for (int j = 0; j < x.cols; j++) {
     float e = expf(VEC_AT(x, j) - m);
+    // Check for overflow (expf returns infinity for very large values)
+    if (isinf(e)) {
+      e = FLT_MAX; // Treat overflow as very large value
+    }
     VEC_AT(dst, j) = e;
     sum += e;
   }
@@ -713,18 +724,31 @@ void dlinear(NMatrix dst, NMatrix h, NMatrix dL_dh) {
   (void)h;
   // given h = z, dh/dz = 1 then dL/dz = dL/dh
   mat_copy(dst, dL_dh);
+  
+  // Check for NaN/Inf propagation
+  for (int i = 0; i < dst.rows; i++) {
+    for (int j = 0; j < dst.cols; j++) {
+      float v = MAT_AT(dst, i, j);
+      if (isnan(v) || isinf(v)) {
+        assert(false); // NaN/Inf detected in gradient
+      }
+    }
+  }
 }
 
+// Forward pass through the network.
+// IMPORTANT: The 'h' array is reused as both input and output buffer for each layer.
+// For layer i: h[i] receives input from h[i-1] (or 'input' for layer 0).
+// The same h[i] buffer is first used to compute z = x*W.T + b, then activated.
+// This is an in-place operation pattern: h[i] = activation(h[i-1] * w[i] + b[i])
 NMatrix forward(Neuron_Network* nn, NMatrix* h, NMatrix input) {
-  // for (i from 0 to N) {
-  //   h[i] = forward( h[i-1] * w[i] + b[i] )
-  // }
   for (int i = 0; i < nn->layers; i++) {
     NMatrix in = i == 0 ? input : h[i-1];
     
-    // f = x*W.T + b
+    // f = x*W.T + b (compute pre-activation in h[i])
     mat_mult_transpose_add(h[i], in, nn->w[i], nn->b[i]);
 
+    // Apply activation function (in-place: h[i] = activation(h[i]))
     nn->forward[i](h[i], h[i]);
   }
 
@@ -788,6 +812,15 @@ float backward_sigmoid_only(
   return L;
 }
 
+// Backward pass: computes gradients for all layers.
+// For MSE loss L = 0.5 * (y - h)^2, the derivative is dL/dh = -(y - h),
+// and the chain rule gives the 2x factor: dL/dh = 2 * (h - y).
+// This function accumulates gradients into 'grad' and dL_dh.
+// IMPORTANT: The 2x scaling is included here to match standard MSE loss
+// formulation L = (y - h)^2 (without the 1/2 factor).
+// When using neuron_weighted_add with learning rate lr, the effective update
+// becomes: w = w - lr * 2 * (h - y). This is equivalent to using lr/2
+// with the standard 0.5*MSE formulation.
 float backward(
     Neuron_Network* nn,
     NMatrix* activations,
@@ -856,6 +889,9 @@ float backward(
   float L = mat_dot(dL_dh[N-1], dL_dh[N-1]);
 
   // dL = 2( h[N-1] - y )
+  // Note: The 2x factor is retained to match MSE loss L = (y-h)^2 formulation.
+  // This ensures gradients are 2x larger than with L = 0.5*(y-h)^2,
+  // which compensates for removing the 1/2 factor in the loss definition.
   mat_scale(dL_dh[N-1], dL_dh[N-1], 2.0f);
 
   for (int i = N-1; i >= 0; i--) {
@@ -884,6 +920,7 @@ NMatrix* create_outputs(Neuron_Network nn) {
 
   for (int i = 0; i < nn.layers; i++) {
     h[i] = mat_alloc(1, nn.w[i].rows);
+    mat_fill(h[i], 0);
   }
 
   return h;
@@ -981,7 +1018,12 @@ void image_to_pixels(NMatrix image, unsigned char* pixels) {
   float diff = max - min;
 
   for (int i = 0; i < image.cols; i++) {
-    float v = (MAT_AT(image, 0, i) - min) / diff;
+    float v;
+    if (diff == 0) {
+      v = 0.5f; // All pixels same value, set to middle gray
+    } else {
+      v = (MAT_AT(image, 0, i) - min) / diff;
+    }
 
     if (!isnan(v)) {
       unsigned char ch = (unsigned char)(v * 255);
@@ -1004,7 +1046,12 @@ void weights_to_pixels(NMatrix weights, int neuron, unsigned char* pixels) {
   float diff = max - min;
 
   for (int i = 0; i < weights.rows; i++) {
-    float v = (MAT_AT(weights, i, neuron) - min) / diff;
+    float v;
+    if (diff == 0) {
+      v = 0.5f; // All weights same value, set to middle gray
+    } else {
+      v = (MAT_AT(weights, i, neuron) - min) / diff;
+    }
 
     if (!isnan(v)) {
       unsigned char ch = (unsigned char)(v * 255);
