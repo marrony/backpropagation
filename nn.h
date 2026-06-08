@@ -127,6 +127,19 @@ void assert_vec_eq(const char* func, const char* file, int line, NMatrix va, con
 #define ASSERT_EQ(a, b) assert_eq(__func__, __FILE__, __LINE__, (a), (b))
 #define ASSERT_VEC_EQ(a, b) assert_vec_eq(__func__, __FILE__, __LINE__, (a), (b))
 
+#define ASSERT_MATRIX_MULT(dst_rows, dst_cols, a_rows, a_cols, b_rows, b_cols) \
+  ASSERT_FMT(a_cols == b_rows,   "[%dx%d] * [%dx%d] = [%dx%d]", a_rows, a_cols, b_rows, b_cols, dst_rows, dst_cols); \
+  ASSERT_FMT(dst_rows == a_rows, "[%dx%d] * [%dx%d] = [%dx%d]", a_rows, a_cols, b_rows, b_cols, dst_rows, dst_cols); \
+  ASSERT_FMT(dst_cols == b_cols, "[%dx%d] * [%dx%d] = [%dx%d]", a_rows, a_cols, b_rows, b_cols, dst_rows, dst_cols);
+
+
+#define ASSERT_MATRIX_MULT_ADD(dst_rows, dst_cols, a_rows, a_cols, b_rows, b_cols, c_rows, c_cols) \
+  ASSERT_FMT(a_cols == b_rows,   "[%dx%d] * [%dx%d] + [%dx%d] = [%dx%d]", a_rows, a_cols, b_rows, b_cols, c_rows, c_cols, dst_rows, dst_cols); \
+  ASSERT_FMT(dst_rows == a_rows, "[%dx%d] * [%dx%d] + [%dx%d] = [%dx%d]", a_rows, a_cols, b_rows, b_cols, c_rows, c_cols, dst_rows, dst_cols); \
+  ASSERT_FMT(dst_cols == b_cols, "[%dx%d] * [%dx%d] + [%dx%d] = [%dx%d]", a_rows, a_cols, b_rows, b_cols, c_rows, c_cols, dst_rows, dst_cols); \
+  ASSERT_FMT(dst_rows == c_rows, "[%dx%d] * [%dx%d] + [%dx%d] = [%dx%d]", a_rows, a_cols, b_rows, b_cols, c_rows, c_cols, dst_rows, dst_cols); \
+  ASSERT_FMT(dst_cols == c_cols, "[%dx%d] * [%dx%d] + [%dx%d] = [%dx%d]", a_rows, a_cols, b_rows, b_cols, c_rows, c_cols, dst_rows, dst_cols);
+
 void mat_print_sizes(size_t n, ...) {
   va_list args;
 
@@ -182,17 +195,6 @@ void mat_copy(NMatrix dst, NMatrix src) {
 
 void mat_free(NMatrix m) {
   free(m.elems);
-}
-
-void mat_transpose(NMatrix dst, NMatrix src) {
-  assert(dst.rows == src.cols);
-  assert(dst.cols == src.rows);
-
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
-      MAT_AT(dst, i, j) = MAT_AT(src, j, i);
-    }
-  }
 }
 
 /**
@@ -296,18 +298,7 @@ void mat_sum_row(NMatrix dst, NMatrix src) {
  * @param b      Second matrix (b.rows × b.cols) where b.rows = a.cols
  */
 void mat_mult(NMatrix dst, NMatrix a, NMatrix b) {
-  ASSERT_FMT(
-      a.cols == b.rows,
-      "[%dx%d] * [%dx%d] = [%dx%d]",
-      a.rows, a.cols, b.rows, b.cols, dst.rows, dst.cols);
-  ASSERT_FMT(
-      dst.rows == a.rows,
-      "[%dx%d] * [%dx%d] = [%dx%d]",
-      a.rows, a.cols, b.rows, b.cols, dst.rows, dst.cols);
-  ASSERT_FMT(
-      dst.cols == b.cols,
-      "[%dx%d] * [%dx%d] = [%dx%d]",
-      a.rows, a.cols, b.rows, b.cols, dst.rows, dst.cols);
+  ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.rows, a.cols, b.rows, b.cols);
 
 #if 1
   for (int i = 0; i < dst.rows; i++) {
@@ -330,7 +321,7 @@ void mat_mult(NMatrix dst, NMatrix a, NMatrix b) {
 }
 
 /**
- * Matrix multiplication with transpose: dst = A × B.T
+ * Matrix multiplication with transpose: dst = A × B^T
  * 
  * Computes A multiplied by the transpose of B where:
  *   dst[i][j] = Σ_k A[i][k] × B[j][k]
@@ -345,18 +336,7 @@ void mat_mult(NMatrix dst, NMatrix a, NMatrix b) {
  * @param b      Second matrix (b.rows × a.cols) where b.cols = a.cols
  */
 void mat_mult_transpose(NMatrix dst, NMatrix a, NMatrix b) {
-  ASSERT_FMT(
-      a.cols == b.cols,
-      "[%dx%d] * [%dx%d] = [%dx%d]",
-      a.rows, a.cols, b.cols, b.rows, dst.rows, dst.cols);
-  ASSERT_FMT(
-      dst.rows == a.rows,
-      "[%dx%d] * [%dx%d] = [%dx%d]",
-      a.rows, a.cols, b.cols, b.rows, dst.rows, dst.cols);
-  ASSERT_FMT(
-      dst.cols == b.rows,
-      "[%dx%d] * [%dx%d] = [%dx%d]",
-      a.rows, a.cols, b.cols, b.rows, dst.rows, dst.cols);
+  ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.rows, a.cols, b.cols, b.rows);
 
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
@@ -366,9 +346,9 @@ void mat_mult_transpose(NMatrix dst, NMatrix a, NMatrix b) {
 }
 
 /**
- * Matrix multiplication with transpose and addition: dst = A × B.T + C
+ * Matrix multiplication with transpose and addition: dst = A × B^T + C
  * 
- * Computes (A × B.T) + C where:
+ * Computes (A × B^T) + C where:
  *   dst[i][j] = Σ_k A[i][k] × B[j][k] + C[i][j]
  * 
  * Requirements:
@@ -383,18 +363,7 @@ void mat_mult_transpose(NMatrix dst, NMatrix a, NMatrix b) {
  * @param c      Bias matrix (a.rows × b.rows)
  */
 void mat_mult_transpose_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
-  ASSERT_FMT(
-      a.cols == b.cols,
-      "[%dx%d] * [%dx%d] = [%dx%d]",
-      a.rows, a.cols, b.cols, b.rows, dst.rows, dst.cols);
-  ASSERT_FMT(
-      dst.rows == a.rows,
-      "[%dx%d] * [%dx%d] = [%dx%d]",
-      a.rows, a.cols, b.cols, b.rows, dst.rows, dst.cols);
-  ASSERT_FMT(
-      dst.cols == b.rows,
-      "[%dx%d] * [%dx%d] = [%dx%d]",
-      a.rows, a.cols, b.cols, b.rows, dst.rows, dst.cols);
+  ASSERT_MATRIX_MULT_ADD(dst.rows, dst.cols, a.rows, a.cols, b.cols, b.rows, c.rows, c.cols);
 
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
@@ -404,7 +373,7 @@ void mat_mult_transpose_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
 }
 
 /**
- * Matrix multiplication with transpose: dst = A.T × B
+ * Matrix multiplication with transpose: dst = A^T × B
  * 
  * Computes the transpose of A multiplied by B where:
  *   dst[i][j] = Σ_k A[k][i] × B[k][j]
@@ -419,22 +388,7 @@ void mat_mult_transpose_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
  * @param b      Second matrix (a.rows × b.cols) where a.rows = b.rows
  */
 void mat_transpose_mult(NMatrix dst, NMatrix a, NMatrix b) {
-  // assert(a.rows == b.rows);
-  // assert(dst.rows == a.cols);
-  // assert(dst.cols == b.cols);
-
-  ASSERT_FMT(
-      a.rows == b.rows,
-      "[%dx%d] * [%dx%d] = [%dx%d]",
-      a.cols, a.rows, b.rows, b.cols, dst.rows, dst.cols);
-  ASSERT_FMT(
-      dst.rows == a.cols,
-      "[%dx%d] * [%dx%d] = [%dx%d]",
-      a.cols, a.rows, b.rows, b.cols, dst.rows, dst.cols);
-  ASSERT_FMT(
-      dst.cols == b.cols,
-      "[%dx%d] * [%dx%d] = [%dx%d]",
-      a.cols, a.rows, b.rows, b.cols, dst.rows, dst.cols);
+  ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.cols, a.rows, b.rows, b.cols);
 
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
@@ -444,9 +398,9 @@ void mat_transpose_mult(NMatrix dst, NMatrix a, NMatrix b) {
 }
 
 /**
- * Matrix multiplication with transpose and addition: dst = A.T × B + C
+ * Matrix multiplication with transpose and addition: dst = A^T × B + C
  * 
- * Computes (A.T × B) + C where:
+ * Computes (A^T × B) + C where:
  *   dst[i][j] = Σ_k A[k][i] × B[k][j] + C[i][j]
  * 
  * Requirements:
@@ -461,9 +415,7 @@ void mat_transpose_mult(NMatrix dst, NMatrix a, NMatrix b) {
  * @param c      Bias matrix (a.cols × b.cols)
  */
 void mat_transpose_mult_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
-  assert(a.rows == b.rows);
-  assert(dst.rows == a.cols);
-  assert(dst.cols == b.cols);
+  ASSERT_MATRIX_MULT_ADD(dst.rows, dst.cols, a.cols, a.rows, b.rows, b.cols, c.rows, c.cols);
 
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
@@ -490,32 +442,7 @@ void mat_transpose_mult_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
  * @param c      Bias matrix (a.rows × b.cols)
  */
 void mat_mult_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
-  //assert(a.cols == b.rows);
-  //assert(dst.rows == a.rows);
-  //assert(dst.cols == b.cols);
-  //assert(dst.rows == c.rows);
-  //assert(dst.cols == c.cols);
-
-  ASSERT_FMT(
-      a.cols == b.rows,
-      "[%dx%d] * [%dx%d] + [%dx%d] = [%dx%d]",
-      a.rows, a.cols, b.rows, b.cols, c.rows, c.cols, dst.rows, dst.cols);
-  ASSERT_FMT(
-      dst.rows == a.rows,
-      "[%dx%d] * [%dx%d] + [%dx%d] = [%dx%d]",
-      a.rows, a.cols, b.rows, b.cols, c.rows, c.cols, dst.rows, dst.cols);
-  ASSERT_FMT(
-      dst.cols == b.cols,
-      "[%dx%d] * [%dx%d] + [%dx%d] = [%dx%d]",
-      a.rows, a.cols, b.rows, b.cols, c.rows, c.cols, dst.rows, dst.cols);
-  ASSERT_FMT(
-      dst.rows == c.rows,
-      "[%dx%d] * [%dx%d] + [%dx%d] = [%dx%d]",
-      a.rows, a.cols, b.rows, b.cols, c.rows, c.cols, dst.rows, dst.cols);
-  ASSERT_FMT(
-      dst.cols == c.cols,
-      "[%dx%d] * [%dx%d] + [%dx%d] = [%dx%d]",
-      a.rows, a.cols, b.rows, b.cols, c.rows, c.cols, dst.rows, dst.cols);
+  ASSERT_MATRIX_MULT_ADD(dst.rows, dst.cols, a.rows, a.cols, b.rows, b.cols, c.rows, c.cols);
 
 #if 1
   for (int i = 0; i < dst.rows; i++) {
@@ -1222,7 +1149,7 @@ float backward(
   // which compensates for removing the 1/2 factor in the loss definition.
   mat_scale(dL_dh[N-1], dL_dh[N-1], 2.0f);
 
- for (int i = N-1; i >= 0; i--) {
+  for (int i = N-1; i >= 0; i--) {
     NMatrix act = i == 0 ? inputs : activations[i-1];
 
     // delta_i = forward'(h[i]) * dL[i]
@@ -1231,12 +1158,12 @@ float backward(
     // db[i] = delta_i
     mat_copy(grad->b[i], delta[i]);
 
-    // dw[i] = delta_i.T * h[i-1] (standard convention: W is stored as N×M)
-    mat_transpose_mult(grad->w[i], delta[i], act);
+    // dw[i] = h[i-1].T * delta_i (standard convention: W is stored as N×M)
+    mat_transpose_mult(grad->w[i], act, delta[i]);
 
     if (i > 0) {
       // dL[i-1] = delta_i * W^T (standard convention)
-      mat_transpose_mult(dL_dh[i-1], delta[i], nn->w[i]);
+      mat_mult_transpose(dL_dh[i-1], delta[i], nn->w[i]);
     }
   }
 
@@ -1247,7 +1174,7 @@ NMatrix* create_outputs(Neuron_Network nn) {
   NMatrix* h = malloc(sizeof(NMatrix) * nn.layers);
 
   for (int i = 0; i < nn.layers; i++) {
-    h[i] = mat_alloc(1, nn.w[i].rows);
+    h[i] = mat_alloc(1, nn.w[i].cols);
     mat_fill(h[i], 0);
   }
 
@@ -1277,7 +1204,7 @@ Neuron_Network neuron_create(Neuron_Layer* layers, size_t layers_count) {
     backward[i] = layer.backward;
 
     // NxM
-    w[i] = mat_alloc(layer.outputs, layer.inputs);
+    w[i] = mat_alloc(layer.inputs, layer.outputs);
 
     // 1xM
     b[i] = mat_alloc(1, layer.outputs);

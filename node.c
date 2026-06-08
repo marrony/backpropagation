@@ -123,10 +123,10 @@ void test_mult(void) {
   ASSERT_VEC_EQ(x->output.value, ((float[]) {2, 2}));
   ASSERT_VEC_EQ(y->output.value, ((float[]) {3, 3, 3, 3}));
 
-  // Backward: dL/du = dL * v.T, dL/dv = u.T * dL
+  // Backward: dL/du = dL * v^T, dL/dv = u^T * dL
   // u = [2,2], v = [3,3,3,3], dL = [2,2]
-  // u.grad = dL * v.T = [2,2] * [3,3,3,3].T = [2*3 + 2*3, 2*3 + 2*3] = [12, 12]
-  // v.grad = u.T * dL = [2,2].T * [2,2] = [2*2, 2*2, 2*2, 2*2] = [4,4,4,4]
+  // u.grad = dL * v^T = [2,2] * [3,3,3,3]^T = [2*3 + 2*3, 2*3 + 2*3] = [12, 12]
+  // v.grad = u^T * dL = [2,2]^T * [2,2] = [2*2, 2*2, 2*2, 2*2] = [4,4,4,4]
   ASSERT_VEC_EQ(op->output.grad, ((float[]) {2, 2}));
   ASSERT_VEC_EQ(x->output.grad, ((float[]) {12, 12}));
   ASSERT_VEC_EQ(y->output.grad, ((float[]) {4, 4, 4, 4}));
@@ -195,8 +195,8 @@ void test_linear(void) {
   Node* op = create_linear(x, 3);
   
   // Standard convention: W is 2×3 (N×M where N=input_dim, M=output_dim)
-  mat_copy(op->params[1].value, mat_init(2, 3, (float[]){1, 2, 3, 4, 5, 6}));
-  mat_copy(op->params[2].value, mat_init(1, 3, (float[]){1, 2, 3}));
+  mat_copy(op->weight.value, mat_init(2, 3, (float[]){1, 2, 3, 4, 5, 6}));
+  mat_copy(op->bias.value, mat_init(1, 3, (float[]){1, 2, 3}));
   
   node_forward(op);
   node_backward(op, dL);
@@ -213,13 +213,13 @@ void test_linear(void) {
   // y[2] = x[0]*W[0,2] + x[1]*W[1,2] + b[2] = 1*3 + 2*6 + 3 = 18
   ASSERT_VEC_EQ(op->output.value,  ((float[]) {10, 14, 18}));
   ASSERT_VEC_EQ(x->output.value,   ((float[]) {1, 2}));
-  ASSERT_VEC_EQ(op->params[1].value,  ((float[]) {1, 2, 3, 4, 5, 6}));
-  ASSERT_VEC_EQ(op->params[2].value,  ((float[]) {1, 2, 3}));
-  // Backward: dL/dW = dL^T * x, dL/db = dL, dL/dx = dL * W^T
+  ASSERT_VEC_EQ(op->weight.value,  ((float[]) {1, 2, 3, 4, 5, 6}));
+  ASSERT_VEC_EQ(op->bias.value,  ((float[]) {1, 2, 3}));
+  // Backward: dL/dW = x^T * dL, dL/db = dL, dL/dx = dL * W^T
   // dL/dx[0] = dL[0]*W[0,0] + dL[1]*W[0,1] + dL[2]*W[0,2] = 8*1 + 22*2 + 36*3 = 160
   // dL/dx[1] = dL[0]*W[1,0] + dL[1]*W[1,1] + dL[2]*W[1,2] = 8*4 + 22*5 + 36*6 = 358
-  ASSERT_VEC_EQ(op->params[1].grad,  ((float[]) {8, 22, 36, 16, 44, 72}));
-  ASSERT_VEC_EQ(op->params[2].grad,  ((float[]) {8, 22, 36}));
+  ASSERT_VEC_EQ(op->weight.grad,  ((float[]) {8, 22, 36, 16, 44, 72}));
+  ASSERT_VEC_EQ(op->bias.grad,  ((float[]) {8, 22, 36}));
   ASSERT_VEC_EQ(x->output.grad,   ((float[]) {160, 358}));
 
   destroy_node(&x);

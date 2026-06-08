@@ -198,14 +198,14 @@ int main(void) {
     for (int i = 0; i < KERN_SIZE*KERN_SIZE; i++) {
       int r = i / KERN_SIZE;
       int c = i % KERN_SIZE;
-      MAT_AT(conv[f]->params[KERN_SLOT].value, r, c) = random_normal(0, std_conv);
+      MAT_AT(conv[f]->weight.value, r, c) = random_normal(0, std_conv);
     }
   }
 
   for (int i = 0; i < DENSE_IN; i++) {
     for (int d = 0; d < DENSE_UNITS; d++) {
-      MAT_AT(linear->params[W_SLOT].value, i, d) = random_normal(0, std_dense);
-      VEC_AT(linear->params[B_SLOT].value, d) = 0;
+      MAT_AT(linear->weight.value, i, d) = random_normal(0, std_dense);
+      VEC_AT(linear->bias.value, d) = 0;
     }
   }
 
@@ -270,7 +270,7 @@ int main(void) {
 
           // draw filters
           memset(pixels_filter, 0, sizeof(pixels_filter));
-          filter_to_pixels(conv[feature]->params[W_SLOT].value, pixels_filter);
+          filter_to_pixels(conv[feature]->weight.value, pixels_filter);
           UpdateTexture(textures_filter[feature], pixels_filter);
           int offset = offset_filter + padding;
           DrawTextureEx(
