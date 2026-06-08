@@ -1034,10 +1034,7 @@ float backward_sigmoid_only(
   // dL = h[N-1] - y
   mat_sub(dL_dw[N-1], activations[N-1], targets);
 
-  float L = mat_dot(dL_dw[N-1], dL_dw[N-1]);
-
-  // dL = 2( h[N-1] - y )
-  mat_scale(dL_dw[N-1], dL_dw[N-1], 2);
+  float L = 0.5f * mat_dot(dL_dw[N-1], dL_dw[N-1]);
 
   for (int i = N-1; i >= 0; i--) {
     NMatrix act = i == 0 ? inputs : activations[i-1];
@@ -1068,14 +1065,8 @@ float backward_sigmoid_only(
 }
 
 // Backward pass: computes gradients for all layers.
-// For MSE loss L = 0.5 * (y - h)^2, the derivative is dL/dh = -(y - h),
-// and the chain rule gives the 2x factor: dL/dh = 2 * (h - y).
+// For MSE loss L = 0.5 * (y - h)^2, the derivative is dL/dh = -(y - h).
 // This function accumulates gradients into 'grad' and dL_dh.
-// IMPORTANT: The 2x scaling is included here to match standard MSE loss
-// formulation L = (y - h)^2 (without the 1/2 factor).
-// When using neuron_weighted_add with learning rate lr, the effective update
-// becomes: w = w - lr * 2 * (h - y). This is equivalent to using lr/2
-// with the standard 0.5*MSE formulation.
 float backward(
     Neuron_Network* nn,
     NMatrix* activations,
@@ -1125,7 +1116,7 @@ float backward(
   //   dh[-1]    dh[-1]   dz   dh    dh[-1]
   //
   //
-  // dL[N-1] = 2( h[N-1] - y )
+  // dL[N-1] = (h[N-1] - y)
   //
   // for (i from N-1 to 0) {
   //   delta = forward'( h[i] ) x dL[i]
@@ -1141,13 +1132,7 @@ float backward(
   // dL = h[N-1] - y
   mat_sub(dL_dh[N-1], activations[N-1], targets);
 
-  float L = mat_dot(dL_dh[N-1], dL_dh[N-1]);
-
-  // dL = 2( h[N-1] - y )
-  // Note: The 2x factor is retained to match MSE loss L = (y-h)^2 formulation.
-  // This ensures gradients are 2x larger than with L = 0.5*(y-h)^2,
-  // which compensates for removing the 1/2 factor in the loss definition.
-  mat_scale(dL_dh[N-1], dL_dh[N-1], 2.0f);
+  float L = 0.5f * mat_dot(dL_dh[N-1], dL_dh[N-1]);
 
   for (int i = N-1; i >= 0; i--) {
     NMatrix act = i == 0 ? inputs : activations[i-1];
