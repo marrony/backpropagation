@@ -202,9 +202,9 @@ int main(void) {
     }
   }
 
-  for (int d = 0; d < DENSE_UNITS; d++) {
-    for (int i = 0; i < DENSE_IN; i++) {
-      MAT_AT(linear->params[W_SLOT].value, d, i) = random_normal(0, std_dense);
+  for (int i = 0; i < DENSE_IN; i++) {
+    for (int d = 0; d < DENSE_UNITS; d++) {
+      MAT_AT(linear->params[W_SLOT].value, i, d) = random_normal(0, std_dense);
       VEC_AT(linear->params[B_SLOT].value, d) = 0;
     }
   }
@@ -234,12 +234,12 @@ int main(void) {
       float target[DENSE_UNITS] = {0};
       target[(int)MAT_AT(label, 0, 0)] = 1;
 
-      mat_copy(input_img->params[X_SLOT].value, input);
+      mat_copy(input_img->output.value, input);
       node_forward(softmax);
 
       // L = ( output - target )^2
       // dL = 2 ( output - target )
-      mat_sub(dL, softmax->params[X_SLOT].value, mat_init(1, DENSE_UNITS, target));
+      mat_sub(dL, softmax->output.value, mat_init(1, DENSE_UNITS, target));
       float L = mat_dot(dL, dL);
       mat_scale(dL, dL, 2);
 
@@ -258,7 +258,7 @@ int main(void) {
 
           // draw feature maps
           memset(pixels, 0, sizeof(pixels));
-          conv_to_pixels(conv[feature]->params[X_SLOT].value, pixels);
+          conv_to_pixels(conv[feature]->output.value, pixels);
           UpdateTexture(textures[feature], pixels);
           DrawTextureEx(
               textures[feature],
@@ -287,19 +287,19 @@ int main(void) {
             text,
             sizeof(text),
             "0=%+.2f 1=%+.2f 2=%+.2f 3=%+.2f 4=%+.2f 5=%+.2f 6=%+.2f 7=%+.2f 8=%+.2f 9=%+.2f",
-            VEC_AT(softmax->params[X_SLOT].value, 0),
-            VEC_AT(softmax->params[X_SLOT].value, 1),
-            VEC_AT(softmax->params[X_SLOT].value, 2),
-            VEC_AT(softmax->params[X_SLOT].value, 3),
-            VEC_AT(softmax->params[X_SLOT].value, 4),
-            VEC_AT(softmax->params[X_SLOT].value, 5),
-            VEC_AT(softmax->params[X_SLOT].value, 6),
-            VEC_AT(softmax->params[X_SLOT].value, 7),
-            VEC_AT(softmax->params[X_SLOT].value, 8),
-            VEC_AT(softmax->params[X_SLOT].value, 9)
+            VEC_AT(softmax->output.value, 0),
+            VEC_AT(softmax->output.value, 1),
+            VEC_AT(softmax->output.value, 2),
+            VEC_AT(softmax->output.value, 3),
+            VEC_AT(softmax->output.value, 4),
+            VEC_AT(softmax->output.value, 5),
+            VEC_AT(softmax->output.value, 6),
+            VEC_AT(softmax->output.value, 7),
+            VEC_AT(softmax->output.value, 8),
+            VEC_AT(softmax->output.value, 9)
         );
 
-        int index = mat_row_max(softmax->params[X_SLOT].value);
+        int index = mat_row_max(softmax->output.value);
 
         Color color = index == (int)MAT_AT(label, 0, 0) ? GREEN : RED;
 

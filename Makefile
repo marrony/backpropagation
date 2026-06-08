@@ -1,4 +1,5 @@
 .PHONY: all
+.DEFAULT_GOAL := all
 
 BINDIR := bin
 SOURCES := $(wildcard *.c)

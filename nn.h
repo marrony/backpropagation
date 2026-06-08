@@ -25,6 +25,7 @@ typedef struct {
   int32_t cols;
 } NMatrix;
 
+#define NULL_MATRIX (NMatrix){NULL, 0, 0}
 #define MAT_AT(m, row, col) ((m).elems[((m).cols)*(row) + (col)])
 #define VEC_AT(v, idx) MAT_AT((v), 0, (idx))
 
@@ -179,6 +180,10 @@ void mat_copy(NMatrix dst, NMatrix src) {
   }
 }
 
+void mat_free(NMatrix m) {
+  free(m.elems);
+}
+
 void mat_transpose(NMatrix dst, NMatrix src) {
   assert(dst.rows == src.cols);
   assert(dst.cols == src.rows);
@@ -190,6 +195,17 @@ void mat_transpose(NMatrix dst, NMatrix src) {
   }
 }
 
+/**
+ * Dot product of row i of matrix A and column j of matrix B.
+ * 
+ * Formula: Σ_k A[i][k] × B[k][j]
+ * 
+ * @param a      First matrix (rows × cols)
+ * @param b      Second matrix (cols × cols)
+ * @param a_row  Row index of A (0 to a.rows-1)
+ * @param b_col  Column index of B (0 to b.cols-1)
+ * @return       Dot product result as float
+ */
 float mat_dot_row_col(NMatrix a, NMatrix b, int a_row, int b_col) {
   float dot = 0;
 
@@ -200,6 +216,18 @@ float mat_dot_row_col(NMatrix a, NMatrix b, int a_row, int b_col) {
   return dot;
 }
 
+/**
+ * Dot product of column i of matrix A and column j of matrix B.
+ * 
+ * Formula: Σ_k A[k][i] × B[k][j]
+ * Used for computing (A.T × B)[i][j]
+ * 
+ * @param a      First matrix (rows × cols)
+ * @param b      Second matrix (rows × cols)
+ * @param a_col  Column index of A (0 to a.cols-1)
+ * @param b_col  Column index of B (0 to b.cols-1)
+ * @return       Dot product result as float
+ */
 float mat_dot_col_col(NMatrix a, NMatrix b, int a_col, int b_col) {
   float dot = 0;
 
@@ -210,6 +238,18 @@ float mat_dot_col_col(NMatrix a, NMatrix b, int a_col, int b_col) {
   return dot;
 }
 
+/**
+ * Dot product of row i of matrix A and row j of matrix B.
+ * 
+ * Formula: Σ_k A[i][k] × B[j][k]
+ * Used for computing (A × B.T)[i][j]
+ * 
+ * @param a      First matrix (rows × cols)
+ * @param b      Second matrix (rows × cols)
+ * @param a_row  Row index of A (0 to a.rows-1)
+ * @param b_row  Row index of B (0 to b.rows-1)
+ * @return       Dot product result as float
+ */
 float mat_dot_row_row(NMatrix a, NMatrix b, int a_row, int b_row) {
   float dot = 0;
 
@@ -220,6 +260,14 @@ float mat_dot_row_row(NMatrix a, NMatrix b, int a_row, int b_row) {
   return dot;
 }
 
+/**
+ * Compute row-wise sums of a matrix.
+ * 
+ * Formula: dst[i][0] = Σ_j src[i][j]
+ * 
+ * @param dst    Output matrix (must be [rows × 1])
+ * @param src    Input matrix (rows × cols)
+ */
 void mat_sum_row(NMatrix dst, NMatrix src) {
   assert(dst.cols == 1);
   assert(dst.rows == src.rows);
@@ -232,7 +280,21 @@ void mat_sum_row(NMatrix dst, NMatrix src) {
   }
 }
 
-// dst = A x B
+/**
+ * Matrix multiplication: dst = A × B
+ * 
+ * Computes the standard matrix product where:
+ *   dst[i][j] = Σ_k A[i][k] × B[k][j]
+ * 
+ * Requirements:
+ *   - a.cols must equal b.rows
+ *   - dst.rows must equal a.rows
+ *   - dst.cols must equal b.cols
+ * 
+ * @param dst    Output matrix (a.rows × b.cols)
+ * @param a      First matrix (a.rows × a.cols)
+ * @param b      Second matrix (b.rows × b.cols) where b.rows = a.cols
+ */
 void mat_mult(NMatrix dst, NMatrix a, NMatrix b) {
   ASSERT_FMT(
       a.cols == b.rows,
@@ -267,7 +329,21 @@ void mat_mult(NMatrix dst, NMatrix a, NMatrix b) {
 #endif
 }
 
-// dst = A x B.T
+/**
+ * Matrix multiplication with transpose: dst = A × B.T
+ * 
+ * Computes A multiplied by the transpose of B where:
+ *   dst[i][j] = Σ_k A[i][k] × B[j][k]
+ * 
+ * Requirements:
+ *   - a.cols must equal b.cols
+ *   - dst.rows must equal a.rows
+ *   - dst.cols must equal b.rows
+ * 
+ * @param dst    Output matrix (a.rows × b.rows)
+ * @param a      First matrix (a.rows × a.cols)
+ * @param b      Second matrix (b.rows × a.cols) where b.cols = a.cols
+ */
 void mat_mult_transpose(NMatrix dst, NMatrix a, NMatrix b) {
   ASSERT_FMT(
       a.cols == b.cols,
@@ -289,7 +365,23 @@ void mat_mult_transpose(NMatrix dst, NMatrix a, NMatrix b) {
   }
 }
 
-// dst = A x B.T + C
+/**
+ * Matrix multiplication with transpose and addition: dst = A × B.T + C
+ * 
+ * Computes (A × B.T) + C where:
+ *   dst[i][j] = Σ_k A[i][k] × B[j][k] + C[i][j]
+ * 
+ * Requirements:
+ *   - a.cols must equal b.cols
+ *   - dst.rows must equal a.rows
+ *   - dst.cols must equal b.rows
+ *   - c must have same dimensions as dst
+ * 
+ * @param dst    Output matrix (a.rows × b.rows)
+ * @param a      First matrix (a.rows × a.cols)
+ * @param b      Second matrix (b.rows × a.cols) where b.cols = a.cols
+ * @param c      Bias matrix (a.rows × b.rows)
+ */
 void mat_mult_transpose_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
   ASSERT_FMT(
       a.cols == b.cols,
@@ -311,7 +403,21 @@ void mat_mult_transpose_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
   }
 }
 
-// dst = A.T x B
+/**
+ * Matrix multiplication with transpose: dst = A.T × B
+ * 
+ * Computes the transpose of A multiplied by B where:
+ *   dst[i][j] = Σ_k A[k][i] × B[k][j]
+ * 
+ * Requirements:
+ *   - a.rows must equal b.rows
+ *   - dst.rows must equal a.cols
+ *   - dst.cols must equal b.cols
+ * 
+ * @param dst    Output matrix (a.cols × b.cols)
+ * @param a      First matrix (a.rows × a.cols)
+ * @param b      Second matrix (a.rows × b.cols) where a.rows = b.rows
+ */
 void mat_transpose_mult(NMatrix dst, NMatrix a, NMatrix b) {
   // assert(a.rows == b.rows);
   // assert(dst.rows == a.cols);
@@ -337,7 +443,23 @@ void mat_transpose_mult(NMatrix dst, NMatrix a, NMatrix b) {
   }
 }
 
-// dst = A.T x B + C
+/**
+ * Matrix multiplication with transpose and addition: dst = A.T × B + C
+ * 
+ * Computes (A.T × B) + C where:
+ *   dst[i][j] = Σ_k A[k][i] × B[k][j] + C[i][j]
+ * 
+ * Requirements:
+ *   - a.rows must equal b.rows
+ *   - dst.rows must equal a.cols
+ *   - dst.cols must equal b.cols
+ *   - c must have same dimensions as dst
+ * 
+ * @param dst    Output matrix (a.cols × b.cols)
+ * @param a      First matrix (a.rows × a.cols)
+ * @param b      Second matrix (a.rows × b.cols) where a.rows = b.rows
+ * @param c      Bias matrix (a.cols × b.cols)
+ */
 void mat_transpose_mult_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
   assert(a.rows == b.rows);
   assert(dst.rows == a.cols);
@@ -350,13 +472,50 @@ void mat_transpose_mult_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
   }
 }
 
-// dst = A x B + C
+/**
+ * Matrix multiplication with addition: dst = A × B + C
+ * 
+ * Computes (A × B) + C where:
+ *   dst[i][j] = Σ_k A[i][k] × B[k][j] + C[i][j]
+ * 
+ * Requirements:
+ *   - a.cols must equal b.rows
+ *   - dst.rows must equal a.rows
+ *   - dst.cols must equal b.cols
+ *   - c must have same dimensions as dst
+ * 
+ * @param dst    Output matrix (a.rows × b.cols)
+ * @param a      First matrix (a.rows × a.cols)
+ * @param b      Second matrix (b.rows × b.cols) where b.rows = a.cols
+ * @param c      Bias matrix (a.rows × b.cols)
+ */
 void mat_mult_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
-  assert(a.cols == b.rows);
-  assert(dst.rows == a.rows);
-  assert(dst.cols == b.cols);
-  assert(dst.rows == c.rows);
-  assert(dst.cols == c.cols);
+  //assert(a.cols == b.rows);
+  //assert(dst.rows == a.rows);
+  //assert(dst.cols == b.cols);
+  //assert(dst.rows == c.rows);
+  //assert(dst.cols == c.cols);
+
+  ASSERT_FMT(
+      a.cols == b.rows,
+      "[%dx%d] * [%dx%d] + [%dx%d] = [%dx%d]",
+      a.rows, a.cols, b.rows, b.cols, c.rows, c.cols, dst.rows, dst.cols);
+  ASSERT_FMT(
+      dst.rows == a.rows,
+      "[%dx%d] * [%dx%d] + [%dx%d] = [%dx%d]",
+      a.rows, a.cols, b.rows, b.cols, c.rows, c.cols, dst.rows, dst.cols);
+  ASSERT_FMT(
+      dst.cols == b.cols,
+      "[%dx%d] * [%dx%d] + [%dx%d] = [%dx%d]",
+      a.rows, a.cols, b.rows, b.cols, c.rows, c.cols, dst.rows, dst.cols);
+  ASSERT_FMT(
+      dst.rows == c.rows,
+      "[%dx%d] * [%dx%d] + [%dx%d] = [%dx%d]",
+      a.rows, a.cols, b.rows, b.cols, c.rows, c.cols, dst.rows, dst.cols);
+  ASSERT_FMT(
+      dst.cols == c.cols,
+      "[%dx%d] * [%dx%d] + [%dx%d] = [%dx%d]",
+      a.rows, a.cols, b.rows, b.cols, c.rows, c.cols, dst.rows, dst.cols);
 
 #if 1
   for (int i = 0; i < dst.rows; i++) {
@@ -379,6 +538,19 @@ void mat_mult_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
 #endif
 }
 
+/**
+ * Dot product of two row vectors.
+ * 
+ * Computes: Σ_n A[n] × B[n]
+ * 
+ * Requirements:
+ *   - Both matrices must be 1 row
+ *   - Both must have same number of columns
+ * 
+ * @param a      First vector (1 × cols)
+ * @param b      Second vector (1 × cols)
+ * @return       Dot product as float
+ */
 float mat_dot(NMatrix a, NMatrix b) {
   assert(a.rows == 1);
   assert(b.rows == 1);
@@ -391,6 +563,19 @@ float mat_dot(NMatrix a, NMatrix b) {
   return dot;
 }
 
+/**
+ * Element-wise matrix addition: dst = A + B
+ * 
+ * Computes: dst[i][j] = A[i][j] + B[i][j]
+ * 
+ * Requirements:
+ *   - A and B must have same dimensions
+ *   - dst must have same dimensions as A and B
+ * 
+ * @param dst    Output matrix
+ * @param a      First input matrix
+ * @param b      Second input matrix
+ */
 void mat_add(NMatrix dst, NMatrix a, NMatrix b) {
   assert(dst.cols == a.cols);
   assert(dst.rows == a.rows);
@@ -407,6 +592,21 @@ void mat_add(NMatrix dst, NMatrix a, NMatrix b) {
   }
 }
 
+/**
+ * Element-wise weighted addition: dst = A + k × B
+ * 
+ * Computes: dst[i][j] = A[i][j] + k × B[i][j]
+ * Used for gradient accumulation with learning rate
+ * 
+ * Requirements:
+ *   - A and B must have same dimensions
+ *   - dst must have same dimensions as A and B
+ * 
+ * @param dst    Output matrix
+ * @param a      First input matrix
+ * @param b      Second input matrix
+ * @param k      Weight/scalar multiplier for B
+ */
 void mat_weighted_add(NMatrix dst, NMatrix a, NMatrix b, float k) {
   assert(dst.cols == a.cols);
   assert(dst.rows == a.rows);
@@ -423,6 +623,19 @@ void mat_weighted_add(NMatrix dst, NMatrix a, NMatrix b, float k) {
   }
 }
 
+/**
+ * Element-wise matrix subtraction: dst = A - B
+ * 
+ * Computes: dst[i][j] = A[i][j] - B[i][j]
+ * 
+ * Requirements:
+ *   - A and B must have same dimensions
+ *   - dst must have same dimensions as A and B
+ * 
+ * @param dst    Output matrix
+ * @param a      First input matrix
+ * @param b      Second input matrix
+ */
 void mat_sub(NMatrix dst, NMatrix a, NMatrix b) {
   assert(dst.cols == a.cols);
   assert(dst.rows == a.rows);
@@ -436,6 +649,19 @@ void mat_sub(NMatrix dst, NMatrix a, NMatrix b) {
   }
 }
 
+/**
+ * Element-wise matrix multiplication: dst = A ⊙ B (Hadamard product)
+ * 
+ * Computes: dst[i][j] = A[i][j] × B[i][j]
+ * 
+ * Requirements:
+ *   - A and B must have same dimensions
+ *   - dst must have same dimensions as A and B
+ * 
+ * @param dst    Output matrix
+ * @param a      First input matrix
+ * @param b      Second input matrix
+ */
 void mat_memberwise_mult(NMatrix dst, NMatrix a, NMatrix b) {
   assert(dst.cols == a.cols);
   assert(dst.rows == a.rows);
@@ -449,6 +675,20 @@ void mat_memberwise_mult(NMatrix dst, NMatrix a, NMatrix b) {
   }
 }
 
+/**
+ * Element-wise matrix division: dst = A ⊘ B
+ * 
+ * Computes: dst[i][j] = A[i][j] / B[i][j]
+ * 
+ * Requirements:
+ *   - A and B must have same dimensions
+ *   - dst must have same dimensions as A and B
+ *   - B should not contain zeros (division by zero)
+ * 
+ * @param dst    Output matrix
+ * @param a      First input matrix (numerator)
+ * @param b      Second input matrix (denominator)
+ */
 void mat_memberwise_div(NMatrix dst, NMatrix a, NMatrix b) {
   assert(dst.cols == a.cols);
   assert(dst.rows == a.rows);
@@ -462,6 +702,17 @@ void mat_memberwise_div(NMatrix dst, NMatrix a, NMatrix b) {
   }
 }
 
+/**
+ * Element-wise square: dst = A²
+ * 
+ * Computes: dst[i][j] = A[i][j]²
+ * 
+ * Requirements:
+ *   - dst must have same dimensions as src
+ * 
+ * @param dst    Output matrix
+ * @param src    Input matrix
+ */
 void mat_square(NMatrix dst, NMatrix src) {
   assert(dst.cols == src.cols);
   assert(dst.rows == src.rows);
@@ -473,6 +724,18 @@ void mat_square(NMatrix dst, NMatrix src) {
   }
 }
 
+/**
+ * Element-wise scalar multiplication: dst = k × A
+ * 
+ * Computes: dst[i][j] = k × A[i][j]
+ * 
+ * Requirements:
+ *   - dst must have same dimensions as src
+ * 
+ * @param dst    Output matrix
+ * @param src    Input matrix
+ * @param k      Scalar multiplier
+ */
 void mat_scale(NMatrix dst, NMatrix src, float k) {
   assert(dst.cols == src.cols);
   assert(dst.rows == src.rows);
@@ -484,6 +747,20 @@ void mat_scale(NMatrix dst, NMatrix src, float k) {
   }
 }
 
+/**
+ * Extract a row slice from a matrix.
+ * 
+ * Creates a view (not a copy) of a contiguous row segment.
+ * 
+ * Requirements:
+ *   - Matrix must have exactly 1 row
+ *   - start + size must not exceed matrix columns
+ * 
+ * @param m       Source matrix (must be 1 × cols)
+ * @param start   Starting column index
+ * @param size    Number of columns to extract
+ * @return        View of [start, start+size) as 1 × size matrix
+ */
 NMatrix mat_row_slice(NMatrix m, int start, int size) {
   assert(m.rows == 1);
   assert(start+size <= m.cols);
@@ -495,6 +772,16 @@ NMatrix mat_row_slice(NMatrix m, int start, int size) {
   };
 }
 
+/**
+ * Extract a slice of rows from a matrix.
+ * 
+ * Creates a view (not a copy) of a contiguous row segment.
+ * 
+ * @param m       Source matrix
+ * @param start   Starting row index
+ * @param size    Number of rows to extract
+ * @return        View of [start, start+size) as size × m.cols matrix
+ */
 NMatrix mat_slice(NMatrix m, int start, int size) {
   return (NMatrix) {
     .elems = &(MAT_AT(m, start, 0)),
@@ -503,10 +790,31 @@ NMatrix mat_slice(NMatrix m, int start, int size) {
   };
 }
 
+/**
+ * Extract a single row as a 1×N matrix.
+ * 
+ * Creates a view of the specified row.
+ * 
+ * @param m       Source matrix
+ * @param row     Row index to extract (0 to m.rows-1)
+ * @return        View as 1 × m.cols matrix
+ */
 NMatrix mat_row(NMatrix m, int row) {
   return mat_slice(m, row, 1);
 }
 
+/**
+ * Find the index of the maximum value in a row.
+ * 
+ * Returns the column index of the largest element.
+ * 
+ * Requirements:
+ *   - Matrix must have exactly 1 row
+ *   - Matrix must have at least 1 column
+ * 
+ * @param row     Input row vector (1 × cols)
+ * @return        Index of maximum value (0 to cols-1)
+ */
 int mat_row_max(NMatrix row) {
   assert(row.rows == 1);
   assert(row.cols >= 1);
@@ -526,6 +834,18 @@ int mat_row_max(NMatrix row) {
   return max_index;
 }
 
+/**
+ * Set matrix to identity matrix.
+ * 
+ * Creates an identity matrix I where:
+ *   - I[i][i] = 1 for all i
+ *   - I[i][j] = 0 for i ≠ j
+ * 
+ * Requirements:
+ *   - Matrix must be square (rows == cols)
+ * 
+ * @param m       Input/output square matrix
+ */
 void mat_ident(NMatrix m) {
   assert(m.rows == m.cols);
 
@@ -536,6 +856,14 @@ void mat_ident(NMatrix m) {
   }
 }
 
+/**
+ * Fill matrix with random values in [-1, 1].
+ * 
+ * Each element is sampled uniformly from [-1, 1].
+ * Uses rand() - requires srand() to be called first for reproducibility.
+ * 
+ * @param m       Input/output matrix to fill with random values
+ */
 void mat_rand(NMatrix m) {
   for (int i = 0; i < m.rows; i++) {
     for (int j = 0; j < m.cols; j++) {
@@ -736,17 +1064,17 @@ void dlinear(NMatrix dst, NMatrix h, NMatrix dL_dh) {
   }
 }
 
-// Forward pass through the network.
+// Forward pass through the network (standard convention: h = x × W + b).
 // IMPORTANT: The 'h' array is reused as both input and output buffer for each layer.
 // For layer i: h[i] receives input from h[i-1] (or 'input' for layer 0).
-// The same h[i] buffer is first used to compute z = x*W.T + b, then activated.
+// The same h[i] buffer is first used to compute z = x*W + b, then activated.
 // This is an in-place operation pattern: h[i] = activation(h[i-1] * w[i] + b[i])
 NMatrix forward(Neuron_Network* nn, NMatrix* h, NMatrix input) {
   for (int i = 0; i < nn->layers; i++) {
     NMatrix in = i == 0 ? input : h[i-1];
     
-    // f = x*W.T + b (compute pre-activation in h[i])
-    mat_mult_transpose_add(h[i], in, nn->w[i], nn->b[i]);
+    // f = x*W + b (compute pre-activation in h[i]) - standard convention
+    mat_mult_add(h[i], in, nn->w[i], nn->b[i]);
 
     // Apply activation function (in-place: h[i] = activation(h[i]))
     nn->forward[i](h[i], h[i]);
@@ -894,7 +1222,7 @@ float backward(
   // which compensates for removing the 1/2 factor in the loss definition.
   mat_scale(dL_dh[N-1], dL_dh[N-1], 2.0f);
 
-  for (int i = N-1; i >= 0; i--) {
+ for (int i = N-1; i >= 0; i--) {
     NMatrix act = i == 0 ? inputs : activations[i-1];
 
     // delta_i = forward'(h[i]) * dL[i]
@@ -903,12 +1231,12 @@ float backward(
     // db[i] = delta_i
     mat_copy(grad->b[i], delta[i]);
 
-    // dw[i] = delta_i.T * h[i-1]
+    // dw[i] = delta_i.T * h[i-1] (standard convention: W is stored as N×M)
     mat_transpose_mult(grad->w[i], delta[i], act);
 
     if (i > 0) {
-      // dL[i-1] = delta_i * w[i]
-      mat_mult(dL_dh[i-1], delta[i], nn->w[i]);
+      // dL[i-1] = delta_i * W^T (standard convention)
+      mat_transpose_mult(dL_dh[i-1], delta[i], nn->w[i]);
     }
   }
 

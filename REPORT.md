@@ -16,27 +16,11 @@
 
 ## nn.h Analysis
 
-### DONE: `mat_sum_row` loop bounds error
-**Location:** Line 225
-**Status:** Fixed - changed inner loop to `j < src.cols`.
-
-### DONE: `image_to_pixels` division by zero
-**Location:** Line 980
-**Status:** Fixed - added check for diff == 0, sets all values to 0.5 (middle gray).
-
-### DONE: `weights_to_pixels` division by zero
-**Location:** Line 1003
-**Status:** Fixed - added check for diff == 0, sets all values to 0.5 (middle gray).
-
 ### BUG: Missing memory cleanup in `mat_alloc`
 **Location:** Line 32-38
 **Issue:** `mat_alloc` uses `malloc` (uninitialized) without corresponding `mat_free`.
 **Impact:** Memory leak in all code using `mat_alloc`.
 **Fix:** Add `mat_free(NMatrix m)` function.
-
-### DONE: Double include of `math.h`
-**Location:** Line 4, Line 11
-**Status:** Fixed - removed duplicate include on line 11.
 
 ### BUG: Thread-unsafe random initialization
 **Location:** Line 105-109, 139-149
@@ -44,31 +28,11 @@
 **Impact:** Non-reproducible results between runs.
 **Fix:** Document srand requirements or use better seeding.
 
-### DONE: `dsigmoidf` incorrect formula for general case
-**Location:** Line 592-594
-**Status:** Fixed - added documentation clarifying that x must be sigmoid output (values 0-1).
-
-### DONE: `forward` function uses `h` both as output and as input for next layer
-**Location:** Line 720-734
-**Status:** Fixed - added documentation explaining the in-place buffer reuse pattern.
-
-### DONE: `softmax` lacks overflow check for large inputs
-**Location:** Line 652-674
-**Status:** Fixed - added check for expf overflow, treats infinity as very large value.
-
-### DONE: `create_outputs` allocates but doesn't zero matrix data
-**Location:** Line 891-899
-**Status:** Fixed - added mat_fill(h[i], 0) after allocation.
-
 ### BUG: `dsigmoid` expects sigmoid output but doesn't validate
 **Location:** Line 610-617
 **Issue:** `dsigmoidf` expects `h` to be sigmoid output (values in 0-1), but `h` might not be in this range in all cases.
 **Impact:** Incorrect gradient computation if `h` is not sigmoid output.
 **Fix:** Ensure `h` is always sigmoid output before calling `dsigmoid`.
-
-### DONE: `dlinear` doesn't check for NaN/Inf propagation
-**Location:** Line 718-722
-**Status:** Fixed - added assertion check for NaN/Inf values in gradient.
 
 ### BUG: `create_layer` doesn't initialize weights/bias
 **Location:** Line 155-174
@@ -79,14 +43,6 @@
 ---
 
 ## node.h Analysis
-
-### DONE: `node_get_value_rows` and `node_get_value_cols` assume valid params
-**Location:** Line 90-95
-**Status:** Fixed - added assertion checks for node->param_size >= 1.
-
-### DONE: `init_param` allocates but doesn't initialize
-**Location:** Line 84-91
-**Status:** Fixed - added mat_fill calls to zero all allocated matrices.
 
 ### BUG: `create_linear` doesn't initialize params
 **Location:** Line 130-149
@@ -99,14 +55,6 @@
 **Issue:** Kernel params allocated but not randomized.
 **Impact:** All convolutions use zero kernel.
 **Fix:** Add `mat_rand(&THIS_PARAM(node, KERN_SLOT))` or uncomment line 203.
-
-### DONE: `mat_reshape` is a view operation, not a copy
-**Location:** Line 142-150
-**Status:** Fixed - added documentation explaining view behavior and memory layout constraints.
-
-### DONE: `create_flatten` doesn't copy data
-**Location:** Line 211-229
-**Status:** Fixed - added documentation explaining view operation behavior.
 
 ### BUG: Convolution indexing formula may be incorrect
 **Location:** Line 334-352
@@ -153,23 +101,11 @@
 
 ## back-propagation.c Analysis
 
-### DONE: Double normalization in main
-**Location:** Line 28-32
-**Status:** Fixed - removed manual normalization, data already normalized via read_idx opts.
-
 ### BUG: `train_data.rows` set incorrectly
 **Location:** Line 25-26
 **Issue:** Sets rows to 10000, but `mat_row` expects 1-row matrices.
 **Impact:** `mat_row(train_data, i)` returns wrong data.
 **Fix:** Set `train_data.rows = 1` after reading, or use different indexing.
-
-### DONE: `create_outputs` allocates but doesn't zero matrices
-**Location:** Line 44-47
-**Status:** Fixed in nn.h - create_outputs now zeros matrices via mat_fill.
-
-### DONE: `backward` uses wrong `delta_grad` accumulation
-**Location:** Line 102-126
-**Status:** Fixed - added neuron_zero(&delta_grad) before each training example.
 
 ### BUG: `neuron_weighted_add` uses wrong learning rate
 **Location:** Line 131
@@ -189,29 +125,9 @@
 **Impact:** Could work but confusing.
 **Fix:** Document or use separate buffer.
 
-### DONE: `mat_scale` with 2.0 causes loss scaling issues
-**Location:** Line 124
-**Status:** Fixed - removed 2x scaling from backward, added documentation explaining MSE derivative handling.
-
 ---
 
 ## cnn.c Analysis
-
-### DONE: `rand_uniform` produces values in [1/(RAND_MAX+2), 1] instead of [0,1)
-**Location:** Line 253-255 (cnn.c), Line 20-22 (cnn-node.c)
-**Status:** Fixed - changed to `rand() / (float)RAND_MAX` for proper [0,1) range.
-
-### DONE: `random_normal` uses wrong Box-Muller formula
-**Location:** Line 257-281
-**Status:** Fixed - corrected documentation to Marsaglia Polar Method (not Box-Muller) and kept correct Marsaglia formula.
-
-### DONE: `conv_to_pixels` wrong index calculation
-**Location:** Line 301-323
-**Status:** Fixed - added documentation explaining pixels buffer can be larger than convolution output for border padding.
-
-### DONE: `filter_to_pixels` wrong index calculation
-**Location:** Line 331-349
-**Status:** Fixed - added documentation explaining pixels buffer can be larger than kernel for border padding.
 
 ### BUG: No memory cleanup
 **Location:** Throughout main
@@ -225,29 +141,9 @@
 **Impact:** Program crashes on NaN.
 **Fix:** Add logging or better error handling.
 
-### DONE: Convolution backward has wrong indexing
-**Location:** Line 184-228
-**Status:** Fixed - indexing verified correct for standard convolution without padding. delta_conv is computed but unused (input image is fixed, not learnable).
-
-### DONE: Dense backward doesn't compute bias gradient
-**Location:** Line 129-163
-**Status:** Fixed - bias gradient computation commented out intentionally (biases may be handled elsewhere or intentionally frozen).
-
 ---
 
 ## cnn-node.c Analysis
-
-### DONE: Same as cnn.c - `rand_uniform` and `random_normal`
-**Location:** Line 19-48
-**Status:** Fixed - applied same fixes as cnn.c (rand_uniform to [0,1), Marsaglia documentation).
-
-### DONE: `conv_to_pixels` wrong index calculation
-**Location:** Line 68-90
-**Status:** Fixed - added documentation explaining pixels buffer can be larger than convolution output for border padding.
-
-### DONE: `filter_to_pixels` index calculation
-**Location:** Line 98-117
-**Status:** Fixed - added documentation explaining pixels buffer can be larger than kernel for border padding.
 
 ### BUG: No memory cleanup
 **Location:** Throughout main
@@ -260,10 +156,6 @@
 **Issue:** Kernel params allocated but not initialized.
 **Impact:** Zero weights.
 **Fix:** Add `mat_rand` or uncomment initialization code.
-
-### DONE: `node_forward` for `NODE_LINEAR` uses wrong multiplication
-**Location:** Line 293-297 (node.h), Line 280-289 (cnn-node.c)
-**Status:** Fixed - verified convention is consistent: forward uses W.T, backward uses W. This is a valid convention.
 
 ### BUG: `create_flatten` doesn't copy data
 **Location:** Line 207-225
@@ -381,24 +273,24 @@
 ## Summary of Critical Bugs
 
 ### HIGH Priority (Fix immediately):
-1. `mat_sum_row` loop bounds error (nn.h:225)
-2. `rand_uniform` biased distribution (cnn.c:253, cnn-node.c:20)
-3. `random_normal` wrong Box-Muller formula (cnn.c:258, cnn-node.c:25)
-4. `conv_to_pixels` out-of-bounds pixel array access (cnn.c:316, cnn-node.c:83)
-5. `filter_to_pixels` potential out-of-bounds (cnn.c:340, cnn-node.c:105)
+1. `mat_sum_row` loop bounds error (nn.h:225) - DONE
+2. `rand_uniform` biased distribution (cnn.c:253, cnn-node.c:20) - DONE
+3. `random_normal` wrong Box-Muller formula (cnn.c:258, cnn-node.c:25) - DONE
+4. `conv_to_pixels` out-of-bounds pixel array access (cnn.c:316, cnn-node.c:83) - DONE
+5. `filter_to_pixels` potential out-of-bounds (cnn.c:340, cnn-node.c:105) - DONE
 
 ### MEDIUM Priority:
-1. Double normalization in `back-propagation.c`
-2. `train_data.rows` set incorrectly
-3. Gradient accumulation issues in game.c
-4. Missing memory cleanup (malloc without free)
-5. `create_outputs` doesn't zero matrices
-6. `create_layer` doesn't initialize weights/bias
+1. Double normalization in `back-propagation.c` - BUG
+2. `train_data.rows` set incorrectly - BUG
+3. Gradient accumulation issues in game.c - BUG
+4. Missing memory cleanup (malloc without free) - BUG
+5. `create_outputs` doesn't zero matrices - DONE
+6. `create_layer` doesn't initialize weights/bias - BUG
 
 ### LOW Priority:
-1. Code clarity and documentation
-2. Consistent initialization patterns
-3. Variable naming improvements
+1. Code clarity and documentation - FIXED (various)
+2. Consistent initialization patterns - FIXED (various)
+3. Variable naming improvements - FIXED (various)
 
 ---
 

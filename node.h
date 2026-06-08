@@ -57,26 +57,54 @@ typedef struct {
 } Param;
 
 typedef struct Node Node;
+/*
+ * Node Structure - Computation Graph Node for Automatic Differentiation
+ *
+ * Fields:
+ *   type           - Node type (NODE_LINEAR, NODE_SIGMOID, NODE_ADD, etc.)
+ *   input[]        - Input nodes (up to MAX_INPUTS = 16)
+ *   input_size     - Number of input nodes
+ *   params[]       - Parameter storage (up to MAX_PARAMS = 3)
+ *   param_size     - Number of parameters
+ *
+ * Parameter Access - Use THIS_PARAM(node, slot) macro:
+ *   node->output              - Output value/gradient
+ *   THIS_PARAM(node, U_SLOT)  - First input for binary ops (slot 0)
+ *   THIS_PARAM(node, V_SLOT)  - Second input for binary ops (slot 1)
+ *   THIS_PARAM(node, W_SLOT)  - Weights matrix (slot 1)
+ *   THIS_PARAM(node, B_SLOT)  - Bias vector (slot 2)
+ *   THIS_PARAM(node, KERN_SLOT) - Convolution kernel (slot 1)
+ *
+ * Each Param has:
+ *   .value  - Current parameter value (weights, biases)
+ *   .grad   - Gradient (dL/dparam) computed by backward pass
+ *   .g_grad - Gradient of gradient (for second-order methods)
+ *
+ * Forward pass:  node_forward(node)  -> output stored in node->output.value
+ * Backward pass: node_backward(node, dL)  -> gradients stored in node->output.grad
+ */
 struct Node {
   Node_Type type;
   Node* input[MAX_INPUTS];
   int input_size;
+  Param output;
   Param params[MAX_PARAMS];
   int param_size;
 };
 
-#define X_SLOT 0
-#define U_SLOT 0
-#define V_SLOT 1
-#define W_SLOT 1
-#define B_SLOT 2
-#define KERN_SLOT 1
+/* Parameter slot constants - use with THIS_PARAM(node, slot) */
+#define X_SLOT 0    /* Input value/gradient or first binary input */
+#define U_SLOT 0    /* First binary input (for binary ops) */
+#define V_SLOT 1    /* Second binary input (for binary ops) */
+#define W_SLOT 1    /* Weights matrix */
+#define B_SLOT 2    /* Bias vector */
+#define KERN_SLOT 1 /* Convolution kernel */
 
-#define NULL_MATRIX (NMatrix) {0}
+#define NULL_MATRIX (NMatrix){NULL, 0, 0}
 #define NULL_PARAM (Param) {0}
 
 #define THIS_PARAM(node, slot) ((node)->params[(slot)])
-#define IN_PARAM(node, slot) ((node)->input[(slot)] ? (node)->input[(slot)]->params[0] : NULL_PARAM)
+#define IN_PARAM(node, slot) ((node)->input[(slot)] ? (node)->input[(slot)]->output : NULL_PARAM)
 
 #define FORWARD(slot) node_forward(node->input[(slot)])
 #define BACKWARD(slot, dL) node_backward(node->input[(slot)], (dL))
@@ -92,12 +120,12 @@ void init_param(Param* param, int rows, int cols) {
 
 int node_get_value_rows(Node* node) {
   assert(node->param_size >= 1);
-  return THIS_PARAM(node, X_SLOT).value.rows;
+  return node->output.value.rows;
 }
 
 int node_get_value_cols(Node* node) {
   assert(node->param_size >= 1);
-  return THIS_PARAM(node, X_SLOT).value.cols;
+  return node->output.value.cols;
 }
 
 void destroy_node(Node** node) {
@@ -116,7 +144,7 @@ Node* create_constant(int rows, int cols) {
   node->type = NODE_CONSTANT;
   node->input_size = 0;
   node->param_size = 1;
-  init_param(&THIS_PARAM(node, X_SLOT), rows, cols);
+  init_param(&node->output, rows, cols);
   
   return node;
 }
@@ -126,7 +154,7 @@ Node* create_variable(int rows, int cols) {
   node->type = NODE_VARIABLE;
   node->input_size = 0;
   node->param_size = 1;
-  init_param(&THIS_PARAM(node, X_SLOT), rows, cols);
+  init_param(&node->output, rows, cols);
 
   return node;
 }
@@ -142,8 +170,12 @@ Node* create_linear(Node* input, int out_size) {
   int in_size = rows * cols;
 
   node->param_size = 3;
-  init_param(&THIS_PARAM(node, X_SLOT), 1, out_size);
-  init_param(&THIS_PARAM(node, W_SLOT), out_size, in_size);
+  // node->output.value holds f(x) = x*W + b
+  // node->output.grad holds dL/d(output)
+  init_param(&node->output, 1, out_size);
+  // Standard convention: W is (input_dim × output_dim) = (in_size × out_size)
+  // Forward: output = input × W + b, where input is (1×in_size), W is (in_size×out_size), output is (1×out_size)
+  init_param(&THIS_PARAM(node, W_SLOT), in_size, out_size);
   init_param(&THIS_PARAM(node, B_SLOT), 1, out_size);
 
   // mat_rand(THIS_PARAM(W_SLOT));
@@ -158,7 +190,7 @@ Node* create_unary(Node_Type type, Node* input, int rows, int cols) {
   node->input[0] = input;
   node->input_size = 1;
   node->param_size = 1;
-  init_param(&THIS_PARAM(node, X_SLOT), rows, cols);
+  init_param(&node->output, rows, cols);
   return node;
 }
 
@@ -169,7 +201,7 @@ Node* create_binary(Node_Type type, Node* input0, Node* input1, int rows, int co
   node->input[1] = input1;
   node->input_size = 2;
   node->param_size = 2;
-  init_param(&THIS_PARAM(node, X_SLOT), rows, cols);
+  init_param(&node->output, rows, cols);
   return node;
 }
 
@@ -200,7 +232,7 @@ Node* create_conv2d(Node* input, int img_size, int kern_size) {
   int conv_size = (img_size - kern_size + 1);
 
   node->param_size = 2;
-  init_param(&THIS_PARAM(node, X_SLOT), conv_size, conv_size);
+  init_param(&node->output, conv_size, conv_size);
   init_param(&THIS_PARAM(node, KERN_SLOT), kern_size, kern_size);
 
   // mat_rand(THIS_PARAM(KERN_SLOT));
@@ -227,7 +259,7 @@ Node* create_flatten(Node** inputs, int in_size) {
   }
 
   node->param_size = 1;
-  init_param(&THIS_PARAM(node, X_SLOT), 1, size);
+  init_param(&node->output, 1, size);
 
   return node;
 }
@@ -276,7 +308,7 @@ Node* create_sub(Node* input0, Node* input1) {
 }
 
 void node_forward(Node* node) {
-  Param fx   = THIS_PARAM(node, X_SLOT);
+  Param fx   = node->output;
   Param w    = THIS_PARAM(node, W_SLOT);
   Param b    = THIS_PARAM(node, B_SLOT);
   Param kern = THIS_PARAM(node, KERN_SLOT);
@@ -291,9 +323,15 @@ void node_forward(Node* node) {
       break;
 
     case NODE_LINEAR:
-      // f(x) = x*W.T + b
+      // f(x) = x*W + b (standard convention)
+      // X_SLOT holds input (and its gradient), so we need a separate output buffer
+      // Output size is determined by W's column count
+      // Store output in linear_output, not in fx.value
+      // Allocate with explicit dimensions to ensure correct sizing
       FORWARD(X_SLOT);
-      mat_mult_transpose_add(fx.value, x.value, w.value, b.value);
+      // mat_mult_add expects dst.cols == b.cols
+      // linear_output.cols = w.value.cols, so this should work
+      mat_mult_add(fx.value, x.value, w.value, b.value);
       break;
 
     case NODE_SIGMOID:
@@ -330,7 +368,7 @@ void node_forward(Node* node) {
             cols
         );
 
-        mat_copy(dst, THIS_PARAM(input, X_SLOT).value);
+        mat_copy(dst, input->output.value);
       }
       break;
 
@@ -425,7 +463,7 @@ void node_forward(Node* node) {
 }
 
 void node_backward(Node* node, NMatrix dL) {
-  Param fx   = THIS_PARAM(node, X_SLOT);
+  Param fx   = node->output;
   Param w    = THIS_PARAM(node, W_SLOT);
   Param b    = THIS_PARAM(node, B_SLOT);
   Param kern = THIS_PARAM(node, KERN_SLOT);
@@ -466,27 +504,50 @@ void node_backward(Node* node, NMatrix dL) {
       // mat_copy(dL_dx, dL);
       break;
 
-    case NODE_LINEAR:
+   case NODE_LINEAR:
       // upstream:
-      //   dL/d(x*W.T + b) = dL
+      //   dL/d(x*W + b) = dL
       //
       // local:
-      //   d(x*W.T + b)/dw = x
-      //   d(x*W.T + b)/db = I
-      //   d(x*W.T + b)/dx = W
+      //   d(x*W + b)/dw = x
+      //   d(x*W + b)/db = I
+      //   d(x*W + b)/dx = W.T
       //
-      // downstream:
-      //   dL/dw = dL * d(x*W.T + b)/dw = dL.T*x
-      //   dL/db = dL * d(x*W.T + b)/db = I*dL
-      //   dL/dx = dL * d(x*W.T + b)/dx = dL*W
-      mat_copy(fx.grad, dL);
+      // downstream (standard convention: W is N×M, x is 1×N, h is 1×M):
+      //   dL/dw = dL^T * x  (grad_W shape: M×N)
+      //   dL/db = dL        (grad_b shape: 1×M)
+      //   dL/dx = dL * W^T  (grad_x shape: 1×N)
+      // Initialize gradients to zero
+      for (int i = 0; i < w.grad.rows; i++) {
+        for (int j = 0; j < w.grad.cols; j++) {
+          MAT_AT(w.grad, i, j) = 0;
+        }
+      }
+      for (int i = 0; i < b.grad.rows; i++) {
+        for (int j = 0; j < b.grad.cols; j++) {
+          MAT_AT(b.grad, i, j) = 0;
+        }
+      }
+      for (int i = 0; i < x.grad.rows; i++) {
+        for (int j = 0; j < x.grad.cols; j++) {
+          MAT_AT(x.grad, i, j) = 0;
+        }
+      }
 
-      // dL_dw = dL.T * x
-      mat_transpose_mult(w.grad, dL, x.value);
+      // dL/dW[i,j] = dL[j] * x[i] (outer product)
+      // x^T is (2×1), dL is (1×3), result is (2×3) = W's shape
+      // Use mat_transpose_mult: w.grad = x^T × dL
+      // x (1×2), dL (1×3) -> x^T (2×1) × dL (1×3) = (2×3) ✓
+      mat_transpose_mult(w.grad, x.value, dL);
       // dL_db = I * dL
       mat_copy(b.grad, dL);
-      // dL_dx = dL * W
-      mat_mult(x.grad, dL, w.value);
+      // dL_dx = dL * W^T (standard: W is N×M, x is 1×N, dL is 1×M)
+      // Use mat_mult_transpose: x.grad = dL × W^T
+      // dL (1×M), W (N×M), W^T (M×N), result (1×N)
+      mat_mult_transpose(x.grad, dL, w.value);
+
+      // Set output gradient to upstream gradient (like sigmoid, relu, softmax)
+      mat_copy(fx.grad, dL);
 
       BACKWARD(X_SLOT, x.grad);
       break;
