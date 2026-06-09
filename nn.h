@@ -747,7 +747,7 @@ int mat_row_max(NMatrix row) {
   assert(row.cols >= 1);
 
   int max_index = 0;
-  float max_value = MAT_AT(row, 0, 0);
+  float max_value = VEC_AT(row, 0);
 
   for (int i = 1; i < row.cols; i++) {
     float v = VEC_AT(row, i);

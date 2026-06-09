@@ -12,7 +12,8 @@ CFLAGS=-std=c99 -Werror -Wall -Wextra -Wno-initializer-overrides -pedantic \
     -I ./raylib-5 \
     -fsanitize=signed-integer-overflow \
     -fsanitize=unsigned-integer-overflow \
-    -fsanitize=address -fassociative-math
+    -fsanitize=address -fassociative-math \
+    -O3
 
 LDFLAGS=-L ./raylib-5 -lraylib -framework Foundation \
     -framework CoreServices -framework CoreGraphics \

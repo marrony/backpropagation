@@ -43,18 +43,20 @@ typedef enum {
   DIR_MAX,
 } Snake_Direction;
 
+#define INPUT_PARAMETERS 9
+#define OUTPUT_PARAMETERS 3
+// 9 parameters: 3 danger + 4 dir + 2 distance
 typedef struct {
-  bool danger_straight;
-  bool danger_right;
-  bool danger_left;
-  bool dir_l;
-  bool dir_r;
-  bool dir_u;
-  bool dir_d;
-  bool food_l;
-  bool food_r;
-  bool food_u;
-  bool food_d;
+  uint32_t danger_straight : 1; // is dangerous go straight?
+  uint32_t danger_right : 1;    // is dangerous turn right?
+  uint32_t danger_left : 1;     // is dangerous turn left?
+  uint32_t dir_l : 1;   // is snake going to left
+  uint32_t dir_r : 1;   // is snake going to right
+  uint32_t dir_u : 1;   // is snake going up
+  uint32_t dir_d : 1;   // is snake going down
+  uint32_t padding : 1; // ignored
+  int32_t food_dist_x : 12;  // distance of the snake head to fruit in x-dir
+  int32_t food_dist_y : 12;  // distance of the snake head to fruit in y-dir
 } State;
 
 typedef struct {
@@ -63,10 +65,12 @@ typedef struct {
 } Game_Step;
 
 Neuron_Network nn_online;
-Neuron_Network nn_freeze;
+Neuron_Network nn_target;
 Neuron_Network grad;
 Neuron_Network delta_grad;
-NMatrix* activations_online;
+// activations_* are used on forward() to hold activations
+// do not confuse with neural network weights
+NMatrix* activations_model_step;
 NMatrix* activations_freeze;
 NMatrix* errors;
 NMatrix* deltas;
@@ -74,60 +78,66 @@ NMatrix input_old;
 NMatrix input_new;
 NMatrix target;
 
-#define LEARNING_RATE 0.1f
+#define LEARNING_RATE 0.05f
 #define REWARD 2.0f
+#define Q_VALUE_OFFSET 0.5f  // Small offset to encourage positive initial Q-values
 
 void model_start(void) {
   Neuron_Layer layers[] = {
-    create_layer(.inputs = 11, .outputs = 20, .forward = sigmoid, .backward = dsigmoid),
+    create_layer(.inputs = INPUT_PARAMETERS, .outputs = 20, .forward = sigmoid, .backward = dsigmoid),
     create_layer(.inputs = 20, .outputs = 20, .forward = sigmoid, .backward = dsigmoid),
-    create_layer(.inputs = 20, .outputs = 3, .forward = softmax, .backward = dsoftmax),
+    create_layer(.inputs = 20, .outputs = OUTPUT_PARAMETERS, .forward = linear, .backward = dlinear),  // Linear for Q-values
   };
 
   nn_online = neuron_create(layers, ARRAY_LEN(layers));
-  nn_freeze = neuron_create(layers, ARRAY_LEN(layers));
+  nn_target = neuron_create(layers, ARRAY_LEN(layers));
   grad = neuron_clone(nn_online);
   delta_grad = neuron_clone(nn_online);
-  activations_online = create_outputs(nn_online);
+  activations_model_step = create_outputs(nn_online);
   activations_freeze = create_outputs(nn_online);
   errors = create_outputs(nn_online);
   deltas = create_outputs(nn_online);
-  input_old = mat_alloc(1, 11);
-  input_new = mat_alloc(1, 11);
-  target = mat_alloc(1, 3);
+  input_old = mat_alloc(1, INPUT_PARAMETERS);
+  input_new = mat_alloc(1, INPUT_PARAMETERS);
+  target = mat_alloc(1, OUTPUT_PARAMETERS);
 }
 
-NMatrix model_predict(Neuron_Network* nn, State state, NMatrix* activations, NMatrix input) {
-  VEC_AT(input, 0) = state.danger_straight;
-  VEC_AT(input, 1) = state.danger_right;
-  VEC_AT(input, 2) = state.danger_left;
-  VEC_AT(input, 3) = state.dir_l;
-  VEC_AT(input, 4) = state.dir_r;
-  VEC_AT(input, 5) = state.dir_u;
-  VEC_AT(input, 6) = state.dir_d;
-  VEC_AT(input, 7) = state.food_l;
-  VEC_AT(input, 8) = state.food_r;
-  VEC_AT(input, 9) = state.food_u;
-  VEC_AT(input, 10) = state.food_d;
-
-  return forward(nn, activations, input);
+void state_to_matrix(NMatrix dst, State state) {
+  VEC_AT(dst, 0) = state.danger_straight;
+  VEC_AT(dst, 1) = state.danger_right;
+  VEC_AT(dst, 2) = state.danger_left;
+  VEC_AT(dst, 3) = state.dir_l;
+  VEC_AT(dst, 4) = state.dir_r;
+  VEC_AT(dst, 5) = state.dir_u;
+  VEC_AT(dst, 6) = state.dir_d;
+  VEC_AT(dst, 7) = state.food_dist_x;
+  VEC_AT(dst, 8) = state.food_dist_y;
 }
 
 void model_train_step(Neuron_Network* nn, State old_state, Action action, Game_Step step, State new_state, Neuron_Network* delta_grad) {
-  mat_copy(target, model_predict(nn, old_state, activations_online, input_old));
+  // Get current Q-values for old state
+  state_to_matrix(input_old, old_state);
+  NMatrix old_pred = forward(nn, activations_model_step, input_old);
+  mat_copy(target, old_pred);
 
-  float Q_new = step.reward;
+  // Compute Bellman target for the taken action only (standard DQN)
+  float Q_new = step.reward + Q_VALUE_OFFSET;
 
   if (!step.done) {
-    // Bellman's equation
-    NMatrix new_pred = model_predict(&nn_freeze, new_state, activations_freeze, input_new);
+    // Bellman's equation: add max Q-value of next state
+    state_to_matrix(input_new, new_state);
+    NMatrix new_pred = forward(&nn_target, activations_freeze, input_new);
     int index = mat_row_max(new_pred);
-    Q_new += 0.9 * VEC_AT(new_pred, index);
+    float max_q_next = VEC_AT(new_pred, index);
+    Q_new += 0.9 * max_q_next;
   }
 
-  VEC_AT(target, (int)action) = Q_new;
+  // Update ONLY the taken action's Q-value, leave others unchanged
+  // This preserves relative Q-value differences which is crucial for learning
+  VEC_AT(target, action) = Q_new;
 
-  backward(nn, activations_online, delta_grad, errors, deltas, input_old, target);
+  // Train on this single sample
+  backward(nn, activations_model_step, delta_grad, errors, deltas, input_old, target);
 }
 
 #define WindowWidth 25
@@ -185,9 +195,9 @@ void game_draw_dir(Point2D head, Snake_Direction dir) {
   DrawCircleV(endPos, 2, RED);
 }
 
-NMatrix model_predict(Neuron_Network* nn, State state, NMatrix* activations, NMatrix input);
+// NMatrix forward(Neuron_Network* nn, State state, NMatrix* activations, NMatrix input);
 
-void game_update_ui(Font font, int games_count, int record, State state) {
+void game_update_ui(Font font, int games_count, int record, State state, NMatrix input) {
   char buf[128];
 
   int padding = 4;
@@ -212,7 +222,7 @@ void game_update_ui(Font font, int games_count, int record, State state) {
   DrawTextEx(font, buf, (Vector2) { .x = BLOCK_SIZE, .y = BLOCK_SIZE }, 28, 1, WHITE);
 
   snprintf(buf, sizeof(buf),
-      "danger=(%d, %d, %d), dir=(%d, %d, %d, %d), food=(%d, %d, %d, %d)",
+      "danger=(%d, %d, %d), dir=(%d, %d, %d, %d), food=(%d, %d)",
       state.danger_straight,
       state.danger_right,
       state.danger_left,
@@ -220,16 +230,13 @@ void game_update_ui(Font font, int games_count, int record, State state) {
       state.dir_r,
       state.dir_u,
       state.dir_d,
-      state.food_l,
-      state.food_r,
-      state.food_u,
-      state.food_d
+      state.food_dist_x,
+      state.food_dist_y
   );
   DrawTextEx(font, buf, (Vector2) { .x = BLOCK_SIZE, .y = BLOCK_SIZE*2 }, 28, 1, WHITE);
-  extern NMatrix* activations_freeze;
-  extern NMatrix input_new;
 
-  NMatrix pred = model_predict(&nn_freeze, state, activations_freeze, input_new);
+  state_to_matrix(input, state);
+  NMatrix pred = forward(&nn_target, activations_freeze, input);
   snprintf(buf, sizeof(buf), "prediction=(%+.8f %+.8f %+.8f)", VEC_AT(pred, 0), VEC_AT(pred, 1), VEC_AT(pred, 2));
   DrawTextEx(font, buf, (Vector2) { .x = BLOCK_SIZE, .y = BLOCK_SIZE*3 }, 28, 1, WHITE);
 }
@@ -372,10 +379,10 @@ Action game_get_action_from_key(Snake_Direction new_dir) {
 State agent_get_state(void) {
   Point2D head = game_snake_head();
 
-  Point2D pt_l = { .x = head.x - 1, head.y };
-  Point2D pt_r = { .x = head.x + 1, head.y };
-  Point2D pt_u = { .x = head.x, head.y - 1 };
-  Point2D pt_d = { .x = head.x, head.y + 1 };
+  Point2D pt_l = { .x = head.x - 1, head.y }; // point in the left of the head
+  Point2D pt_r = { .x = head.x + 1, head.y }; // point in the right of the head
+  Point2D pt_u = { .x = head.x, head.y - 1 }; // point in the above the head
+  Point2D pt_d = { .x = head.x, head.y + 1 }; // point in the bellow the head
 
   bool dir_l = snake_direction == DIR_LEFT;
   bool dir_r = snake_direction == DIR_RIGHT;
@@ -394,96 +401,125 @@ State agent_get_state(void) {
     .dir_r = dir_r,
     .dir_u = dir_u,
     .dir_d = dir_d,
-    .food_l = food.x < head.x,
-    .food_r = food.x > head.x,
-    .food_u = food.y < head.y,
-    .food_d = food.y > head.y,
+    .food_dist_x = food.x - head.x,
+    .food_dist_y = head.y - food.y,
   };
 }
 
 int agent_games_count = 0;
 
-Action agent_get_action(State state) {
-  int epsilon = MAX(0, 500 - agent_games_count);
+Action agent_get_action(State state, NMatrix input) {
+  (void)state;
+
+  // Decay epsilon: 100% at start, 10% minimum after 500 games
+  int epsilon = MAX(10, 100 * (1.0f - (float)agent_games_count / 1000.0f));
 
   if (rand() % 100 < epsilon) {
-    // Prioritize straight (60%), then random left/right (40%)
-    int choice = rand() % 100;
-    if (choice < 60) {
+    //printf("Exploration\n");
+    // Uniform random exploration for fair exploration of all actions
+    int choice = rand() % 3;
+    if (choice == 0) {
       return ACTION_STRAIGHT;
-    } else if (choice < 80) {
+    } else if (choice == 1) {
       return ACTION_LEFT;
     } else {
       return ACTION_RIGHT;
     }
   }
 
-  return (Action)mat_row_max(model_predict(&nn_freeze, state, activations_online, input_old));
+  state_to_matrix(input, state);
+  int action = mat_row_max(forward(&nn_target, activations_freeze, input));
+  return (Action)action;
 }
 
 #define MEMORY_SIZE (100*1000)
 #define BATCH_SIZE 1000
 
-struct {
+typedef struct {
   State old_state;
   Action action;
   Game_Step step;
   State new_state;
-} agent_memory[MEMORY_SIZE];
+} MemoryEntry;
 
+MemoryEntry agent_memory[MEMORY_SIZE];
+size_t agent_memory_head = 0;
 size_t agent_memory_size = 0;
 
 void agent_train_short_memory(State old_state, Action action, Game_Step step, State new_state) {
+  // if (snake_moves % 20 == 0) {
+  //   size_t sample_idx = (agent_memory_head - (rand() % agent_memory_size)) % MEMORY_SIZE;
+  //   if (sample_idx < 0) sample_idx += MEMORY_SIZE;
+  //   printf("Memory size=%zu head=%zu sample=%zu\n", agent_memory_size, agent_memory_head, sample_idx);
+  // }
+  // if (step.reward > 0) {
+  //   printf("FOOD! score=%d moves=%zu\n", snake_score, snake_moves);
+  // }    
+  // if (snake_moves % 50 == 0) {
+  //   NMatrix pred = forward(&nn_target, old_state, activations_freeze, input_old);
+  //   float q0 = VEC_AT(pred, ACTION_STRAIGHT);  // Straight
+  //   float q1 = VEC_AT(pred, ACTION_LEFT);  // Left
+  //   float q2 = VEC_AT(pred, ACTION_RIGHT);  // Right
+  //   printf("Q=(%.2f, %.2f, %.2f) action=%d\n", q0, q1, q2, action);
+  // }
+  // (void)action;
+  // (void)step;
+  // (void)old_state;
+  // (void)new_state;
   neuron_zero(&delta_grad);
   model_train_step(&nn_online, old_state, action, step, new_state, &delta_grad);
   neuron_weighted_add(&nn_online, &delta_grad, -LEARNING_RATE);
 }
 
 void agent_train_long_memory(void) {
-  if (agent_memory_size > 0) {
-    size_t train_size = MIN(agent_memory_size, BATCH_SIZE);
+  if (agent_memory_size == 0) return;
 
-    neuron_zero(&grad);
-    for (size_t i = 0; i < train_size; i++) {
-      int index = rand() % agent_memory_size;
+  size_t train_size = MIN(agent_memory_size, BATCH_SIZE);
 
-      neuron_zero(&delta_grad);
-      model_train_step(
-          &nn_freeze,
-          agent_memory[index].old_state,
-          agent_memory[index].action,
-          agent_memory[index].step,
-          agent_memory[index].new_state,
-          &delta_grad
-      );
-      // Accumulate averaged gradients (standard mini-batch practice)
-      neuron_weighted_add(&grad, &delta_grad, 1.0f / train_size);
-    }
+  neuron_zero(&grad);
+  for (size_t i = 0; i < train_size; i++) {
+    int index = ((int)agent_memory_head - (int)(rand() % agent_memory_size)) % MEMORY_SIZE;
+    if (index < 0) index += MEMORY_SIZE;
 
-    neuron_weighted_add(&nn_freeze, &grad, -LEARNING_RATE);
-
-    neuron_copy(nn_online, nn_freeze);
+    neuron_zero(&delta_grad);
+    model_train_step(
+        &nn_target,
+        agent_memory[index].old_state,
+        agent_memory[index].action,
+        agent_memory[index].step,
+        agent_memory[index].new_state,
+        &delta_grad
+    );
+    neuron_add(&grad, &delta_grad);
   }
+
+  neuron_weighted_add(&nn_target, &grad, -LEARNING_RATE / (float)train_size);
+
+  // Periodic sync - only copy every 10 games
+  // static int games_since_sync = 0;
+  //
+  // games_since_sync++;
+  // if (games_since_sync >= 5) {
+  //   games_since_sync = 0;
+  //   neuron_copy(nn_target, nn_online);
+  // }
 }
 
 void agent_remember(State old_state, Action action, Game_Step step, State new_state) {
-  if (agent_memory_size >= MEMORY_SIZE) {
-    for (size_t i = 0; i < agent_memory_size-1; i++) {
-      memcpy(agent_memory+i, agent_memory+i+1, sizeof(*agent_memory));
-    }
+  agent_memory[agent_memory_head].old_state = old_state;
+  agent_memory[agent_memory_head].action = action;
+  agent_memory[agent_memory_head].step = step;
+  agent_memory[agent_memory_head].new_state = new_state;
 
-    agent_memory_size -= 1;
-  }
-
-  agent_memory[agent_memory_size].old_state = old_state;
-  agent_memory[agent_memory_size].action = action;
-  agent_memory[agent_memory_size].step = step;
-  agent_memory[agent_memory_size].new_state = new_state;
-  agent_memory_size += 1;
+  agent_memory_head = (agent_memory_head + 1) % MEMORY_SIZE;
+  agent_memory_size = MIN(agent_memory_size + 1, MEMORY_SIZE);
 }
 
 int main(void) {
+  setvbuf(stdout, NULL, _IONBF, 0);
   srand(getpid());
+
+  SetTraceLogLevel(LOG_NONE);
 
   InitWindow(WindowWidth*BLOCK_SIZE, WindowHeight*BLOCK_SIZE, "Snake game");
   SetWindowPosition(0, 0);
@@ -502,14 +538,14 @@ int main(void) {
 
   int record = 0;
 
-  while (!WindowShouldClose()) {
+  while (!WindowShouldClose() && agent_games_count < 2000) {
     if (IsKeyPressed(KEY_SPACE)) is_paused = !is_paused;
 
     if (is_done) {
       BeginDrawing();
       ClearBackground(BLACK);
 
-      game_update_ui(font, agent_games_count, record, (State){0});
+      game_update_ui(font, agent_games_count, record, (State){0}, input_old);
       DrawText("End", (WindowWidth*BLOCK_SIZE)/2, (WindowHeight*BLOCK_SIZE)/2, 28, WHITE);
 
       EndDrawing();
@@ -544,18 +580,31 @@ int main(void) {
       EndDrawing();
 #else
       State old_state = agent_get_state();
-      // Save input before it gets overwritten
-      mat_copy(input_old, input_new);
 
       if (!is_paused) {
-        Action action = agent_get_action(old_state);
-        // const char* action_names[] = {"straight", "right", "left"};
-        // printf("Action = %s\n", action_names[action]);
+        Action action = agent_get_action(old_state, input_old);
         Game_Step step = game_step(action);
         State new_state = agent_get_state();
 
         agent_train_short_memory(old_state, action, step, new_state);
         agent_remember(old_state, action, step, new_state);
+
+        // Debug: Print Q-values after training
+        if (agent_games_count % 50 == 0 && step.done) {
+          const char* action_names[] = {"straight", "right", "left"};
+          state_to_matrix(input_old, old_state);
+          NMatrix pred = forward(&nn_target, activations_freeze, input_old);
+          float q0 = VEC_AT(pred, ACTION_STRAIGHT);
+          float q1 = VEC_AT(pred, ACTION_RIGHT);
+          float q2 = VEC_AT(pred, ACTION_LEFT);
+          printf("Game=%d Q=(%.2f, %.2f, %.2f) action=%s record=%d food_dist=(%d,%d) snake_dir=(%d,%d,%d,%d) danger=(%d,%d,%d)\n",
+              agent_games_count,
+              q0, q1, q2, action_names[action], record,
+              old_state.food_dist_x, old_state.food_dist_y,
+              old_state.dir_l, old_state.dir_r, old_state.dir_u, old_state.dir_d,
+              old_state.danger_straight, old_state.danger_right, old_state.danger_left
+              );
+        }
 
         if (step.done) {
           if (snake_score > record)
@@ -571,7 +620,7 @@ int main(void) {
       BeginDrawing();
       ClearBackground(BLACK);
 
-      game_update_ui(font, agent_games_count, record, old_state);
+      game_update_ui(font, agent_games_count, record, old_state, input_old);
 
       EndDrawing();
 #endif
