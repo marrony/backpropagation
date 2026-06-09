@@ -1224,6 +1224,13 @@ Neuron_Network neuron_clone(Neuron_Network nn) {
   return (Neuron_Network) { .w = w, .b = b, .layers = nn.layers, };
 }
 
+void neuron_copy(Neuron_Network dst, Neuron_Network src) {
+  for (int i = 0; i < dst.layers; i++) {
+    mat_copy(dst.w[i], src.w[i]);
+    mat_copy(dst.b[i], src.b[i]);
+  }
+}
+
 void neuron_weighted_add(Neuron_Network* dst, Neuron_Network* src, float k) {
   for (int32_t j = 0; j < dst->layers; j++) {
     mat_weighted_add(dst->w[j], dst->w[j], src->w[j], k);

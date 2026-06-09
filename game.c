@@ -62,40 +62,42 @@ typedef struct {
   bool done;
 } Game_Step;
 
-Neuron_Network nn;
+Neuron_Network nn_online;
+Neuron_Network nn_freeze;
 Neuron_Network grad;
 Neuron_Network delta_grad;
-NMatrix* activations_old;
-NMatrix* activations_new;
+NMatrix* activations_online;
+NMatrix* activations_freeze;
 NMatrix* errors;
 NMatrix* deltas;
 NMatrix input_old;
 NMatrix input_new;
 NMatrix target;
 
-#define LEARNING_RATE 0.0001f
+#define LEARNING_RATE 0.1f
 #define REWARD 2.0f
 
 void model_start(void) {
   Neuron_Layer layers[] = {
-    create_layer(.inputs = 11, .outputs = 10, .forward = sigmoid, .backward = dsigmoid),
-    create_layer(.inputs = 10, .outputs = 10, .forward = sigmoid, .backward = dsigmoid),
-    create_layer(.inputs = 10, .outputs = 3, .forward = softmax, .backward = dsoftmax),
+    create_layer(.inputs = 11, .outputs = 20, .forward = sigmoid, .backward = dsigmoid),
+    create_layer(.inputs = 20, .outputs = 20, .forward = sigmoid, .backward = dsigmoid),
+    create_layer(.inputs = 20, .outputs = 3, .forward = softmax, .backward = dsoftmax),
   };
 
-  nn = neuron_create(layers, ARRAY_LEN(layers));
-  grad = neuron_clone(nn);
-  delta_grad = neuron_clone(nn);
-  activations_old = create_outputs(nn);
-  activations_new = create_outputs(nn);
-  errors = create_outputs(nn);
-  deltas = create_outputs(nn);
+  nn_online = neuron_create(layers, ARRAY_LEN(layers));
+  nn_freeze = neuron_create(layers, ARRAY_LEN(layers));
+  grad = neuron_clone(nn_online);
+  delta_grad = neuron_clone(nn_online);
+  activations_online = create_outputs(nn_online);
+  activations_freeze = create_outputs(nn_online);
+  errors = create_outputs(nn_online);
+  deltas = create_outputs(nn_online);
   input_old = mat_alloc(1, 11);
   input_new = mat_alloc(1, 11);
   target = mat_alloc(1, 3);
 }
 
-NMatrix model_predict(State state, NMatrix* activations, NMatrix input) {
+NMatrix model_predict(Neuron_Network* nn, State state, NMatrix* activations, NMatrix input) {
   VEC_AT(input, 0) = state.danger_straight;
   VEC_AT(input, 1) = state.danger_right;
   VEC_AT(input, 2) = state.danger_left;
@@ -108,24 +110,24 @@ NMatrix model_predict(State state, NMatrix* activations, NMatrix input) {
   VEC_AT(input, 9) = state.food_u;
   VEC_AT(input, 10) = state.food_d;
 
-  return forward(&nn, activations, input);
+  return forward(nn, activations, input);
 }
 
-void model_train_step(State old_state, Action action, Game_Step step, State new_state, Neuron_Network* delta_grad) {
-  mat_copy(target, model_predict(old_state, activations_old, input_old));
+void model_train_step(Neuron_Network* nn, State old_state, Action action, Game_Step step, State new_state, Neuron_Network* delta_grad) {
+  mat_copy(target, model_predict(nn, old_state, activations_online, input_old));
 
   float Q_new = step.reward;
 
   if (!step.done) {
-    // Bellman’s equation
-    NMatrix new_pred = model_predict(new_state, activations_new, input_new);
+    // Bellman's equation
+    NMatrix new_pred = model_predict(&nn_freeze, new_state, activations_freeze, input_new);
     int index = mat_row_max(new_pred);
     Q_new += 0.9 * VEC_AT(new_pred, index);
   }
 
   VEC_AT(target, (int)action) = Q_new;
 
-  backward(&nn, activations_old, delta_grad, errors, deltas, input_old, target);
+  backward(nn, activations_online, delta_grad, errors, deltas, input_old, target);
 }
 
 #define WindowWidth 25
@@ -183,7 +185,7 @@ void game_draw_dir(Point2D head, Snake_Direction dir) {
   DrawCircleV(endPos, 2, RED);
 }
 
-NMatrix model_predict(State state, NMatrix* activations, NMatrix input);
+NMatrix model_predict(Neuron_Network* nn, State state, NMatrix* activations, NMatrix input);
 
 void game_update_ui(Font font, int games_count, int record, State state) {
   char buf[128];
@@ -224,10 +226,10 @@ void game_update_ui(Font font, int games_count, int record, State state) {
       state.food_d
   );
   DrawTextEx(font, buf, (Vector2) { .x = BLOCK_SIZE, .y = BLOCK_SIZE*2 }, 28, 1, WHITE);
-  extern NMatrix* activations_new;
+  extern NMatrix* activations_freeze;
   extern NMatrix input_new;
 
-  NMatrix pred = model_predict(state, activations_new, input_new);
+  NMatrix pred = model_predict(&nn_freeze, state, activations_freeze, input_new);
   snprintf(buf, sizeof(buf), "prediction=(%+.8f %+.8f %+.8f)", VEC_AT(pred, 0), VEC_AT(pred, 1), VEC_AT(pred, 2));
   DrawTextEx(font, buf, (Vector2) { .x = BLOCK_SIZE, .y = BLOCK_SIZE*3 }, 28, 1, WHITE);
 }
@@ -402,18 +404,21 @@ State agent_get_state(void) {
 int agent_games_count = 0;
 
 Action agent_get_action(State state) {
-  int epsilon = 80 - agent_games_count;
+  int epsilon = MAX(0, 500 - agent_games_count);
 
-  if (rand() % 200 < epsilon) {
-    // return (Action)rand() % ACTION_COUNT;
-
-    int action = rand() % 100;
-    if (action < 45) return ACTION_LEFT;
-    if (action > 60) return ACTION_RIGHT;
-    return ACTION_STRAIGHT;
+  if (rand() % 100 < epsilon) {
+    // Prioritize straight (60%), then random left/right (40%)
+    int choice = rand() % 100;
+    if (choice < 60) {
+      return ACTION_STRAIGHT;
+    } else if (choice < 80) {
+      return ACTION_LEFT;
+    } else {
+      return ACTION_RIGHT;
+    }
   }
 
-  return (Action)mat_row_max(model_predict(state, activations_old, input_old));
+  return (Action)mat_row_max(model_predict(&nn_freeze, state, activations_online, input_old));
 }
 
 #define MEMORY_SIZE (100*1000)
@@ -429,8 +434,9 @@ struct {
 size_t agent_memory_size = 0;
 
 void agent_train_short_memory(State old_state, Action action, Game_Step step, State new_state) {
-  model_train_step(old_state, action, step, new_state, &delta_grad);
-  neuron_weighted_add(&nn, &delta_grad, -LEARNING_RATE);
+  neuron_zero(&delta_grad);
+  model_train_step(&nn_online, old_state, action, step, new_state, &delta_grad);
+  neuron_weighted_add(&nn_online, &delta_grad, -LEARNING_RATE);
 }
 
 void agent_train_long_memory(void) {
@@ -441,17 +447,22 @@ void agent_train_long_memory(void) {
     for (size_t i = 0; i < train_size; i++) {
       int index = rand() % agent_memory_size;
 
+      neuron_zero(&delta_grad);
       model_train_step(
+          &nn_freeze,
           agent_memory[index].old_state,
           agent_memory[index].action,
           agent_memory[index].step,
           agent_memory[index].new_state,
           &delta_grad
       );
-      neuron_add(&grad, &delta_grad);
+      // Accumulate averaged gradients (standard mini-batch practice)
+      neuron_weighted_add(&grad, &delta_grad, 1.0f / train_size);
     }
 
-    neuron_weighted_add(&nn, &grad, -LEARNING_RATE/(float)train_size);
+    neuron_weighted_add(&nn_freeze, &grad, -LEARNING_RATE);
+
+    neuron_copy(nn_online, nn_freeze);
   }
 }
 
@@ -533,6 +544,8 @@ int main(void) {
       EndDrawing();
 #else
       State old_state = agent_get_state();
+      // Save input before it gets overwritten
+      mat_copy(input_old, input_new);
 
       if (!is_paused) {
         Action action = agent_get_action(old_state);
@@ -542,7 +555,6 @@ int main(void) {
         State new_state = agent_get_state();
 
         agent_train_short_memory(old_state, action, step, new_state);
-
         agent_remember(old_state, action, step, new_state);
 
         if (step.done) {
