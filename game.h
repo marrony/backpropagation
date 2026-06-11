@@ -107,15 +107,15 @@ void model_start(void) {
 
 void state_to_matrix(NMatrix dst, State state) {
   VEC_AT(dst, 0) = state.danger_straight;
-  VEC_AT(dst, 1) = state.danger_right;
-  VEC_AT(dst, 2) = state.danger_left;
+  VEC_AT(dst, 1) = state.danger_left;
+  VEC_AT(dst, 2) = state.danger_right;
   VEC_AT(dst, 3) = state.dir_l;
   VEC_AT(dst, 4) = state.dir_r;
   VEC_AT(dst, 5) = state.dir_u;
   VEC_AT(dst, 6) = state.dir_d;
   VEC_AT(dst, 7) = state.food_ahead;
   VEC_AT(dst, 8) = state.food_left;
-  VEC_AT(dst, 9) = state.food_left;
+  VEC_AT(dst, 9) = state.food_right;
 }
 
 void model_train_step(Neuron_Network* nn, State old_state, Action action, Game_Step step, State new_state, Neuron_Network* delta_grad) {
