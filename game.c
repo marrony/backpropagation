@@ -26,8 +26,8 @@ typedef struct {
 
 typedef enum {
   ACTION_STRAIGHT,
-  ACTION_RIGHT,
   ACTION_LEFT,
+  ACTION_RIGHT,
   ACTION_COUNT,
 } Action;
 
@@ -634,8 +634,8 @@ int main(void) {
           state_to_matrix(input_old, old_state);
           NMatrix pred = forward(&nn_target, activations_freeze, input_old);
           float q0 = VEC_AT(pred, ACTION_STRAIGHT);
-          float q1 = VEC_AT(pred, ACTION_RIGHT);
-          float q2 = VEC_AT(pred, ACTION_LEFT);
+          float q1 = VEC_AT(pred, ACTION_LEFT);
+          float q2 = VEC_AT(pred, ACTION_RIGHT);
           printf("Games=%d Q=(%.2f, %.2f, %.2f) action=%s record=%d food=(%d,%d,%d) snake_dir=(%d,%d,%d,%d) danger=(%d,%d,%d)\n",
               agent_games_count,
               q0, q1, q2, action_names[action], record,

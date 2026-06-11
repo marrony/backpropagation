@@ -45,12 +45,12 @@ void init_model(void) {
     // Initialize embeddings and weights with small random values
     for (int v = 0; v < VOCAB_SIZE; v++) {
         for (int d = 0; d < EMBED_DIM; d++)
-            embedding[v][d] = ((float)rand() / RAND_MAX - 0.5f);
+            embedding[v][d] = ((float)rand() / (float)RAND_MAX - 0.5f);
 
         for (int i = 0; i < INPUT_DIM; i++)
-            W[v][i] = ((float)rand() / RAND_MAX - 0.5f);
+            W[v][i] = ((float)rand() / (float)RAND_MAX - 0.5f);
 
-        bias[v] = ((float)rand() / RAND_MAX - 0.5f);
+        bias[v] = ((float)rand() / (float)RAND_MAX - 0.5f);
     }
 }
 
@@ -70,7 +70,7 @@ void softmax(float *logits, float *probs) {
 }
 
 int sample(float *probs) {
-    float r = (float)rand() / RAND_MAX;
+    float r = (float)rand() / (float)RAND_MAX;
     float cumulative = 0.0f;
 
     for (int i = 0; i < VOCAB_SIZE; i++) {
