@@ -393,9 +393,21 @@ Action game_get_action_from_key(Snake_Direction new_dir) {
   return ACTION_STRAIGHT;
 }
 
-State agent_get_state(void) {
-  Point2D head = game_snake_head();
-
+// Coordinate frame depends on snake direction:
+// When snake moves DIR_RIGHT (+x): forward=+x, lateral=+y
+// When snake moves DIR_DOWN (+y):  forward=+y, lateral=-x
+// When snake moves DIR_LEFT (-x):  forward=-x, lateral=+y
+// When snake moves DIR_UP (-y):    forward=-y, lateral=-x
+//
+// Summary table (food position relative to snake head):
+//
+// Direction | Movement | food_forward = | food_lateral = |
+// ----------|----------|----------------|----------------|
+// DIR_RIGHT | +x       | food.x-head.x  | food.y-head.y  |
+// DIR_DOWN  | +y       | food.y-head.y  | head.x-food.x  |
+// DIR_LEFT  | -x       | head.x-food.x  | head.y-food.y  |
+// DIR_UP    | -y       | head.y-food.y  | food.x-head.x  |
+State agent_get_state(Point2D head, Point2D food) {
   Point2D pt_l = { .x = head.x - 1, head.y };
   Point2D pt_r = { .x = head.x + 1, head.y };
   Point2D pt_u = { .x = head.x, head.y - 1 };
@@ -408,7 +420,7 @@ State agent_get_state(void) {
 
   bool danger_straight = (dir_r && game_check_collision(pt_r)) || (dir_l && game_check_collision(pt_l)) || (dir_u && game_check_collision(pt_u)) || (dir_d && game_check_collision(pt_d));
   bool danger_right    = (dir_u && game_check_collision(pt_r)) || (dir_d && game_check_collision(pt_l)) || (dir_l && game_check_collision(pt_u)) || (dir_r && game_check_collision(pt_d));
-  bool danger_left     = (dir_d && game_check_collision(pt_r)) || (dir_u && game_check_collision(pt_l)) || (dir_r && game_check_collision(pt_u)) || (dir_l && game_check_collision(pt_d));
+  bool danger_left     = (dir_d && game_check_collision(pt_r)) || (dir_u && game_check_collision(pt_l)) || (dir_l && game_check_collision(pt_u)) || (dir_r && game_check_collision(pt_d));
 
   // Transform food position to snake's local frame
   // food_forward: positive if ahead of snake, negative if behind
@@ -419,19 +431,19 @@ State agent_get_state(void) {
   if (dir_r) {
     // Facing right: forward = +x, lateral = +y (down)
     food_forward = food.x - head.x;
-    food_lateral = head.y - food.y;
+    food_lateral = food.y - head.y;
   } else if (dir_d) {
     // Facing down: forward = +y, lateral = -x (left)
-    food_forward = head.y - food.y;
-    food_lateral = food.x - head.x;
-  } else if (dir_l) {
-    // Facing left: forward = -x, lateral = -y (up)
-    food_forward = head.x - food.x;
-    food_lateral = food.y - head.y;
-  } else if (dir_u) {
-    // Facing up: forward = -y, lateral = +x (right)
     food_forward = food.y - head.y;
     food_lateral = head.x - food.x;
+  } else if (dir_l) {
+    // Facing left: forward = -x, lateral = +y (down)
+    food_forward = head.x - food.x;
+    food_lateral = head.y - food.y;
+  } else if (dir_u) {
+    // Facing up: forward = -y, lateral = -x (left)
+    food_forward = head.y - food.y;
+    food_lateral = food.x - head.x;
   }
 
   return (State) {

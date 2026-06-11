@@ -64,19 +64,21 @@ int main(void) {
 
       EndDrawing();
 #else
-      State old_state = agent_get_state();
+      Point2D head = game_snake_head();
+
+      State old_state = agent_get_state(head, food);
 
       if (!is_paused) {
         Action action = agent_get_action(old_state, input_old);
         Game_Step step = game_step(action);
-        State new_state = agent_get_state();
+        State new_state = agent_get_state(head, food);
 
         agent_train_short_memory(old_state, action, step, new_state);
         agent_remember(old_state, action, step, new_state);
 
         // Debug: Print Q-values after training
         if (agent_games_count % 50 == 0 && step.done) {
-          const char* action_names[] = {"straight", "right", "left"};
+          const char* action_names[] = {"straight", "left", "right"};
           state_to_matrix(input_old, old_state);
           NMatrix pred = forward(&nn_target, activations_freeze, input_old);
           float q0 = VEC_AT(pred, ACTION_STRAIGHT);
