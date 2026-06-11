@@ -28,23 +28,23 @@ void test_food_right(void) {
     
     food.x = 15; food.y = 10;
     State s1 = agent_get_state((Point2D){10, 10}, (Point2D){15, 10});
-    assert(s1.food_ahead == 1);
+    assert(s1.food_ahead == 1 && s1.food_left == 0 && s1.food_right == 0);
     printf("  Ahead (15,10): PASSED\n");
     
     food.x = 5; food.y = 10;
     State s2 = agent_get_state((Point2D){10, 10}, (Point2D){5, 10});
-    assert(s2.food_ahead == 0);
+    assert(s2.food_ahead == 0 && s2.food_left == 0 && s2.food_right == 0);
     printf("  Behind (5,10): PASSED\n");
     
     food.x = 12; food.y = 5;
     State s3 = agent_get_state((Point2D){10, 10}, (Point2D){12, 5});
-    assert(s3.food_left == 1);
-    printf("  Left/Above (12,5): PASSED\n");
+    assert(s3.food_ahead == 1 && s3.food_left == 1 && s3.food_right == 0);
+    printf("  Ahead/Left (12,5): PASSED\n");
     
     food.x = 12; food.y = 15;
     State s4 = agent_get_state((Point2D){10, 10}, (Point2D){12, 15});
-    assert(s4.food_right == 1);
-    printf("  Right/Below (12,15): PASSED\n");
+    assert(s4.food_ahead == 1 && s4.food_left == 0 && s4.food_right == 1);
+    printf("  Ahead/Right (12,15): PASSED\n");
     printf("  PASSED\n\n");
 }
 
@@ -58,23 +58,23 @@ void test_food_up(void) {
     
     food.x = 10; food.y = 5;
     State s1 = agent_get_state((Point2D){10, 10}, (Point2D){10, 5});
-    assert(s1.food_ahead == 1);
+    assert(s1.food_ahead == 1 && s1.food_left == 0 && s1.food_right == 0);
     printf("  Ahead (10,5): PASSED\n");
     
     food.x = 10; food.y = 15;
     State s2 = agent_get_state((Point2D){10, 10}, (Point2D){10, 15});
-    assert(s2.food_ahead == 0);
+    assert(s2.food_ahead == 0 && s2.food_left == 0 && s2.food_right == 0);
     printf("  Behind (10,15): PASSED\n");
     
     food.x = 15; food.y = 7;
     State s3 = agent_get_state((Point2D){10, 10}, (Point2D){15, 7});
-    assert(s3.food_right == 1);
-    printf("  Right (15,7): PASSED\n");
+    assert(s3.food_ahead == 1 && s3.food_left == 0 && s3.food_right == 1);
+    printf("  Ahead/Right (15,7): PASSED\n");
     
     food.x = 5; food.y = 7;
     State s4 = agent_get_state((Point2D){10, 10}, (Point2D){5, 7});
-    assert(s4.food_left == 1);
-    printf("  Left (5,7): PASSED\n");
+    assert(s4.food_ahead == 1 && s4.food_left == 1 && s4.food_right == 0);
+    printf("  Ahead/Left (5,7): PASSED\n");
     printf("  PASSED\n\n");
 }
 
@@ -88,23 +88,23 @@ void test_food_down(void) {
     
     food.x = 10; food.y = 15;
     State s1 = agent_get_state((Point2D){10, 10}, (Point2D){10, 15});
-    assert(s1.food_ahead == 1);
+    assert(s1.food_ahead == 1 && s1.food_left == 0 && s1.food_right == 0);
     printf("  Ahead (10,15): PASSED\n");
     
     food.x = 10; food.y = 5;
     State s2 = agent_get_state((Point2D){10, 10}, (Point2D){10, 5});
-    assert(s2.food_ahead == 0);
+    assert(s2.food_ahead == 0 && s2.food_left == 0 && s2.food_right == 0);
     printf("  Behind (10,5): PASSED\n");
     
     food.x = 5; food.y = 12;
     State s3 = agent_get_state((Point2D){10, 10}, (Point2D){5, 12});
-    assert(s3.food_right == 1);
-    printf("  Right (5,12): PASSED\n");
+    assert(s3.food_ahead == 1 && s3.food_left == 0 && s3.food_right == 1);
+    printf("  Ahead/Right (5,12): PASSED\n");
     
     food.x = 15; food.y = 12;
     State s4 = agent_get_state((Point2D){10, 10}, (Point2D){15, 12});
-    assert(s4.food_left == 1);
-    printf("  Left (15,12): PASSED\n");
+    assert(s4.food_ahead == 1 && s4.food_left == 1 && s4.food_right == 0);
+    printf("  Ahead/Left (15,12): PASSED\n");
     printf("  PASSED\n\n");
 }
 
@@ -118,23 +118,23 @@ void test_food_left(void) {
     
     food.x = 5; food.y = 10;
     State s1 = agent_get_state((Point2D){10, 10}, (Point2D){5, 10});
-    assert(s1.food_ahead == 1);
+    assert(s1.food_ahead == 1 && s1.food_left == 0 && s1.food_right == 0);
     printf("  Ahead (5,10): PASSED\n");
     
     food.x = 15; food.y = 10;
     State s2 = agent_get_state((Point2D){10, 10}, (Point2D){15, 10});
-    assert(s2.food_ahead == 0);
+    assert(s2.food_ahead == 0 && s2.food_left == 0 && s2.food_right == 0);
     printf("  Behind (15,10): PASSED\n");
     
     food.x = 7; food.y = 5;
     State s3 = agent_get_state((Point2D){10, 10}, (Point2D){7, 5});
-    assert(s3.food_right == 1);
-    printf("  Right/Above (7,5): PASSED\n");
+    assert(s3.food_ahead == 1 && s3.food_left == 0 && s3.food_right == 1);
+    printf("  Ahead/Right (7,5): PASSED\n");
     
     food.x = 7; food.y = 15;
     State s4 = agent_get_state((Point2D){10, 10}, (Point2D){7, 15});
-    assert(s4.food_left == 1);
-    printf("  Left/Below (7,15): PASSED\n");
+    assert(s4.food_ahead == 1 && s4.food_left == 1 && s4.food_right == 0);
+    printf("  Ahead/Left (7,15): PASSED\n");
     printf("  PASSED\n\n");
 }
 
