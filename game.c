@@ -43,7 +43,7 @@ typedef enum {
   DIR_MAX,
 } Snake_Direction;
 
-#define INPUT_PARAMETERS 9
+#define INPUT_PARAMETERS 10
 #define OUTPUT_PARAMETERS 3
 // 9 parameters: 3 danger + 4 dir + 2 distance
 typedef struct {
@@ -54,15 +54,18 @@ typedef struct {
   uint32_t dir_r : 1;   // is snake going to right
   uint32_t dir_u : 1;   // is snake going up
   uint32_t dir_d : 1;   // is snake going down
-  uint32_t padding : 1; // ignored
-  int32_t food_dist_x : 12;  // distance of the snake head to fruit in x-dir
-  int32_t food_dist_y : 12;  // distance of the snake head to fruit in y-dir
+  uint32_t food_ahead : 1;  // food is ahead?
+  uint32_t food_left : 1;  // food is on the left?
+  uint32_t food_right : 1;  // food is on the right?
 } State;
 
 typedef struct {
   float reward;
   bool done;
 } Game_Step;
+
+#define WindowWidth 25
+#define WindowHeight 25
 
 Neuron_Network nn_online;
 Neuron_Network nn_target;
@@ -79,14 +82,14 @@ NMatrix input_new;
 NMatrix target;
 
 #define LEARNING_RATE 0.05f
-#define REWARD 2.0f
+#define REWARD 10.0f
 #define Q_VALUE_OFFSET 0.5f  // Small offset to encourage positive initial Q-values
 
 void model_start(void) {
   Neuron_Layer layers[] = {
-    create_layer(.inputs = INPUT_PARAMETERS, .outputs = 20, .forward = sigmoid, .backward = dsigmoid),
-    create_layer(.inputs = 20, .outputs = 20, .forward = sigmoid, .backward = dsigmoid),
-    create_layer(.inputs = 20, .outputs = OUTPUT_PARAMETERS, .forward = linear, .backward = dlinear),  // Linear for Q-values
+    create_layer(.inputs = INPUT_PARAMETERS, .outputs = 64, .forward = sigmoid, .backward = dsigmoid),
+    create_layer(.inputs = 64, .outputs = 64, .forward = sigmoid, .backward = dsigmoid),
+    create_layer(.inputs = 64, .outputs = OUTPUT_PARAMETERS, .forward = linear, .backward = dlinear),  // Linear for Q-values
   };
 
   nn_online = neuron_create(layers, ARRAY_LEN(layers));
@@ -110,8 +113,9 @@ void state_to_matrix(NMatrix dst, State state) {
   VEC_AT(dst, 4) = state.dir_r;
   VEC_AT(dst, 5) = state.dir_u;
   VEC_AT(dst, 6) = state.dir_d;
-  VEC_AT(dst, 7) = state.food_dist_x;
-  VEC_AT(dst, 8) = state.food_dist_y;
+  VEC_AT(dst, 7) = state.food_ahead;
+  VEC_AT(dst, 8) = state.food_left;
+  VEC_AT(dst, 9) = state.food_left;
 }
 
 void model_train_step(Neuron_Network* nn, State old_state, Action action, Game_Step step, State new_state, Neuron_Network* delta_grad) {
@@ -139,9 +143,6 @@ void model_train_step(Neuron_Network* nn, State old_state, Action action, Game_S
   // Train on this single sample
   backward(nn, activations_model_step, delta_grad, errors, deltas, input_old, target);
 }
-
-#define WindowWidth 25
-#define WindowHeight 25
 
 #define BLOCK_SIZE 32
 #define SNAKE_MAX_SIZE 1024
@@ -222,7 +223,7 @@ void game_update_ui(Font font, int games_count, int record, State state, NMatrix
   DrawTextEx(font, buf, (Vector2) { .x = BLOCK_SIZE, .y = BLOCK_SIZE }, 28, 1, WHITE);
 
   snprintf(buf, sizeof(buf),
-      "danger=(%d, %d, %d), dir=(%d, %d, %d, %d), food=(%d, %d)",
+      "danger=(%d, %d, %d), dir=(%d, %d, %d, %d), food=(%d, %d, %d)",
       state.danger_straight,
       state.danger_right,
       state.danger_left,
@@ -230,8 +231,9 @@ void game_update_ui(Font font, int games_count, int record, State state, NMatrix
       state.dir_r,
       state.dir_u,
       state.dir_d,
-      state.food_dist_x,
-      state.food_dist_y
+      state.food_ahead,
+      state.food_left,
+      state.food_right
   );
   DrawTextEx(font, buf, (Vector2) { .x = BLOCK_SIZE, .y = BLOCK_SIZE*2 }, 28, 1, WHITE);
 
@@ -312,6 +314,7 @@ bool game_check_collision(Point2D pt) {
 Game_Step game_step(Action action) {
   snake_moves += 1;
 
+  Point2D old_head = game_snake_head();
   Point2D head = game_move(action);
 
   game_append_body(head, snake_direction);
@@ -332,6 +335,20 @@ Game_Step game_step(Action action) {
     game_place_food();
   } else {
     game_pop_body();
+  }
+
+  // Reward shaping: +0.1 for moving closer to food, -0.1 for moving farther
+  if (!point_equals(head, food)) {
+    float old_dist = sqrtf((float)(old_head.x - food.x)*(old_head.x - food.x) + 
+                           (float)(old_head.y - food.y)*(old_head.y - food.y));
+    float new_dist = sqrtf((float)(head.x - food.x)*(head.x - food.x) + 
+                           (float)(head.y - food.y)*(head.y - food.y));
+    
+    if (new_dist < old_dist) {
+      reward += 0.1;  // Closer to food
+    } else {
+      reward -= 0.1;  // Farther from food
+    }
   }
 
   return (Game_Step) {
@@ -379,10 +396,10 @@ Action game_get_action_from_key(Snake_Direction new_dir) {
 State agent_get_state(void) {
   Point2D head = game_snake_head();
 
-  Point2D pt_l = { .x = head.x - 1, head.y }; // point in the left of the head
-  Point2D pt_r = { .x = head.x + 1, head.y }; // point in the right of the head
-  Point2D pt_u = { .x = head.x, head.y - 1 }; // point in the above the head
-  Point2D pt_d = { .x = head.x, head.y + 1 }; // point in the bellow the head
+  Point2D pt_l = { .x = head.x - 1, head.y };
+  Point2D pt_r = { .x = head.x + 1, head.y };
+  Point2D pt_u = { .x = head.x, head.y - 1 };
+  Point2D pt_d = { .x = head.x, head.y + 1 };
 
   bool dir_l = snake_direction == DIR_LEFT;
   bool dir_r = snake_direction == DIR_RIGHT;
@@ -393,6 +410,30 @@ State agent_get_state(void) {
   bool danger_right    = (dir_u && game_check_collision(pt_r)) || (dir_d && game_check_collision(pt_l)) || (dir_l && game_check_collision(pt_u)) || (dir_r && game_check_collision(pt_d));
   bool danger_left     = (dir_d && game_check_collision(pt_r)) || (dir_u && game_check_collision(pt_l)) || (dir_r && game_check_collision(pt_u)) || (dir_l && game_check_collision(pt_d));
 
+  // Transform food position to snake's local frame
+  // food_forward: positive if ahead of snake, negative if behind
+  // food_lateral: positive if to the right, negative if to the left
+  int food_forward = 0;
+  int food_lateral = 0;
+
+  if (dir_r) {
+    // Facing right: forward = +x, lateral = +y (down)
+    food_forward = food.x - head.x;
+    food_lateral = head.y - food.y;
+  } else if (dir_d) {
+    // Facing down: forward = +y, lateral = -x (left)
+    food_forward = head.y - food.y;
+    food_lateral = food.x - head.x;
+  } else if (dir_l) {
+    // Facing left: forward = -x, lateral = -y (up)
+    food_forward = head.x - food.x;
+    food_lateral = food.y - head.y;
+  } else if (dir_u) {
+    // Facing up: forward = -y, lateral = +x (right)
+    food_forward = food.y - head.y;
+    food_lateral = head.x - food.x;
+  }
+
   return (State) {
     .danger_straight = danger_straight,
     .danger_right    = danger_right,
@@ -401,8 +442,9 @@ State agent_get_state(void) {
     .dir_r = dir_r,
     .dir_u = dir_u,
     .dir_d = dir_d,
-    .food_dist_x = food.x - head.x,
-    .food_dist_y = head.y - food.y,
+    .food_ahead = food_forward > 0,
+    .food_left = food_lateral < 0,
+    .food_right = food_lateral > 0,
   };
 }
 
@@ -474,6 +516,12 @@ void agent_train_short_memory(State old_state, Action action, Game_Step step, St
 void agent_train_long_memory(void) {
   if (agent_memory_size == 0) return;
 
+  // Periodic sync: train target network every 10 games
+  static int games_since_sync = 0;
+  games_since_sync++;
+  if (games_since_sync < 10) return;
+  games_since_sync = 0;
+
   size_t train_size = MIN(agent_memory_size, BATCH_SIZE);
 
   neuron_zero(&grad);
@@ -483,7 +531,7 @@ void agent_train_long_memory(void) {
 
     neuron_zero(&delta_grad);
     model_train_step(
-        &nn_target,
+        &nn_target,  // Train nn_target from replay buffer (stable targets)
         agent_memory[index].old_state,
         agent_memory[index].action,
         agent_memory[index].step,
@@ -494,15 +542,6 @@ void agent_train_long_memory(void) {
   }
 
   neuron_weighted_add(&nn_target, &grad, -LEARNING_RATE / (float)train_size);
-
-  // Periodic sync - only copy every 10 games
-  // static int games_since_sync = 0;
-  //
-  // games_since_sync++;
-  // if (games_since_sync >= 5) {
-  //   games_since_sync = 0;
-  //   neuron_copy(nn_target, nn_online);
-  // }
 }
 
 void agent_remember(State old_state, Action action, Game_Step step, State new_state) {
@@ -538,7 +577,7 @@ int main(void) {
 
   int record = 0;
 
-  while (!WindowShouldClose() && agent_games_count < 2000) {
+  while (!WindowShouldClose() && agent_games_count < 5000) {
     if (IsKeyPressed(KEY_SPACE)) is_paused = !is_paused;
 
     if (is_done) {
@@ -597,10 +636,10 @@ int main(void) {
           float q0 = VEC_AT(pred, ACTION_STRAIGHT);
           float q1 = VEC_AT(pred, ACTION_RIGHT);
           float q2 = VEC_AT(pred, ACTION_LEFT);
-          printf("Game=%d Q=(%.2f, %.2f, %.2f) action=%s record=%d food_dist=(%d,%d) snake_dir=(%d,%d,%d,%d) danger=(%d,%d,%d)\n",
+          printf("Games=%d Q=(%.2f, %.2f, %.2f) action=%s record=%d food=(%d,%d,%d) snake_dir=(%d,%d,%d,%d) danger=(%d,%d,%d)\n",
               agent_games_count,
               q0, q1, q2, action_names[action], record,
-              old_state.food_dist_x, old_state.food_dist_y,
+              old_state.food_ahead, old_state.food_left, old_state.food_right,
               old_state.dir_l, old_state.dir_r, old_state.dir_u, old_state.dir_d,
               old_state.danger_straight, old_state.danger_right, old_state.danger_left
               );
