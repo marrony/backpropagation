@@ -8,7 +8,7 @@ PROGS := $(addprefix $(BINDIR)/, $(SOURCES:.c=))
 raylib-5/libraylib.a:
 	make -C raylib-5 RAYLIB_SRC_PATH=.
 
-CFLAGS=-std=c99 -Werror -Wall -Wextra -Wno-initializer-overrides -pedantic \
+CFLAGS=-std=c17 -Werror -Wall -Wextra -Wno-initializer-overrides -pedantic \
     -I ./raylib-5 \
     -fsanitize=signed-integer-overflow \
     -fsanitize=unsigned-integer-overflow \
