@@ -48,7 +48,6 @@ static const char* Node_Type_Str[__MAX_NODES+1] = {
 };
 
 #define MAX_INPUTS 16
-#define MAX_PARAMS 3
 
 typedef struct {
   NMatrix value;
@@ -105,20 +104,31 @@ int node_get_value_cols(Node* node) {
   return node->output.value.cols;
 }
 
+void destroy_param(Param* param) {
+  mat_free(param->value);
+  mat_free(param->grad);
+  mat_free(param->g_grad);
+}
+
 void destroy_node(Node** node) {
+  for (int i = 0; i < (*node)->input_size; i++)
+    destroy_node(&(*node)->input[i]);
+  destroy_param(&(*node)->output);
+  destroy_param(&(*node)->weight);
+  destroy_param(&(*node)->bias);
   free(*node);
   *node = NULL;
 }
 
-Node* create_node(void) {
+Node* create_node(Node_Type type) {
   Node* node = malloc(sizeof(Node));
   memset(node, 0, sizeof(Node));
+  node->type = type;
   return node;
 }
 
 Node* create_constant(int rows, int cols) {
-  Node* node = create_node();
-  node->type = NODE_CONSTANT;
+  Node* node = create_node(NODE_CONSTANT);
   node->input_size = 0;
   init_param(&node->output, rows, cols);
   
@@ -126,8 +136,7 @@ Node* create_constant(int rows, int cols) {
 }
 
 Node* create_variable(int rows, int cols) {
-  Node* node = create_node();
-  node->type = NODE_VARIABLE;
+  Node* node = create_node(NODE_VARIABLE);
   node->input_size = 0;
   init_param(&node->output, rows, cols);
 
@@ -135,8 +144,7 @@ Node* create_variable(int rows, int cols) {
 }
 
 Node* create_linear(Node* input, int out_size) {
-  Node* node = create_node();
-  node->type = NODE_LINEAR;
+  Node* node = create_node(NODE_LINEAR);
   node->input[0] = input;
   node->input_size = 1;
 
@@ -159,8 +167,7 @@ Node* create_linear(Node* input, int out_size) {
 }
 
 Node* create_unary(Node_Type type, Node* input, int rows, int cols) {
-  Node* node = create_node();
-  node->type = type;
+  Node* node = create_node(type);
   node->input[0] = input;
   node->input_size = 1;
   init_param(&node->output, rows, cols);
@@ -168,8 +175,7 @@ Node* create_unary(Node_Type type, Node* input, int rows, int cols) {
 }
 
 Node* create_binary(Node_Type type, Node* input0, Node* input1, int rows, int cols) {
-  Node* node = create_node();
-  node->type = type;
+  Node* node = create_node(type);
   node->input[0] = input0;
   node->input[1] = input1;
   node->input_size = 2;
@@ -196,8 +202,7 @@ Node* create_relu(Node* input) {
 }
 
 Node* create_conv2d(Node* input, int img_size, int kern_size) {
-  Node* node = create_node();
-  node->type = NODE_CONV2D;
+  Node* node = create_node(NODE_CONV2D);
   node->input[0] = input;
   node->input_size = 1;
 
@@ -218,9 +223,8 @@ Node* create_conv2d(Node* input, int img_size, int kern_size) {
 // The flattened output shares the same data buffer with input matrices.
 // This is safe as long as the input matrices are not modified after flattening.
 Node* create_flatten(Node** inputs, int in_size) {
-  Node* node = create_node();
-  node->type = NODE_FLATTEN;
-
+  assert(in_size < MAX_INPUTS);
+  Node* node = create_node(NODE_FLATTEN);
   node->input_size = in_size;
 
   int size = 0;
@@ -825,7 +829,6 @@ void acc_grads(Node* node) {
   mat_add(node->output.g_grad, node->output.g_grad, node->output.grad);
   mat_add(node->weight.g_grad, node->weight.g_grad, node->weight.grad);
   mat_add(node->bias.g_grad, node->bias.g_grad, node->bias.grad);
-  mat_add(node->weight.g_grad, node->weight.g_grad, node->weight.grad);
 }
 
 void update_grads(Node* node, float lr) {
@@ -835,7 +838,6 @@ void update_grads(Node* node, float lr) {
   mat_weighted_add(node->output.value, node->output.value, node->output.g_grad, -lr);
   mat_weighted_add(node->weight.value, node->weight.value, node->weight.g_grad, -lr);
   mat_weighted_add(node->bias.value, node->bias.value, node->bias.g_grad, -lr);
-  mat_weighted_add(node->weight.value, node->weight.value, node->weight.g_grad, -lr);
 }
 
 void zero_grads(Node* node) {
@@ -845,7 +847,6 @@ void zero_grads(Node* node) {
   mat_fill(node->output.g_grad, 0);
   mat_fill(node->weight.g_grad, 0);
   mat_fill(node->bias.g_grad, 0);
-  mat_fill(node->weight.g_grad, 0);
 }
 
 #endif // NODE_H

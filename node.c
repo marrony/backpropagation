@@ -218,9 +218,9 @@ void test_linear(void) {
   // Backward: dL/dW = x^T * dL, dL/db = dL, dL/dx = dL * W^T
   // dL/dx[0] = dL[0]*W[0,0] + dL[1]*W[0,1] + dL[2]*W[0,2] = 8*1 + 22*2 + 36*3 = 160
   // dL/dx[1] = dL[0]*W[1,0] + dL[1]*W[1,1] + dL[2]*W[1,2] = 8*4 + 22*5 + 36*6 = 358
+  ASSERT_VEC_EQ(x->output.grad,   ((float[]) {160, 358}));
   ASSERT_VEC_EQ(op->weight.grad,  ((float[]) {8, 22, 36, 16, 44, 72}));
   ASSERT_VEC_EQ(op->bias.grad,  ((float[]) {8, 22, 36}));
-  ASSERT_VEC_EQ(x->output.grad,   ((float[]) {160, 358}));
 
   destroy_node(&x);
   destroy_node(&op);

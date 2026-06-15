@@ -1221,7 +1221,13 @@ Neuron_Network neuron_clone(Neuron_Network nn) {
     b[i] = mat_alloc(nn.b[i].rows, nn.b[i].cols);
   }
 
-  return (Neuron_Network) { .w = w, .b = b, .layers = nn.layers, };
+  return (Neuron_Network) {
+    .w = w,
+    .b = b,
+    .layers = nn.layers,
+    .forward = NULL,
+    .backward = NULL,
+  };
 }
 
 void neuron_copy(Neuron_Network dst, Neuron_Network src) {

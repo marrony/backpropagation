@@ -317,10 +317,11 @@ void conv_to_pixels(float image[CONV_OUT][CONV_OUT], Pixel_Alpha* pixels) {
   }
 
   float diff = max - min;
+  bool is_zero = diff*diff < 0.001f;
 
   for (int i = 0; i < CONV_OUT; i++) {
     for (int j = 0; j < CONV_OUT; j++) {
-      float v = (image[i][j] - min) / diff;
+      float v = is_zero ? 0.5f : (image[i][j] - min) / diff;
       int index = i*IMG_SIZE + j;
       pixels[index].intensity = v * 255;
       pixels[index].alpha = 255;
@@ -347,10 +348,11 @@ void filter_to_pixels(float image[KERN_SIZE][KERN_SIZE], Pixel* pixels) {
   }
 
   float diff = max - min;
+  bool is_zero = diff*diff < 0.001f;
 
   for (int i = 0; i < KERN_SIZE; i++) {
     for (int j = 0; j < KERN_SIZE; j++) {
-      float v = (image[i][j] - min) / diff;
+      float v = is_zero ? 0.5f : (image[i][j] - min) / diff;
       pixels[i*KERN_SIZE + j].intensity = v * 255;
     }
   }

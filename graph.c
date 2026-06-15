@@ -76,9 +76,12 @@ int main(void) {
       Vector2 dot = { .x = mouse.x, .y = F(mouse.x) };
       float deriv = dF(dot.y);
 
+      float dx = 1.0f;
+      float dy = deriv;
+      float len = sqrtf(dx*dx + dy*dy);
       Vector2 dot2 = {
-          .x = dot.x + cosf(deriv),
-          .y = dot.y + sinf(deriv),
+          .x = dot.x + dx/len,
+          .y = dot.y + dy/len
       };
 
       snprintf(buf, sizeof(buf), "pt = (%+.5f %+.5f)   deriv = %+.5f", dot.x, dot.y, deriv);
