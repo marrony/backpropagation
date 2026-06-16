@@ -87,9 +87,8 @@ NMatrix target;
 
 void model_start(void) {
   Neuron_Layer layers[] = {
-    create_layer(.inputs = INPUT_PARAMETERS, .outputs = 64, .forward = sigmoid, .backward = dsigmoid),
-    create_layer(.inputs = 64, .outputs = 64, .forward = sigmoid, .backward = dsigmoid),
-    create_layer(.inputs = 64, .outputs = OUTPUT_PARAMETERS, .forward = linear, .backward = dlinear),  // Linear for Q-values
+    create_layer(.inputs = INPUT_PARAMETERS, .outputs = 24, .forward = sigmoid, .backward = dsigmoid),
+    create_layer(.inputs = 24, .outputs = OUTPUT_PARAMETERS, .forward = linear, .backward = dlinear),  // Linear for Q-values
   };
 
   nn_online = neuron_create(layers, ARRAY_LEN(layers));
@@ -238,8 +237,13 @@ void game_update_ui(Font font, int games_count, int record, State state, NMatrix
   DrawTextEx(font, buf, (Vector2) { .x = BLOCK_SIZE, .y = BLOCK_SIZE*2 }, 28, 1, WHITE);
 
   state_to_matrix(input, state);
-  NMatrix pred = forward(&nn_target, activations_freeze, input);
-  snprintf(buf, sizeof(buf), "prediction=(%+.8f %+.8f %+.8f)", VEC_AT(pred, 0), VEC_AT(pred, 1), VEC_AT(pred, 2));
+  static float pred_values[3] = {0};
+  if (games_count % 10 == 0) {
+    NMatrix pred = forward(&nn_target, activations_freeze, input);
+    for (int i = 0; i < 3; i++)
+      pred_values[i] = VEC_AT(pred, i);
+  }
+  snprintf(buf, sizeof(buf), "prediction=(%+.8f %+.8f %+.8f)", pred_values[0], pred_values[1], pred_values[2]);
   DrawTextEx(font, buf, (Vector2) { .x = BLOCK_SIZE, .y = BLOCK_SIZE*3 }, 28, 1, WHITE);
 }
 
@@ -527,12 +531,7 @@ void agent_train_short_memory(State old_state, Action action, Game_Step step, St
 
 void agent_train_long_memory(void) {
   if (agent_memory_size == 0) return;
-
-  // Periodic sync: train target network every 10 games
-  static int games_since_sync = 0;
-  games_since_sync++;
-  if (games_since_sync < 10) return;
-  games_since_sync = 0;
+  if (agent_games_count % 10 == 0) return;
 
   size_t train_size = MIN(agent_memory_size, BATCH_SIZE);
 
@@ -543,7 +542,7 @@ void agent_train_long_memory(void) {
 
     neuron_zero(&delta_grad);
     model_train_step(
-        &nn_target,  // Train nn_target from replay buffer (stable targets)
+        &nn_online,
         agent_memory[index].old_state,
         agent_memory[index].action,
         agent_memory[index].step,
@@ -553,7 +552,8 @@ void agent_train_long_memory(void) {
     neuron_add(&grad, &delta_grad);
   }
 
-  neuron_weighted_add(&nn_target, &grad, -LEARNING_RATE / (float)train_size);
+  neuron_weighted_add(&nn_online, &grad, -LEARNING_RATE / (float)train_size);
+  neuron_copy(nn_target, nn_online);
 }
 
 void agent_remember(State old_state, Action action, Game_Step step, State new_state) {
