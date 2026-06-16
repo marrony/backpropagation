@@ -69,7 +69,8 @@ int main(void) {
       State old_state = agent_get_state(head, food);
 
       if (!is_paused) {
-        Action action = agent_get_action(old_state, input_old);
+        Action_Type type;
+        Action action = agent_get_action(old_state, input_old, &type);
         Game_Step step = game_step(action);
         State new_state = agent_get_state(head, food);
 
@@ -84,12 +85,13 @@ int main(void) {
           float q0 = VEC_AT(pred, ACTION_STRAIGHT);
           float q1 = VEC_AT(pred, ACTION_LEFT);
           float q2 = VEC_AT(pred, ACTION_RIGHT);
-          printf("Games=%-4d Q=(%+6.2f,%+6.2f,%+6.2f) record=%-3d action=%-8s food=(%d,%d,%d) snake_dir=(%d,%d,%d,%d) danger=(%d,%d,%d)\n",
+          printf("Games=%-4d Q=(%+6.2f,%+6.2f,%+6.2f) record=%-3d action=%-8s food=(%d,%d,%d) snake_dir=(%d,%d,%d,%d) danger=(%d,%d,%d) action_type=%s\n",
               agent_games_count,
               q0, q1, q2, record, action_names[action],
               old_state.food_ahead, old_state.food_left, old_state.food_right,
               old_state.dir_l, old_state.dir_r, old_state.dir_u, old_state.dir_d,
-              old_state.danger_straight, old_state.danger_left, old_state.danger_right
+              old_state.danger_straight, old_state.danger_left, old_state.danger_right,
+              type == ACTION_EXPLORATION ? "exploration" : "greedy"
               );
         }
 

@@ -466,13 +466,17 @@ State agent_get_state(Point2D head, Point2D food) {
 
 int agent_games_count = 0;
 
-Action agent_get_action(State state, NMatrix input) {
-  (void)state;
+typedef enum {
+  ACTION_EXPLORATION,
+  ACTION_GREED,
+} Action_Type;
 
-  // Decay epsilon: 100% at start, 10% minimum after 500 games
-  int epsilon = MAX(10, 100 * (1.0f - (float)agent_games_count / 1000.0f));
+Action agent_get_action(State state, NMatrix input, Action_Type* type) {
+  int epsilon = MAX(0, 100 * (1.0f - (float)agent_games_count / 1000.0f));
 
   if (rand() % 100 < epsilon) {
+    *type = ACTION_EXPLORATION;
+
     //printf("Exploration\n");
     // Uniform random exploration for fair exploration of all actions
     int choice = rand() % 3;
@@ -485,6 +489,7 @@ Action agent_get_action(State state, NMatrix input) {
     }
   }
 
+  *type = ACTION_GREED;
   state_to_matrix(input, state);
   int action = mat_row_max(forward(&nn_target, activations_freeze, input));
   return (Action)action;
