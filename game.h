@@ -83,13 +83,13 @@ NMatrix target;
 
 #define LEARNING_RATE 0.05f
 #define REWARD 10.0f
-#define Q_VALUE_OFFSET 0.5f  // Small offset to encourage positive initial Q-values
+#define Q_VALUE_OFFSET 1.0f  // Small offset to encourage positive initial Q-values
 
 void model_start(void) {
   Neuron_Layer layers[] = {
-    create_layer(.inputs = INPUT_PARAMETERS, .outputs = 24, .forward = sigmoid, .backward = dsigmoid),
-    //create_layer(.inputs = 24, .outputs = 24, .forward = sigmoid, .backward = dsigmoid),
-    create_layer(.inputs = 24, .outputs = OUTPUT_PARAMETERS, .forward = linear, .backward = dlinear),  // Linear for Q-values
+    create_layer(.inputs = INPUT_PARAMETERS, .outputs = 8, .forward = sigmoid, .backward = dsigmoid),
+    // create_layer(.inputs = 8, .outputs = 8, .forward = sigmoid, .backward = dsigmoid),
+    create_layer(.inputs = 8, .outputs = OUTPUT_PARAMETERS, .forward = linear, .backward = dlinear),  // Linear for Q-values
   };
 
   nn_online = neuron_create(layers, ARRAY_LEN(layers));
