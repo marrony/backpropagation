@@ -299,7 +299,7 @@ int main(void) {
             VEC_AT(softmax->output.value, 9)
         );
 
-        int index = mat_row_max(softmax->output.value);
+        int index = mat_row_argmax(softmax->output.value);
 
         Color color = index == (int)MAT_AT(label, 0, 0) ? GREEN : RED;
 

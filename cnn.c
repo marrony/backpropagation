@@ -653,7 +653,7 @@ int main(void) {
             softmax_output.softmax_out[9]
         );
 
-        int index = mat_row_max(mat_init(1, DENSE_UNITS, softmax_output.softmax_out));
+        int index = mat_row_argmax(mat_init(1, DENSE_UNITS, softmax_output.softmax_out));
 
         Color color = index == (int)MAT_AT(label, 0, 0) ? GREEN : RED;
 

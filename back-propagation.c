@@ -6,7 +6,7 @@ float accuracy(Neuron_Network nn, NMatrix* outputs, NMatrix test_data, NMatrix t
   int corrects = 0;
   for (int i = 0; i < test_data.rows; i++) {
     NMatrix input = mat_row(test_data, i);
-    int index = infer(nn, outputs, input);
+    int index = mat_row_argmax(forward(&nn, outputs, input));
 
     corrects += index == (int)MAT_AT(test_labels, i, 0);
   }
@@ -229,7 +229,7 @@ int main(void) {
       UpdateTexture(eval_texture, pixels);
       DrawTextureEx(eval_texture, (Vector2) {.x = x_offset + 275, .y = y_offset}, 0, scale, WHITE);
 
-      int index = infer(nn, outputs, input);
+      int index = mat_row_argmax(forward(&nn, outputs, input));
       int label = (int)MAT_AT(test_labels, eval_index, 0);
 
       NMatrix output = outputs[nn.layers-1];

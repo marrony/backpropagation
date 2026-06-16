@@ -88,6 +88,7 @@ NMatrix target;
 void model_start(void) {
   Neuron_Layer layers[] = {
     create_layer(.inputs = INPUT_PARAMETERS, .outputs = 24, .forward = sigmoid, .backward = dsigmoid),
+    //create_layer(.inputs = 24, .outputs = 24, .forward = sigmoid, .backward = dsigmoid),
     create_layer(.inputs = 24, .outputs = OUTPUT_PARAMETERS, .forward = linear, .backward = dlinear),  // Linear for Q-values
   };
 
@@ -130,7 +131,7 @@ void model_train_step(Neuron_Network* nn, State old_state, Action action, Game_S
     // Bellman's equation: add max Q-value of next state
     state_to_matrix(input_new, new_state);
     NMatrix new_pred = forward(&nn_target, activations_freeze, input_new);
-    int index = mat_row_max(new_pred);
+    int index = mat_row_argmax(new_pred);
     float max_q_next = VEC_AT(new_pred, index);
     Q_new += 0.9 * max_q_next;
   }
@@ -194,8 +195,6 @@ void game_draw_dir(Point2D head, Snake_Direction dir) {
   DrawLineV(startPos, endPos, RED);
   DrawCircleV(endPos, 2, RED);
 }
-
-// NMatrix forward(Neuron_Network* nn, State state, NMatrix* activations, NMatrix input);
 
 void game_update_ui(Font font, int games_count, int record, State state, NMatrix input) {
   char buf[128];
@@ -315,6 +314,16 @@ bool game_check_collision(Point2D pt) {
   return false;
 }
 
+int sq_distance(Point2D a, Point2D b) {
+  int diff_x = a.x - b.x;
+  int diff_y = a.y - b.y;
+  return diff_x*diff_x + diff_y*diff_y;
+}
+
+float distance(Point2D a, Point2D b) {
+  return sqrtf((float)sq_distance(a, b));
+}
+
 Game_Step game_step(Action action) {
   snake_moves += 1;
 
@@ -343,15 +352,13 @@ Game_Step game_step(Action action) {
 
   // Reward shaping: +0.1 for moving closer to food, -0.1 for moving farther
   if (!point_equals(head, food)) {
-    float old_dist = sqrtf((float)(old_head.x - food.x)*(old_head.x - food.x) + 
-                           (float)(old_head.y - food.y)*(old_head.y - food.y));
-    float new_dist = sqrtf((float)(head.x - food.x)*(head.x - food.x) + 
-                           (float)(head.y - food.y)*(head.y - food.y));
+    int old_dist = sq_distance(old_head, food);
+    int new_dist = sq_distance(head, food);
     
     if (new_dist < old_dist) {
-      reward += 0.1;  // Closer to food
+      reward += 0.5;  // Closer to food
     } else {
-      reward -= 0.1;  // Farther from food
+      reward -= 0.5;  // Farther from food
     }
   }
 
@@ -491,8 +498,7 @@ Action agent_get_action(State state, NMatrix input, Action_Type* type) {
 
   *type = ACTION_GREED;
   state_to_matrix(input, state);
-  int action = mat_row_max(forward(&nn_target, activations_freeze, input));
-  return (Action)action;
+  return (Action) mat_row_argmax(forward(&nn_target, activations_freeze, input));
 }
 
 #define MEMORY_SIZE (100*1000)

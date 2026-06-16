@@ -742,7 +742,7 @@ NMatrix mat_row(NMatrix m, int row) {
  * @param row     Input row vector (1 × cols)
  * @return        Index of maximum value (0 to cols-1)
  */
-int mat_row_max(NMatrix row) {
+int mat_row_argmax(NMatrix row) {
   assert(row.rows == 1);
   assert(row.cols >= 1);
 
@@ -1406,13 +1406,6 @@ int64_t get_system_micros(void) {
   struct timespec ts = {0, 0};
   timespec_get(&ts, TIME_UTC);
   return (int64_t)(ts.tv_sec * SEC_TO_US) + (int64_t)(ts.tv_nsec / MICRO_TO_NS);
-}
-
-int infer(Neuron_Network nn, NMatrix* outputs, NMatrix input) {
-  forward(&nn, outputs, input);
-  NMatrix output = outputs[nn.layers-1];
-
-  return mat_row_max(output);
 }
 
 #endif //NN_H
