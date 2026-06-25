@@ -5,24 +5,33 @@
 #include "nn.h"
 #include "node.h"
 
-#define TRAIN_SAMPLES 64
-#define VOCAB_SIZE 16
+const char *training_text = "the desert was silent except for the low, rhythmic hum of the wind sweeping across the dunes. for miles in every direction, nothing broke the horizon line but shifting sand and the occasional skeletal remains of ancient shrubs. evelyn checked her gps device, frowning at the uncoordinated coordinates flashing across the screen. the signal was dead. she had exactly two liters of water left, a compass that could not find true north, and six hours of daylight remaining before the temperature dropped below freezing.";
+
+#define MAX_VOCAB_SIZE 1024
 #define CONTEXT 4
 #define EMBED_DIM 8
 #define INPUT_DIM (CONTEXT * EMBED_DIM)
 #define MAX_GENERATE 20
+#define TOK_SIZE 15
+#define TOKEN_SIZE (TOK_SIZE+1)
+
+#define TO_STR_HELPER(x) #x
+#define TO_STR(x) TO_STR_HELPER(x)
+#define SCAN_TOKEN_FMT "%" TO_STR(TOK_SIZE) "s"
+
+typedef struct {
+  char token[TOKEN_SIZE];
+} Token;
 
 // Vocabulary
-const char *vocab[VOCAB_SIZE] = {
-    "<START>", "I", "like", "cats", "dogs", "apple", "banana", "fruit", 
-    "eat", "is", "delicious", "love", "coding", "software", "fun", ".",
-};
+Token vocab[MAX_VOCAB_SIZE] = {0};
+int vocab_size = 0;
 
 // --- MODEL PARAMETERS (Pretend trained) ---
 
-// Embedding matrix [vocab][embed_dim]
-float embedding[VOCAB_SIZE][EMBED_DIM];
-float embedding_g_grad[VOCAB_SIZE][EMBED_DIM];
+// Embedding matrix [vocab_size][embed_dim]
+float embedding[MAX_VOCAB_SIZE][EMBED_DIM];
+float embedding_g_grad[MAX_VOCAB_SIZE][EMBED_DIM];
 
 // ------------------------------------------
 
@@ -31,18 +40,19 @@ float rand_uniform(void) {
   return rand() / (float)RAND_MAX;
 }
 
-int token_to_id(const char *token, size_t len) {
-    for (int i = 0; i < VOCAB_SIZE; i++) {
-        if (strncmp(token, vocab[i], len) == 0)
+int token_to_id(Token token) {
+    for (int i = 0; i < vocab_size; i++) {
+        if (strncmp(token.token, vocab[i].token, TOKEN_SIZE) == 0)
             return i;
     }
 
-    assert(0);
     return -1;
 }
 
 Node* input_node;
 Node* linear_node;
+Node* hidden1_node;
+Node* hidden2_node;
 Node* softmax_node;
 
 void copy_context(NMatrix input, int* context) {
@@ -84,7 +94,7 @@ void acc_embedding_grad(NMatrix grad, int* context) {
 }
 
 void update_embedding(float lr) {
-    for (int v = 0; v < VOCAB_SIZE; v++) {
+    for (int v = 0; v < vocab_size; v++) {
         float* emb = embedding[v];
         float* g_grad = embedding_g_grad[v];
 
@@ -99,51 +109,78 @@ void update_embedding(float lr) {
 }
 
 void init_model(void) {
+    // --- Mini Training Step (Sliding Window) ---
+    int sequence[256];
+    int seq_len = 0;
+
+    Token token = {0};
+    strcpy(token.token, "<START>");
+    vocab[0] = token;
+    vocab_size += 1;
+
+    sequence[0] = 0;
+    seq_len += 1;
+
+    printf("%s\n", training_text);
+
+    // Simple tokenizer
+    const char *delim = " .,"; 
+    const char *ptr = training_text;
+    while (*ptr != '\0') {
+        ptr += strspn(ptr, delim);
+        if (*ptr == '\0') break;
+        size_t len = strcspn(ptr, delim);
+
+        memset(&token, 0, sizeof(token));
+        strncpy(token.token, ptr, len);
+
+        int id = token_to_id(token);
+        if (id == -1) {
+            id = vocab_size;
+            vocab[vocab_size] = token;
+            vocab_size += 1;
+        }
+        // printf("%d (%s) ", id, vocab[id].token);
+        sequence[seq_len++] = id;
+        ptr += len;
+    }
+    // printf("\n");
+
+    printf("seq_len = %d\n", seq_len);
+    printf("vocab_size = %d\n", vocab_size);
+
+    assert(vocab_size > 0);
+    assert(seq_len > 0);
+
+    // Setup graph for training: input -> linear -> hidden -> softmax
+    input_node = create_variable(1, INPUT_DIM);
+    linear_node = create_linear(input_node, vocab_size);
+    hidden1_node = create_linear(linear_node, vocab_size);
+    hidden2_node = create_linear(hidden1_node, vocab_size);
+    softmax_node = create_softmax(hidden2_node);
+
     // Initialize embeddings and weights with small random values
-    for (int v = 0; v < VOCAB_SIZE; v++) {
+    for (int v = 0; v < vocab_size; v++) {
         for (int d = 0; d < EMBED_DIM; d++)
             embedding[v][d] = rand_uniform() * 2.0f - 1.0f;
     }
 
-    // --- Mini Training Step (Sliding Window) ---
-    // Setup graph for training: input -> linear -> softmax
-    input_node = create_variable(1, INPUT_DIM);
-    linear_node = create_linear(input_node, VOCAB_SIZE);
-    softmax_node = create_softmax(linear_node);
-
     mat_rand(linear_node->weight.value);
     mat_rand(linear_node->bias.value);
+    mat_rand(hidden1_node->weight.value);
+    mat_rand(hidden1_node->bias.value);
+    mat_rand(hidden2_node->weight.value);
+    mat_rand(hidden2_node->bias.value);
 
-    const char *training_text = "I like cats. dogs love coding. software is fun.";
-    int sequence[256];
-    int seq_len = 0;
-
-    // Simple tokenizer
-    const char *delim = " .,"; 
-    const char *token = training_text;
-    while (*token != '\0') {
-        token += strspn(token, delim);
-        if (*token == '\0') break;
-        size_t len = strcspn(token, delim);
-        int id = token_to_id(token, len);
-        if (id != -1) {
-            sequence[seq_len++] = id;
-        }
-        token += len;
-    }
-
-    // Prepend <START> (0) to allow the first window to have full context
-    for (int i = seq_len; i > 0; i--) {
-        sequence[i] = sequence[i-1];
-    }
-    sequence[0] = 0; // <START>
-    seq_len++;
-
-    NMatrix dL = mat_alloc(1, VOCAB_SIZE);
-    NMatrix target_label = mat_alloc(1, VOCAB_SIZE);
+    NMatrix dL = mat_alloc(1, vocab_size);
+    NMatrix target_label = mat_alloc(1, vocab_size);
     float lr = 0.001f;
 
-    for (int epoch = 0; epoch < 8000; epoch++) {
+    int max_epochs = 1000;
+    for (int epoch = 0; epoch < max_epochs; epoch++) {
+        printf("\rtraining = %d%%\r", epoch*100 / max_epochs);
+        fflush(stdout);
+
         zero_grads(softmax_node);
         zero_embedding_grad();
 
@@ -153,7 +190,10 @@ void init_model(void) {
             int context[CONTEXT] = {0};
             for (int j = 0; j < CONTEXT; j++) {
                 context[j] = sequence[i - CONTEXT + j];
+
+                // if (epoch == 0) printf("%s ", vocab[context[j]].token);
             }
+            // if (epoch == 0) printf("=> %s\n", vocab[sequence[i]].token);
 
             // Prepare training input vector from embeddings
             copy_context(input_node->output.value, context);
@@ -190,13 +230,13 @@ int sample(NMatrix probs) {
     float r = rand_uniform();
     float cumulative = 0.0f;
 
-    for (int i = 0; i < VOCAB_SIZE; i++) {
+    for (int i = 0; i < vocab_size; i++) {
         cumulative += VEC_AT(probs, i);
         if (r <= cumulative)
             return i;
     }
 
-    return VOCAB_SIZE - 1;
+    return vocab_size - 1;
 }
 
 int main(void) {
@@ -204,48 +244,53 @@ int main(void) {
     srand(42);
     init_model();
 
-    int context[CONTEXT] = {0, 0, 0, 0};
+    int context[CONTEXT] = {0};
 
-    printf("Enter 4 starting tokens:\n");
+    while (true) {
+        printf("Enter 4 starting tokens:\n");
 
-    for (int i = 0; i < CONTEXT; i++) {
-        char input[50];
-        scanf("%49s", input);
+        for (int i = 0; i < CONTEXT; i++) {
+            Token input = {0};
 
-        int id = token_to_id(input, strlen(input));
-        if (id == -1) {
-            printf("Unknown token\n");
-            return 1;
+            if (scanf(SCAN_TOKEN_FMT, input.token) <= 0)
+                return 0;
+
+            int id = token_to_id(input);
+            if (id == -1) {
+                printf("Unknown token: %.*s\n", TOKEN_SIZE, input.token);
+                return 1;
+            }
+            context[i] = id;
         }
-        context[i] = id;
+
+        printf("Generated:\n");
+
+        for (int i = 0; i < CONTEXT; i++)
+            printf("%s ", vocab[context[i]].token);
+
+        for (int step = 0; step < MAX_GENERATE; step++) {
+            // Build input vector (concatenate embeddings)
+            copy_context(input_node->output.value, context);
+
+            node_forward(softmax_node);
+
+            // Sample next token
+            // int next = mat_row_argmax(softmax_node->output.value); // deterministic greedy decoding
+            int next = sample(softmax_node->output.value); // stochastic probabilistic sampling
+
+            printf("%s ", vocab[next].token);
+
+            // if (next == token_to_id((Token) {.token="."}))
+            //     break;
+
+            // Slide context window
+            for (int i = 0; i < CONTEXT - 1; i++)
+                context[i] = context[i+1];
+
+            context[CONTEXT - 1] = next;
+        }
+
+        printf("\n");
     }
-
-    printf("Generated:\n");
-
-    for (int i = 0; i < CONTEXT; i++)
-        printf("%s ", vocab[context[i]]);
-
-    for (int step = 0; step < MAX_GENERATE; step++) {
-        // Build input vector (concatenate embeddings)
-        copy_context(input_node->output.value, context);
-
-        node_forward(softmax_node);
-
-        // Sample next token
-        int next = sample(softmax_node->output.value);
-
-        printf("%s ", vocab[next]);
-
-        if (next == token_to_id(".", 1))
-            break;
-
-        // Slide context window
-        for (int i = 0; i < CONTEXT - 1; i++)
-            context[i] = context[i+1];
-
-        context[CONTEXT - 1] = next;
-    }
-
-    printf("\n");
     return 0;
 }

@@ -335,7 +335,7 @@ void mat_mult(NMatrix dst, NMatrix a, NMatrix b) {
  * @param a      First matrix (a.rows × a.cols)
  * @param b      Second matrix (b.rows × a.cols) where b.cols = a.cols
  */
-void mat_mult_transpose(NMatrix dst, NMatrix a, NMatrix b) {
+void mat_mult_A_and_B_transposed(NMatrix dst, NMatrix a, NMatrix b) {
   ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.rows, a.cols, b.cols, b.rows);
 
   for (int i = 0; i < dst.rows; i++) {
@@ -362,7 +362,7 @@ void mat_mult_transpose(NMatrix dst, NMatrix a, NMatrix b) {
  * @param b      Second matrix (b.rows × a.cols) where b.cols = a.cols
  * @param c      Bias matrix (a.rows × b.rows)
  */
-void mat_mult_transpose_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
+void mat_mult_A_and_B_transposed_add_C(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
   ASSERT_MATRIX_MULT_ADD(dst.rows, dst.cols, a.rows, a.cols, b.cols, b.rows, c.rows, c.cols);
 
   for (int i = 0; i < dst.rows; i++) {
@@ -387,7 +387,7 @@ void mat_mult_transpose_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
  * @param a      First matrix (a.rows × a.cols)
  * @param b      Second matrix (a.rows × b.cols) where a.rows = b.rows
  */
-void mat_transpose_mult(NMatrix dst, NMatrix a, NMatrix b) {
+void mat_mult_A_transposed_and_B(NMatrix dst, NMatrix a, NMatrix b) {
   ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.cols, a.rows, b.rows, b.cols);
 
   for (int i = 0; i < dst.rows; i++) {
@@ -414,7 +414,7 @@ void mat_transpose_mult(NMatrix dst, NMatrix a, NMatrix b) {
  * @param b      Second matrix (a.rows × b.cols) where a.rows = b.rows
  * @param c      Bias matrix (a.cols × b.cols)
  */
-void mat_transpose_mult_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
+void mat_mult_A_transposed_and_B_add_C(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
   ASSERT_MATRIX_MULT_ADD(dst.rows, dst.cols, a.cols, a.rows, b.rows, b.cols, c.rows, c.cols);
 
   for (int i = 0; i < dst.rows; i++) {
@@ -1144,11 +1144,11 @@ float backward(
     mat_copy(grad->b[i], delta[i]);
 
     // dw[i] = h[i-1].T * delta_i (standard convention: W is stored as N×M)
-    mat_transpose_mult(grad->w[i], act, delta[i]);
+    mat_mult_A_transposed_and_B(grad->w[i], act, delta[i]);
 
     if (i > 0) {
       // dL[i-1] = delta_i * W^T (standard convention)
-      mat_mult_transpose(dL_dh[i-1], delta[i], nn->w[i]);
+      mat_mult_A_and_B_transposed(dL_dh[i-1], delta[i], nn->w[i]);
     }
   }
 

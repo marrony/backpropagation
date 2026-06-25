@@ -516,15 +516,15 @@ void node_backward(Node* node, NMatrix dL) {
 
       // dL/dW[i,j] = dL[j] * x[i] (outer product)
       // x^T is (2×1), dL is (1×3), result is (2×3) = W's shape
-      // Use mat_transpose_mult: w.grad = x^T × dL
+      // Use mat_mult_A_transposed_and_B: w.grad = x^T × dL
       // x (1×2), dL (1×3) -> x^T (2×1) × dL (1×3) = (2×3) ✓
-      mat_transpose_mult(w.grad, x.value, dL);
+      mat_mult_A_transposed_and_B(w.grad, x.value, dL);
       // dL_db = I * dL
       mat_copy(b.grad, dL);
       // dL_dx = dL * W^T (standard: W is N×M, x is 1×N, dL is 1×M)
-      // Use mat_mult_transpose: x.grad = dL × W^T
+      // Use mat_mult_A_and_B_transposed: x.grad = dL × W^T
       // dL (1×M), W (N×M), W^T (M×N), result (1×N)
-      mat_mult_transpose(x.grad, dL, w.value);
+      mat_mult_A_and_B_transposed(x.grad, dL, w.value);
 
       // Set output gradient to upstream gradient (like sigmoid, relu, softmax)
       mat_copy(fx.grad, dL);
@@ -743,8 +743,8 @@ void node_backward(Node* node, NMatrix dL) {
       //   dL/dv = u^T * dL (matrix mult: [M×N] * [N×P] = [M×P])
       mat_copy(fx.grad, dL);
 
-      mat_mult_transpose(u.grad, dL, v.value);
-      mat_transpose_mult(v.grad, u.value, dL);
+      mat_mult_A_and_B_transposed(u.grad, dL, v.value);
+      mat_mult_A_transposed_and_B(v.grad, u.value, dL);
 
       node_backward(node->input[0], u.grad);
       node_backward(node->input[1], v.grad);
