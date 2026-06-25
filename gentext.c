@@ -11,7 +11,7 @@ const char *training_text = "the desert was silent except for the low, rhythmic 
 #define CONTEXT 4
 #define EMBED_DIM 8
 #define INPUT_DIM (CONTEXT * EMBED_DIM)
-#define MAX_GENERATE 20
+#define MAX_GENERATE 500
 #define TOK_SIZE 15
 #define TOKEN_SIZE (TOK_SIZE+1)
 
@@ -134,6 +134,8 @@ void init_model(void) {
         memset(&token, 0, sizeof(token));
         strncpy(token.token, ptr, len);
 
+        ptr += len;
+
         int id = token_to_id(token);
         if (id == -1) {
             id = vocab_size;
@@ -141,10 +143,18 @@ void init_model(void) {
             vocab_size += 1;
         }
         // printf("%d (%s) ", id, vocab[id].token);
-        sequence[seq_len++] = id;
-        ptr += len;
+        sequence[seq_len] = id;
+        seq_len += 1;
     }
     // printf("\n");
+
+    memset(&token, 0, sizeof(token));
+    strcpy(token.token, "<END>");
+    vocab[vocab_size] = token;
+    vocab_size += 1;
+
+    sequence[seq_len] = token_to_id(token);
+    seq_len += 1;
 
     printf("seq_len = %d\n", seq_len);
     printf("vocab_size = %d\n", vocab_size);
@@ -152,12 +162,12 @@ void init_model(void) {
     assert(vocab_size > 0);
     assert(seq_len > 0);
 
-    // Setup graph for training: input -> linear -> hidden -> softmax
+    // Setup graph for training: input -> linear -> hidden1 -> hidden2 -> softmax
     input_node = create_variable(1, INPUT_DIM);
     linear_node = create_linear(input_node, vocab_size);
     hidden1_node = create_linear(linear_node, vocab_size);
     hidden2_node = create_linear(hidden1_node, vocab_size);
-    softmax_node = create_softmax(hidden2_node);
+    softmax_node = create_softmax(hidden1_node);
 
     // Initialize embeddings and weights with small random values
     for (int v = 0; v < vocab_size; v++) {
@@ -176,11 +186,17 @@ void init_model(void) {
     NMatrix target_label = mat_alloc(1, vocab_size);
     float lr = 0.001f;
 
-    int max_epochs = 1000;
-    for (int epoch = 0; epoch < max_epochs; epoch++) {
-        printf("\rtraining = %d%%\r", epoch*100 / max_epochs);
+    float cost = 1*seq_len;
+    // int max_epochs = 5000;
+    int epoch = 0;
+    //for (int epoch = 0; epoch < max_epochs; epoch++) {
+    while (cost/seq_len >= 0.01) {
+        epoch += 1;
+        //printf("\rtraining = %d%% cost = %f\r", epoch*100 / max_epochs, cost / seq_len);
+        printf("\rtraining = %d cost = %f\r", epoch, cost / seq_len);
         fflush(stdout);
 
+        cost = 0;
         zero_grads(softmax_node);
         zero_embedding_grad();
 
@@ -205,9 +221,12 @@ void init_model(void) {
             // Forward pass
             node_forward(softmax_node);
 
-            // Loss = 0.5 * (pred - target)^2
-            // Loss = dL/dpred = 0.5 * 2 * (pred - target)
-            mat_sub(dL, softmax_node->output.value, target_label);
+            //  Categorical Cross-Entropy Loss
+            //  Loss = - dot(target, ln(y))
+            //  dLoss = - target / y
+            cost += -logf(VEC_AT(softmax_node->output.value, sequence[i]) + 1e-15f);
+            mat_memberwise_div(dL, target_label, softmax_node->output.value, 1e-15f);
+            mat_scale(dL, dL, -1);
 
             // Backward pass and accumulate gradients
             node_backward(softmax_node, dL);
@@ -221,6 +240,8 @@ void init_model(void) {
         update_grads(softmax_node, lr);
         update_embedding(lr);
     }
+
+    printf("\n");
 
     mat_free(dL);
     mat_free(target_label);
@@ -280,8 +301,8 @@ int main(void) {
 
             printf("%s ", vocab[next].token);
 
-            // if (next == token_to_id((Token) {.token="."}))
-            //     break;
+            if (next == token_to_id((Token) {.token="<END>"}))
+                break;
 
             // Slide context window
             for (int i = 0; i < CONTEXT - 1; i++)

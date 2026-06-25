@@ -616,7 +616,7 @@ void mat_memberwise_mult(NMatrix dst, NMatrix a, NMatrix b) {
  * @param a      First input matrix (numerator)
  * @param b      Second input matrix (denominator)
  */
-void mat_memberwise_div(NMatrix dst, NMatrix a, NMatrix b) {
+void mat_memberwise_div(NMatrix dst, NMatrix a, NMatrix b, float eps) {
   assert(dst.cols == a.cols);
   assert(dst.rows == a.rows);
   assert(dst.cols == b.cols);
@@ -624,7 +624,7 @@ void mat_memberwise_div(NMatrix dst, NMatrix a, NMatrix b) {
 
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
-      MAT_AT(dst, i, j) = MAT_AT(a, i, j) / MAT_AT(b, i, j);
+      MAT_AT(dst, i, j) = MAT_AT(a, i, j) / (MAT_AT(b, i, j) + eps);
     }
   }
 }

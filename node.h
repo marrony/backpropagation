@@ -425,7 +425,7 @@ void node_forward(Node* node) {
       // [N×M] ⊘ [N×M] = [N×M]
       node_forward(node->input[0]);
       node_forward(node->input[1]);
-      mat_memberwise_div(fx.value, u.value, v.value);
+      mat_memberwise_div(fx.value, u.value, v.value, 1e-15f);
       break;
 
     case NODE_ADD:
