@@ -145,14 +145,14 @@ Node* create_variable(int rows, int cols) {
   return node;
 }
 
-Node* create_linear(Node* input, int out_size) {
+Node* create_linear(Node* input, int in_size, int out_size) {
   Node* node = create_node(NODE_LINEAR);
   node->input[0] = input;
   node->input_size = 1;
 
   int rows = node_get_value_rows(input);
   int cols = node_get_value_cols(input);
-  int in_size = rows * cols;
+  assert(rows*cols == in_size);
 
   // node->output.value holds f(x) = x*W + b
   // node->output.grad holds dL/d(output)
@@ -320,7 +320,7 @@ void node_forward(Node* node) {
       // f(x) = softmax(x) (row-wise normalization)
       // softmax(x)_j = exp(x_j) / Σ_k exp(x_k)
       node_forward(node->input[0]);
-      softmax(fx.value, x.value, node->temperature);
+      softmax_temperature(fx.value, x.value, node->temperature);
       break;
 
     case NODE_RELU:
@@ -560,7 +560,7 @@ void node_backward(Node* node, NMatrix dL) {
       // downstream:
       //   dL/dx_ij = s_i * (dL_ij - Σ_k dL_kj * s_i) (row-wise)
       mat_copy(fx.grad, dL);
-      dsoftmax(x.grad, fx.value, dL, node->temperature);
+      dsoftmax_temperature(x.grad, fx.value, dL, node->temperature);
       node_backward(node->input[0], x.grad);
       break;
 

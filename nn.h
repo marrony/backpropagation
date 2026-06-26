@@ -911,7 +911,7 @@ void drelu(NMatrix dst, NMatrix h, NMatrix dL_dh) {
 //           exp(x[i]/t)
 // returns --------------
 //         sum(exp(x[j]/t))
-void softmax(NMatrix dst, NMatrix x, float t) {
+void softmax_temperature(NMatrix dst, NMatrix x, float t) {
   assert(x.rows == 1);
   assert(dst.rows == 1);
   assert(t > 0.0f);
@@ -937,7 +937,7 @@ void softmax(NMatrix dst, NMatrix x, float t) {
   }
 }
 
-void dsoftmax(NMatrix dst, NMatrix h, NMatrix dL_dh, float t) {
+void dsoftmax_temperature(NMatrix dst, NMatrix h, NMatrix dL_dh, float t) {
   assert(h.rows == 1);
   assert(dst.rows == 1);
   assert(t > 0.0f);
@@ -950,6 +950,14 @@ void dsoftmax(NMatrix dst, NMatrix h, NMatrix dL_dh, float t) {
   float inv_t = 1.0f / t;
   for (int i = 0; i < h.cols; i++)
     VEC_AT(dst, i) = inv_t * VEC_AT(h, i) * (VEC_AT(dL_dh, i) - dot);
+}
+
+void softmax(NMatrix dst, NMatrix x) {
+  softmax_temperature(dst, x, 1.0f);
+}
+
+void dsoftmax(NMatrix dst, NMatrix h, NMatrix dL_dh) {
+  dsoftmax_temperature(dst, h, dL_dh, 1.0f);
 }
 
 void linear(NMatrix h, NMatrix z) {

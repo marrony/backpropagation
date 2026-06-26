@@ -184,11 +184,11 @@ int main(void) {
   Node* input_img = create_constant(1, IMG_SIZE*IMG_SIZE);
 
   for (int f = 0; f < FEATURES; f++) {
-    conv[f] = create_conv2d(input_img, IMG_SIZE, KERN_SIZE);
-    relu[f] = create_relu(conv[f]);
+    conv[f] = create_conv2d(input_img, IMG_SIZE, KERN_SIZE); // CONV_OUT x CONV_OUT
+    relu[f] = create_relu(conv[f]);                          // CONV_OUT x CONV_OUT
   }
   Node* flatten = create_flatten(relu, FEATURES);
-  Node* linear = create_linear(flatten, DENSE_UNITS);
+  Node* linear = create_linear(flatten, FEATURES*CONV_OUT*CONV_OUT, DENSE_UNITS);
   Node* softmax = create_softmax(linear);
 
   float std_conv = sqrtf(2.0f / (FEATURES*KERN_SIZE*KERN_SIZE));

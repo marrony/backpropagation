@@ -2,7 +2,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/signal.h>
 #include <time.h>
+#include <signal.h>
+#include <unistd.h>
 #include "nn.h"
 #include "node.h"
 
@@ -75,8 +78,71 @@ int token_to_id(Token token) {
 Node* input_node;
 Node* linear_node;
 Node* hidden1_node;
-Node* hidden2_node;
 Node* softmax_node;
+
+
+void mat_write(NMatrix mat, FILE* fp) {
+  fwrite(&mat.rows, sizeof(int32_t), 1, fp);
+  fwrite(&mat.cols, sizeof(int32_t), 1, fp);
+  fwrite(mat.elems, sizeof(float), mat.rows*mat.cols, fp);
+}
+
+void mat_read(NMatrix mat, FILE* fp) {
+  int32_t rows = 0;
+  int32_t cols = 0;
+  fread(&rows, sizeof(int32_t), 1, fp);
+  fread(&cols, sizeof(int32_t), 1, fp);
+  assert(rows == mat.rows);
+  assert(cols == mat.cols);
+  fread(mat.elems, sizeof(float), mat.rows*mat.cols, fp);
+}
+
+void save_model(void) {
+  FILE* fp = fopen("models/gentext.bin", "wb");
+  mat_write(linear_node->weight.value, fp);
+  mat_write(linear_node->bias.value, fp);
+  mat_write(hidden1_node->weight.value, fp);
+  mat_write(hidden1_node->bias.value, fp);
+  fclose(fp);
+}
+
+void load_model(void) {
+  // Setup graph for training: input -> linear -> hidden1 -> hidden2 -> softmax
+  input_node = create_variable(1, INPUT_DIM);
+  linear_node = create_linear(input_node, INPUT_DIM, 32);
+  hidden1_node = create_linear(linear_node, 32, vocab_size);
+  softmax_node = create_softmax(hidden1_node);
+  softmax_node->temperature = 1.0;
+
+  // Initialize embeddings and weights with small random values
+  for (int v = 0; v < vocab_size; v++) {
+      for (int d = 0; d < EMBED_DIM; d++)
+          embedding[v][d] = rand_uniform() * 2.0f - 1.0f;
+  }
+
+  mat_rand(linear_node->weight.value);
+  mat_rand(linear_node->bias.value);
+  mat_rand(hidden1_node->weight.value);
+  mat_rand(hidden1_node->bias.value);
+
+  FILE* fp = fopen("models/gentext.bin", "rb");
+  if (fp != NULL) {
+    printf("model exists, continue training\n");
+    mat_read(linear_node->weight.value, fp);
+    mat_read(linear_node->bias.value, fp);
+    mat_read(hidden1_node->weight.value, fp);
+    mat_read(hidden1_node->bias.value, fp);
+    fclose(fp);
+  }
+}
+
+volatile sig_atomic_t keep_running = 1;
+
+void handle_sigint(int sig) {
+  (void)sig;
+
+  keep_running = 0;
+}
 
 void copy_context(NMatrix input, int* context) {
     assert(input.rows == 1);
@@ -193,26 +259,7 @@ void init_model(void) {
     assert(vocab_size > 0);
     assert(seq_len > 0);
 
-    // Setup graph for training: input -> linear -> hidden1 -> hidden2 -> softmax
-    input_node = create_variable(1, INPUT_DIM);
-    linear_node = create_linear(input_node, 32);
-    hidden1_node = create_linear(linear_node, vocab_size);
-    hidden2_node = create_linear(hidden1_node, vocab_size);
-    softmax_node = create_softmax(hidden1_node);
-    softmax_node->temperature = 1.0;
-
-    // Initialize embeddings and weights with small random values
-    for (int v = 0; v < vocab_size; v++) {
-        for (int d = 0; d < EMBED_DIM; d++)
-            embedding[v][d] = rand_uniform() * 2.0f - 1.0f;
-    }
-
-    mat_rand(linear_node->weight.value);
-    mat_rand(linear_node->bias.value);
-    mat_rand(hidden1_node->weight.value);
-    mat_rand(hidden1_node->bias.value);
-    mat_rand(hidden2_node->weight.value);
-    mat_rand(hidden2_node->bias.value);
+    load_model();
 
     int window_count = seq_len - CONTEXT;
 
@@ -224,7 +271,7 @@ void init_model(void) {
     // int max_epochs = 5000;
     int epoch = 0;
     //for (int epoch = 0; epoch < max_epochs; epoch++) {
-    while (cost/window_count >= 0.001 && epoch < 50) {
+    while (keep_running && cost/window_count >= 0.001 && epoch < 50) {
         epoch += 1;
         printf("\rtraining = %d cost = %f\r", epoch, cost / window_count);
 
@@ -272,6 +319,8 @@ void init_model(void) {
         update_embedding(lr);
     }
 
+    save_model();
+
     printf("\n");
 
     mat_free(dL);
@@ -299,6 +348,15 @@ float mat_cos(NMatrix a, NMatrix b) {
 }
 
 int main(void) {
+    struct sigaction act;
+    act.sa_handler = handle_sigint;
+    sigemptyset(&act.sa_mask);
+    act.sa_flags = 0;
+
+    if (sigaction(SIGINT, &act, NULL) < 0) {
+        return 1;
+    }
+
     setvbuf(stdout, NULL, _IONBF, 0);
     //srand(time(NULL));
     srand(42);

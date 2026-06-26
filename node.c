@@ -184,7 +184,7 @@ void test_linear(void) {
   Node* x = create_variable(1, 2);
   mat_copy(x->output.value, mat_init(1, 2, (float[]){1, 2}));
 
-  Node* op = create_linear(x, 3);
+  Node* op = create_linear(x, 2, 3);
   
   // Standard convention: W is 2×3 (N×M where N=input_dim, M=output_dim)
   mat_copy(op->weight.value, mat_init(2, 3, (float[]){1, 2, 3, 4, 5, 6}));
@@ -514,13 +514,13 @@ void test_nmist(void) {
 
   Node* x = create_constant(1, 28*28);
 
-  Node* layer_01_linear = create_linear(x, 20);
+  Node* layer_01_linear = create_linear(x, 28*28, 20);
   Node* layer_01 = create_relu(layer_01_linear);
 
-  Node* layer_02_linear = create_linear(layer_01, 10);
+  Node* layer_02_linear = create_linear(layer_01, 20, 10);
   Node* layer_02 = create_relu(layer_02_linear);
 
-  Node* layer_03_linear = create_linear(layer_02, 10);
+  Node* layer_03_linear = create_linear(layer_02, 10, 10);
   Node* layer_03 = create_softmax(layer_03_linear);
 
   NMatrix dL = mat_alloc(1, 10);
