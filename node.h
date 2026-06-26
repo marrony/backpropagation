@@ -82,6 +82,7 @@ struct Node {
   Param output;
   Param weight;
   Param bias;
+  float temperature;
 };
 
 #define NULL_MATRIX (NMatrix){NULL, 0, 0}
@@ -192,7 +193,9 @@ Node* create_sigmoid(Node* input) {
 Node* create_softmax(Node* input) {
   int rows = node_get_value_rows(input);
   int cols = node_get_value_cols(input);
-  return create_unary(NODE_SOFTMAX, input, rows, cols);
+  Node* node = create_unary(NODE_SOFTMAX, input, rows, cols);
+  node->temperature = 1.0f;
+  return node;
 }
 
 Node* create_relu(Node* input) {
@@ -316,7 +319,7 @@ void node_forward(Node* node) {
       // f(x) = softmax(x) (row-wise normalization)
       // softmax(x)_j = exp(x_j) / Σ_k exp(x_k)
       node_forward(node->input[0]);
-      softmax(fx.value, x.value);
+      softmax(fx.value, x.value, node->temperature);
       break;
 
     case NODE_RELU:
@@ -556,7 +559,7 @@ void node_backward(Node* node, NMatrix dL) {
       // downstream:
       //   dL/dx_ij = s_i * (dL_ij - Σ_k dL_kj * s_i) (row-wise)
       mat_copy(fx.grad, dL);
-      dsoftmax(x.grad, fx.value, dL);
+      dsoftmax(x.grad, fx.value, dL, node->temperature);
       node_backward(node->input[0], x.grad);
       break;
 

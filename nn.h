@@ -908,12 +908,13 @@ void drelu(NMatrix dst, NMatrix h, NMatrix dL_dh) {
 
 // Softmax function
 //
-//           exp(x[i])
+//           exp(x[i]/t)
 // returns --------------
-//         sum(exp(x[j]))
-void softmax(NMatrix dst, NMatrix x) {
+//         sum(exp(x[j]/t))
+void softmax(NMatrix dst, NMatrix x, float t) {
   assert(x.rows == 1);
   assert(dst.rows == 1);
+  assert(t > 0.0f);
 
   float m = VEC_AT(x, 0);
 
@@ -921,54 +922,34 @@ void softmax(NMatrix dst, NMatrix x) {
     if (VEC_AT(x, j) > m) m = VEC_AT(x, j);
   }
 
+  float inv_t = 1.0f / t;
+
   float sum = 0;
   for (int j = 0; j < x.cols; j++) {
-    float e = expf(VEC_AT(x, j) - m);
-    // Check for overflow (expf returns infinity for very large values)
-    if (isinf(e)) {
-      e = FLT_MAX; // Treat overflow as very large value
-    }
+    float e = expf((VEC_AT(x, j) - m) * inv_t);
     VEC_AT(dst, j) = e;
     sum += e;
   }
 
+  float inv_sum = 1.0f / sum;
   for (int j = 0; j < x.cols; j++) {
-    VEC_AT(dst, j) /= sum;
-
-    assert(!isnan(VEC_AT(dst, j)));
+    VEC_AT(dst, j) *= inv_sum;
   }
 }
 
-void dsoftmax(NMatrix dst, NMatrix h, NMatrix dL_dh) {
+void dsoftmax(NMatrix dst, NMatrix h, NMatrix dL_dh, float t) {
   assert(h.rows == 1);
   assert(dst.rows == 1);
+  assert(t > 0.0f);
 
-#if 0
-  for (int j = 0; j < h.cols; j++) {
-    float sj = VEC_AT(h, j);
-
-    float dot = 0;
-    for (int i = 0; i < h.cols; i++) {
-      float si = VEC_AT(h, i);
-
-      float dij = i == j ? 1 : 0;
-
-      float s = dij*si - (si * sj);
-
-      dot += VEC_AT(dL_dh, i) * s;
-    }
-
-    VEC_AT(dst, j) = dot;
-  }
-#else
-  // dL/dz = Softmax(z) * [ dL/dh - dot(Softmax(z), dL/dh) ]
+  // dL/dz = 1/t * Softmax(z) * [ dL/dh - dot(Softmax(z), dL/dh) ]
   float dot = 0;
   for (int i = 0; i < h.cols; i++)
     dot += VEC_AT(h, i) * VEC_AT(dL_dh, i);
 
+  float inv_t = 1.0f / t;
   for (int i = 0; i < h.cols; i++)
-    VEC_AT(dst, i) = VEC_AT(h, i) * (VEC_AT(dL_dh, i) - dot);
-#endif
+    VEC_AT(dst, i) = inv_t * VEC_AT(h, i) * (VEC_AT(dL_dh, i) - dot);
 }
 
 void linear(NMatrix h, NMatrix z) {
