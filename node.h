@@ -66,6 +66,7 @@ typedef struct Node Node;
  *   output         - Output value/gradient
  *   weight         - Weights matrix/kernel (for NODE_LINEAR, NODE_CONV2D)
  *   bias           - Bias vector (for NODE_LINEAR, NODE_CONV2D)
+ *   temperature    - Temperature for NODE_SOFTMAX
  *
  * Each Param has:
  *   .value  - Current parameter value (weights, biases)

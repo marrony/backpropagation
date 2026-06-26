@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -5,8 +6,11 @@
 #include "nn.h"
 #include "node.h"
 
+#include "books/alice.h"
+
 const char *training_text[] = {
-  "the desert was silent except for the low, rhythmic hum of the wind sweeping across the dunes. for miles in every direction, nothing broke the horizon line but shifting sand and the occasional skeletal remains of ancient shrubs. evelyn checked her gps device, frowning at the uncoordinated coordinates flashing across the screen. the signal was dead. she had exactly two liters of water left, a compass that could not find true north, and six hours of daylight remaining before the temperature dropped below freezing.",
+  (const char*)alice_txt,
+  // "the desert was silent except for the low, rhythmic hum of the wind sweeping across the dunes. for miles in every direction, nothing broke the horizon line but shifting sand and the occasional skeletal remains of ancient shrubs. evelyn checked her gps device, frowning at the uncoordinated coordinates flashing across the screen. the signal was dead. she had exactly two liters of water left, a compass that could not find true north, and six hours of daylight remaining before the temperature dropped below freezing.",
   // "the desert is a landscape of surprising contrasts and quiet resilience. during the day, the sun beats down relentlessly, turning the sand into a glowing sea of gold. cacti and deep-rooted shrubs stand as silent sentinels, conserving every drop of precious moisture in their thick stems. yet, as twilight approaches, the extreme heat yields to a crisp, cooling breeze. the sky shifts into a canvas of violet and deep indigo. nocturnal creatures, such as the kit fox and the rattlesnake, emerge from their underground burrows to hunt and forage, breathing vibrant life into the quiet night.",
   // "artificial intelligence has rapidly transformed from a theoretical concept into an everyday reality. machine learning algorithms now power everything from basic email filters to complex autonomous vehicles. by processing massive amounts of historical data, these systems can identify hidden patterns, make accurate predictions, and automate tedious tasks. however, this technological leap brings significant ethical challenges, including data privacy concerns and algorithmic bias. as these neural networks become increasingly sophisticated, developers face the crucial responsibility of ensuring transparency and fairness, so that these powerful digital tools ultimately benefit society as a whole.",
   // "the roman empire was one of the most powerful and enduring civilizations in human history, fundamentally shaping the trajectory of the western world. beginning as a modest republic on the italian peninsula, it expanded rapidly through strategic military conquests and advanced engineering. roman legions established dominance across the mediterranean, bringing law, architecture, and commerce to diverse cultures. at its peak, the empire spanned from the rainy hills of britannia to the arid deserts of egypt. even after its eventual collapse, the architectural marvels, legal systems, and cultural innovations of rome continued to influence modern societies for centuries.",
@@ -22,12 +26,13 @@ const char *training_text[] = {
   // "the heavy bull ate grass. that male rooster ate grass. the heavy cow ate grass. that female hen ate grass. the loud bull woke farmers. a fierce rooster woke farmers. the loud cow woke farmers. a fierce hen woke farmers.",
 };
 
-#define MAX_VOCAB_SIZE 1024
+#define MAX_VOCAB_SIZE 6000
+#define MAX_SEQ_SIZE 30000
 #define CONTEXT 4
 #define EMBED_DIM 16
 #define INPUT_DIM (CONTEXT * EMBED_DIM)
 #define MAX_GENERATE 500
-#define TOK_SIZE 15
+#define TOK_SIZE 31
 #define TOKEN_SIZE (TOK_SIZE+1)
 
 #define TO_STR_HELPER(x) #x
@@ -41,6 +46,9 @@ typedef struct {
 // Vocabulary
 Token vocab[MAX_VOCAB_SIZE] = {0};
 int vocab_size = 0;
+
+int sequence[MAX_SEQ_SIZE];
+int seq_len = 0;
 
 // --- MODEL PARAMETERS (Pretend trained) ---
 
@@ -125,9 +133,6 @@ void update_embedding(float lr) {
 
 void init_model(void) {
     // --- Mini Training Step (Sliding Window) ---
-    int sequence[10*1024];
-    int seq_len = 0;
-
     Token token = {0};
     strcpy(token.token, "<START>");
     vocab[0] = token;
@@ -142,22 +147,25 @@ void init_model(void) {
     vocab_size += 1;
 
     int end_token = token_to_id(token);
-    sequence[seq_len] = end_token;
-    seq_len += 1;
 
     for (size_t i = 0; i < sizeof(training_text)/sizeof(char*); i++) {
       // printf("%s\n", training_text[i]);
 
       // Simple tokenizer
-      const char *delim = " .,";
+      const char *delim = "-_.,!?\"':;()*\n\r\t ";
       const char *ptr = training_text[i];
       while (*ptr != '\0') {
           ptr += strspn(ptr, delim);
           if (*ptr == '\0') break;
           size_t len = strcspn(ptr, delim);
 
+          if (len >= TOKEN_SIZE) printf("\n========= %.*s =========\n", (int)len, ptr);
+          assert(len < TOK_SIZE);
+
           memset(&token, 0, sizeof(token));
           strncpy(token.token, ptr, len);
+          for (size_t j = 0; j < len; j++)
+            token.token[j] = tolower(token.token[j]);
 
           ptr += len;
 
@@ -206,20 +214,19 @@ void init_model(void) {
     mat_rand(hidden2_node->weight.value);
     mat_rand(hidden2_node->bias.value);
 
+    int window_count = seq_len - CONTEXT;
+
     NMatrix dL = mat_alloc(1, vocab_size);
     NMatrix target_label = mat_alloc(1, vocab_size);
-    float lr = 0.5f / seq_len;
+    float lr = 0.8f / window_count;
 
-    float cost = 1*seq_len;
+    float cost = 1*window_count;
     // int max_epochs = 5000;
     int epoch = 0;
     //for (int epoch = 0; epoch < max_epochs; epoch++) {
-    while (cost/(seq_len-CONTEXT) >= 0.001 && epoch < 15000) {
+    while (cost/window_count >= 0.001 && epoch < 50) {
         epoch += 1;
-        //printf("\rtraining = %d%% cost = %f\r", epoch*100 / max_epochs, cost / seq_len);
-        printf("\rtraining = %d cost = %f\r",
-            epoch, cost / (seq_len - CONTEXT));
-        fflush(stdout);
+        printf("\rtraining = %d cost = %f\r", epoch, cost / window_count);
 
         cost = 0;
         zero_grads(softmax_node);
@@ -228,13 +235,12 @@ void init_model(void) {
         // Iterate through the sequence as a sliding window
         // Target is sequence[i], Context is sequence[i-CONTEXT] to sequence[i-1]
         for (int i = CONTEXT; i < seq_len; i++) {
-            int context[CONTEXT] = {0};
-            for (int j = 0; j < CONTEXT; j++) {
-                context[j] = sequence[i - CONTEXT + j];
+            int* context = sequence + i - CONTEXT;
 
-                // if (epoch == 0) printf("%s ", vocab[context[j]].token);
-            }
-            // if (epoch == 0) printf("=> %s\n", vocab[sequence[i]].token);
+            // for (int j = 0; j < CONTEXT; j++) {
+            //     printf("%s ", vocab[context[j]].token);
+            // }
+            // printf("=> %s\n", vocab[sequence[i]].token);
 
             // Prepare training input vector from embeddings
             copy_context(input_node->output.value, context);
@@ -293,6 +299,7 @@ float mat_cos(NMatrix a, NMatrix b) {
 }
 
 int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
     //srand(time(NULL));
     srand(42);
     init_model();

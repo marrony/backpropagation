@@ -40,8 +40,6 @@ void test_add(void) {
   ASSERT_VEC_EQ(x->output.grad, ((float[]) {2.0, 2.0}));
   ASSERT_VEC_EQ(y->output.grad, ((float[]) {2.0, 2.0}));
 
-  destroy_node(&x);
-  destroy_node(&y);
   destroy_node(&op);
   mat_free(dL);
 }
@@ -83,8 +81,6 @@ void test_sub(void) {
   ASSERT_VEC_EQ(x->output.grad, ((float[]) {2, 2}));
   ASSERT_VEC_EQ(y->output.grad, ((float[]) {-2, -2}));
 
-  destroy_node(&x);
-  destroy_node(&y);
   destroy_node(&op);
   mat_free(dL);
 }
@@ -132,8 +128,6 @@ void test_mult(void) {
   ASSERT_VEC_EQ(y->output.grad, ((float[]) {4, 4, 4, 4}));
 
 
-  destroy_node(&x);
-  destroy_node(&y);
   destroy_node(&op);
   mat_free(dL);
 }
@@ -176,8 +170,6 @@ void test_div(void) {
   ASSERT_VEC_EQ(x->output.grad, ((float[]) {0.66666669, 0.66666669}));
   ASSERT_VEC_EQ(y->output.grad, ((float[]) {-0.44444448, -0.44444448}));
 
-  destroy_node(&x);
-  destroy_node(&y);
   destroy_node(&op);
   mat_free(dL);
 }
@@ -222,7 +214,6 @@ void test_linear(void) {
   ASSERT_VEC_EQ(op->weight.grad,  ((float[]) {8, 22, 36, 16, 44, 72}));
   ASSERT_VEC_EQ(op->bias.grad,  ((float[]) {8, 22, 36}));
 
-  destroy_node(&x);
   destroy_node(&op);
   mat_free(dL);
 }
@@ -258,7 +249,6 @@ void test_sigmoid(void) {
   ASSERT_VEC_EQ(op->output.grad, ((float[]) {2, 2}));
   ASSERT_VEC_EQ(x->output.grad, ((float[]) {+0.47000742, +0.47000742}));
 
-  destroy_node(&x);
   destroy_node(&op);
   mat_free(dL);
 }
@@ -299,7 +289,6 @@ void test_softmax(void) {
   ASSERT_VEC_EQ(op->output.grad, ((float[]) {1, 2}));
   ASSERT_VEC_EQ(x->output.grad, ((float[]) {-0.239758871, 0.240622261}));
 
-  destroy_node(&x);
   destroy_node(&op);
   mat_free(dL);
 }
@@ -336,7 +325,6 @@ void test_relu(void) {
   ASSERT_VEC_EQ(op->output.grad, ((float[]) {3.0, 4.0}));
   ASSERT_VEC_EQ(x->output.grad, ((float[]) {0.0, 4.0}));
 
-  destroy_node(&x);
   destroy_node(&op);
   mat_free(dL);
 }
@@ -371,7 +359,6 @@ void test_square(void) {
   ASSERT_VEC_EQ(op->output.grad, ((float[]) {5.0, 7.0}));
   ASSERT_VEC_EQ(x->output.grad, ((float[]) {20.0, 42.0}));
 
-  destroy_node(&x);
   destroy_node(&op);
   mat_free(dL);
 }
@@ -406,7 +393,6 @@ void test_cube(void) {
   ASSERT_VEC_EQ(op->output.grad, ((float[]) {1.0, 2.0}));
   ASSERT_VEC_EQ(x->output.grad, ((float[]) {12.0, 54.0}));
 
-  destroy_node(&x);
   destroy_node(&op);
   mat_free(dL);
 }
@@ -441,7 +427,6 @@ void test_exp(void) {
   ASSERT_VEC_EQ(op->output.grad, ((float[]) {2.0, 3.0}));
   ASSERT_VEC_EQ(x->output.grad, ((float[]) {2.0, 8.154845484}));
 
-  destroy_node(&x);
   destroy_node(&op);
   mat_free(dL);
 }
@@ -476,7 +461,6 @@ void test_negate(void) {
   ASSERT_VEC_EQ(op->output.grad, ((float[]) {5.0, 7.0}));
   ASSERT_VEC_EQ(x->output.grad, ((float[]) {-5.0, -7.0}));
 
-  destroy_node(&x);
   destroy_node(&op);
   mat_free(dL);
 }
@@ -551,6 +535,7 @@ void test_nmist(void) {
     mat_fill(target, 0);
     VEC_AT(target, (int)VEC_AT(label, 0)) = 1;
 
+    // todo: use cross-entropy loss
     mat_sub(dL, layer_03->output.value, target);
     mat_scale(dL, dL, 2.0);
 
@@ -576,12 +561,6 @@ void test_nmist(void) {
   }
 
   destroy_node(&layer_03);
-  destroy_node(&layer_03_linear);
-  destroy_node(&layer_02);
-  destroy_node(&layer_02_linear);
-  destroy_node(&layer_01);
-  destroy_node(&layer_01_linear);
-  destroy_node(&x);
   mat_free(dL);
   mat_free(target);
   mat_free(train_data);

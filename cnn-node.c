@@ -232,16 +232,18 @@ int main(void) {
       NMatrix label = mat_row(label_data, train_index);
 
       float target[DENSE_UNITS] = {0};
-      target[(int)MAT_AT(label, 0, 0)] = 1;
+      int target_idx = (int)MAT_AT(label, 0, 0);
+      target[target_idx] = 1;
 
       mat_copy(input_img->output.value, input);
       node_forward(softmax);
 
-      // L = ( output - target )^2
-      // dL = 2 ( output - target )
-      mat_sub(dL, softmax->output.value, mat_init(1, DENSE_UNITS, target));
-      float L = mat_dot(dL, dL);
-      mat_scale(dL, dL, 2);
+      // cross-entropy loss
+      // Loss = - dot(target, ln(y))
+      // dLoss = - target / y
+      float L = -logf(VEC_AT(softmax->output.value, target_idx) + 1e-15f);
+      mat_memberwise_div(dL, mat_init(1, DENSE_UNITS, target), softmax->output.value, 1e-15f);
+      mat_scale(dL, dL, -1);
 
       if (learning) {
         node_backward(softmax, dL);

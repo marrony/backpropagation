@@ -21,7 +21,10 @@ LDFLAGS=-L ./raylib-5 -lraylib -framework Foundation \
 
 all: $(PROGS)
 
-$(BINDIR)/%: %.c nn.h node.h game.h | $(BINDIR) raylib-5/libraylib.a
+books/alice.h: books/alice.txt
+	(cat books/alice.txt && printf '\0') | xxd -i -name alice_txt > books/alice.h
+
+$(BINDIR)/%: %.c nn.h node.h game.h books/alice.h | $(BINDIR) raylib-5/libraylib.a
 	cc -O3 -g $(CFLAGS) $< -o $@ $(LDFLAGS)
 
 bin:
