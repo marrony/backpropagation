@@ -32,7 +32,7 @@ const char *training_text[] = {
 #define MAX_VOCAB_SIZE 6000
 #define MAX_SEQ_SIZE 30000
 #define CONTEXT 4
-#define EMBED_DIM 16
+#define EMBED_DIM 8
 #define INPUT_DIM (CONTEXT * EMBED_DIM)
 #define MAX_GENERATE 500
 #define TOK_SIZE 31
@@ -99,6 +99,8 @@ void mat_read(NMatrix mat, FILE* fp) {
 
 void save_model(void) {
   FILE* fp = fopen("models/gentext.bin", "wb");
+  NMatrix emb = mat_init(vocab_size, EMBED_DIM, &embedding[0][0]);
+  mat_write(emb, fp);
   mat_write(linear_node->weight.value, fp);
   mat_write(linear_node->bias.value, fp);
   mat_write(hidden1_node->weight.value, fp);
@@ -107,19 +109,18 @@ void save_model(void) {
 }
 
 void load_model(void) {
-  // Setup graph for training: input -> linear -> hidden1 -> hidden2 -> softmax
+  // Setup graph for training: input -> linear -> hidden1 -> softmax
+  // 64*32+32 + 32*2581+2581 + 2581*16 = 128549
   input_node = create_variable(1, INPUT_DIM);
   linear_node = create_linear(input_node, INPUT_DIM, 32);
   hidden1_node = create_linear(linear_node, 32, vocab_size);
   softmax_node = create_softmax(hidden1_node);
   softmax_node->temperature = 1.0;
 
-  // Initialize embeddings and weights with small random values
-  for (int v = 0; v < vocab_size; v++) {
-      for (int d = 0; d < EMBED_DIM; d++)
-          embedding[v][d] = rand_uniform() * 2.0f - 1.0f;
-  }
+  NMatrix emb = mat_init(vocab_size, EMBED_DIM, &embedding[0][0]);
 
+  // Initialize embeddings and weights with small random values
+  mat_rand(emb);
   mat_rand(linear_node->weight.value);
   mat_rand(linear_node->bias.value);
   mat_rand(hidden1_node->weight.value);
@@ -128,6 +129,7 @@ void load_model(void) {
   FILE* fp = fopen("models/gentext.bin", "rb");
   if (fp != NULL) {
     printf("model exists, continue training\n");
+    mat_read(emb, fp);
     mat_read(linear_node->weight.value, fp);
     mat_read(linear_node->bias.value, fp);
     mat_read(hidden1_node->weight.value, fp);
@@ -271,7 +273,7 @@ void init_model(void) {
     // int max_epochs = 5000;
     int epoch = 0;
     //for (int epoch = 0; epoch < max_epochs; epoch++) {
-    while (keep_running && cost/window_count >= 0.001 && epoch < 50) {
+    while (keep_running && cost/window_count >= 0.001 && epoch < 10000) {
         epoch += 1;
         printf("\rtraining = %d cost = %f\r", epoch, cost / window_count);
 
