@@ -46,7 +46,14 @@ int main(void) {
   for (int i = 0; i < MAX_VOCAB; i++) {
     printf("  { .id = %d, .token = {", vocabulary[i].id);
     for (int j = 0; j < MAX_TOKEN; j++) {
-      printf("0x%02x, ", 0xff & vocabulary[i].token[j]);
+      if (vocabulary[i].token[j] == '\'')
+        printf("'\\'', ");
+      else if (vocabulary[i].token[j] == '\\')
+        printf("'\\\\', ");
+      else if (isprint(vocabulary[i].token[j]))
+        printf("'%c', ", vocabulary[i].token[j]);
+      else
+        printf("0x%02x, ", 0xff & vocabulary[i].token[j]);
     }
     printf("} },\n");
   }

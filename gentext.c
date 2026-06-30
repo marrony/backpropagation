@@ -30,7 +30,7 @@ const char *training_text[] = {
   "the heavy bull ate grass. that male rooster ate grass. the heavy cow ate grass. that female hen ate grass. the loud bull woke farmers. a fierce rooster woke farmers. the loud cow woke farmers. a fierce hen woke farmers.",
 };
 
-#define CONTEXT 4
+#define CONTEXT 8
 #define EMBED_DIM 8
 #define INPUT_DIM (CONTEXT * EMBED_DIM)
 #define MAX_GENERATE 500
@@ -39,15 +39,13 @@ const char *training_text[] = {
 #define TO_STR(x) TO_STR_HELPER(x)
 #define SCAN_TOKEN_FMT "%" TO_STR(TOK_SIZE) "s"
 
-// Vocabulary
-Token vocab[MAX_VOCAB] = {0};
-
 int32_t* sequence = NULL;
 size_t seq_len = 0;
 
 // --- MODEL PARAMETERS (Pretend trained) ---
 
 // Embedding matrix [MAX_VOCAB][embed_dim]
+// todo: use NMatrix
 float embedding[MAX_VOCAB][EMBED_DIM];
 float embedding_g_grad[MAX_VOCAB][EMBED_DIM];
 
@@ -60,7 +58,7 @@ float rand_uniform(void) {
 
 int token_to_id(Token token) {
   for (int i = 0; i < MAX_VOCAB; i++) {
-    if (strncmp(token.token, vocab[i].token, MAX_TOKEN) == 0)
+    if (strncmp(token.token, vocabulary[i].token, MAX_TOKEN) == 0)
       return i;
   }
 
@@ -178,6 +176,8 @@ void acc_embedding_grad(NMatrix grad, int* context) {
 
 void update_embedding(float lr) {
   for (int v = 0; v < MAX_VOCAB; v++) {
+    if (v == PAD_TOKEN) continue;
+
     float* emb = embedding[v];
     float* g_grad = embedding_g_grad[v];
 
@@ -205,7 +205,7 @@ void init_model(void) {
 
   NMatrix dL = mat_alloc(1, MAX_VOCAB);
   NMatrix target_label = mat_alloc(1, MAX_VOCAB);
-  float lr = 0.8f / window_count;
+  float lr = 0.9f / window_count;
 
   float cost = window_count;
   // int max_epochs = 5000;
@@ -221,16 +221,30 @@ void init_model(void) {
 
     // Iterate through the sequence as a sliding window
     // Target is sequence[i], Context is sequence[i-CONTEXT] to sequence[i-1]
-    for (size_t i = CONTEXT; i < seq_len; i++) {
-      int* context = sequence + i - CONTEXT;
+    for (size_t i = 0; i < seq_len; i++) {
+      int32_t context[CONTEXT] = {0};
+
+      if (i <= CONTEXT) {
+        size_t pads = CONTEXT - i;
+        for (size_t j = 0; j < pads; j++)
+          context[j] = PAD_TOKEN;
+
+        for (size_t j = 0; j < i; j++)
+          context[j + pads] = sequence[j];
+      } else {
+        for (size_t j = 0; j < CONTEXT; j++)
+          context[j] = sequence[i - CONTEXT + j];
+      }
 
       // for (int j = 0; j < CONTEXT; j++) {
-      //     printf("%s ", vocab[context[j]].token);
+      //     printf("[%s]", vocabulary[context[j]].token);
       // }
-      // printf("=> %s\n", vocab[sequence[i]].token);
+      // printf(" => [%s]\n", vocabulary[sequence[i]].token);
 
       // Prepare training input vector from embeddings
       copy_context(input_node->output.value, context);
+
+      assert(sequence[i] != PAD_TOKEN);
 
       // Labels for training: one-hot target
       mat_fill(target_label, 0);
@@ -348,14 +362,29 @@ int main(void) {
     free(tokens);
   }
 
-  for (size_t i = 0; i < seq_len; i++) {
-    int32_t token = sequence[i];
-    printf("%s", vocabulary[token].token);
-  }
+  // for (size_t i = 0; i < seq_len; i++) {
+  //   int32_t token = sequence[i];
+  //   printf("%s", vocabulary[token].token);
+  // }
+  //
+  // printf("\n");
 
-  printf("\n");
-
-  return 0;
+  // const char* prompt = "she pictured to herself";
+  // int32_t* tokens = NULL;
+  // size_t tokens_count = tokenize(
+  //     prompt,
+  //     strlen(prompt),
+  //     &tokens,
+  //     vocabulary,
+  //     vocabulary_by_size
+  // );
+  //
+  // printf("%s => %zu tokens\n", prompt, tokens_count);
+  // for (size_t i = 0; i < tokens_count; i++) {
+  //   int32_t token = tokens[i];
+  //   printf("%d = [%s]\n", token, vocabulary[token].token);
+  // }
+  // return 0;
 
   struct sigaction act;
   act.sa_handler = handle_sigint;
@@ -371,30 +400,40 @@ int main(void) {
   srand(42);
   init_model();
 
-  int context[CONTEXT] = {0};
-
   while (true) {
-  start_gen:
-    printf("Enter 4 starting tokens:\n");
+    printf("Prompt:\n");
 
-    for (int i = 0; i < CONTEXT; i++) {
-      Token input = {0};
+    char prompt[256];
+    if (fgets(prompt, sizeof(prompt), stdin) == NULL)
+      continue;
 
-      if (scanf(SCAN_TOKEN_FMT, input.token) <= 0)
-        return 0;
+    if (strncmp(prompt, ".exit", 5) == 0)
+      break;
 
-      int id = token_to_id(input);
-      if (id == -1) {
-        printf("Unknown token: %.*s\n", MAX_TOKEN, input.token);
-        goto start_gen;
-      }
-      context[i] = id;
+    int32_t* tokens = NULL;
+    size_t tokens_count = tokenize(
+        prompt,
+        strlen(prompt),
+        &tokens,
+        vocabulary,
+        vocabulary_by_size
+    );
+
+    int context[CONTEXT] = {0};
+
+    if (tokens_count > CONTEXT)
+      tokens_count = CONTEXT;
+
+    for (size_t i = 0; i < tokens_count; i++) {
+      context[i] = tokens[i];
     }
+
+    free(tokens);
 
     printf("Generated:\n");
 
     for (int i = 0; i < CONTEXT; i++)
-      printf("%s ", vocab[context[i]].token);
+      printf("[%s]", vocabulary[context[i]].token);
 
     for (int step = 0; step < MAX_GENERATE; step++) {
       // Build input vector (concatenate embeddings)
@@ -411,9 +450,9 @@ int main(void) {
       // int next = mat_row_argmax(softmax_node->output.value); // deterministic greedy decoding
       int next = sample(softmax_node->output.value); // stochastic probabilistic sampling
 
-      printf("%s ", vocab[next].token);
+      printf("%s", vocabulary[next].token);
 
-      if (next == token_to_id((Token) {.token="<END>"}))
+      if (next == EOS_TOKEN)
         break;
 
       // Slide context window

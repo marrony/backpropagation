@@ -94,6 +94,13 @@ Byte_Buffer alloc_pair(Allocator* alloc, Token_Pair pair) {
   return buf;
 }
 
+bool contains_space(Token* token) {
+  for (int i = 0; i < MAX_TOKEN; i++) {
+    if (isspace(token->token[i])) return true;
+  }
+  return false;
+}
+
 #define PAD_TOKEN 0
 #define EOS_TOKEN 1
 #define BOS_TOKEN 2
@@ -218,6 +225,10 @@ int32_t gen_vocabulary(
         .token0 = tokens[i+0],
         .token1 = tokens[i+1],
       };
+
+      //avoid merge
+      if (contains_space(vocabulary+pair.token0) || contains_space(vocabulary+pair.token1))
+        continue;
 
       Byte_Buffer key = byte_buffer_from_parts(&pair, sizeof(pair));
       Byte_Buffer value = NULL_BYTE_BUFFER;
