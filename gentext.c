@@ -1,3 +1,4 @@
+#include <_stdlib.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,11 +11,13 @@
 #include "node.h"
 #include "tokenizer.h"
 
+#include "array.h"
+
 #include "generated/alice.h"
 #include "generated/vocab.h"
 
 const char *training_text[] = {
-  // (const char*)alice_txt,
+  (const char*)alice_txt,
   "the desert was silent except for the low, rhythmic hum of the wind sweeping across the dunes. for miles in every direction, nothing broke the horizon line but shifting sand and the occasional skeletal remains of ancient shrubs. evelyn checked her gps device, frowning at the uncoordinated coordinates flashing across the screen. the signal was dead. she had exactly two liters of water left, a compass that could not find true north, and six hours of daylight remaining before the temperature dropped below freezing.",
   "the desert is a landscape of surprising contrasts and quiet resilience. during the day, the sun beats down relentlessly, turning the sand into a glowing sea of gold. cacti and deep-rooted shrubs stand as silent sentinels, conserving every drop of precious moisture in their thick stems. yet, as twilight approaches, the extreme heat yields to a crisp, cooling breeze. the sky shifts into a canvas of violet and deep indigo. nocturnal creatures, such as the kit fox and the rattlesnake, emerge from their underground burrows to hunt and forage, breathing vibrant life into the quiet night.",
   "artificial intelligence has rapidly transformed from a theoretical concept into an everyday reality. machine learning algorithms now power everything from basic email filters to complex autonomous vehicles. by processing massive amounts of historical data, these systems can identify hidden patterns, make accurate predictions, and automate tedious tasks. however, this technological leap brings significant ethical challenges, including data privacy concerns and algorithmic bias. as these neural networks become increasingly sophisticated, developers face the crucial responsibility of ensuring transparency and fairness, so that these powerful digital tools ultimately benefit society as a whole.",
@@ -39,27 +42,14 @@ const char *training_text[] = {
 #define TO_STR(x) TO_STR_HELPER(x)
 #define SCAN_TOKEN_FMT "%" TO_STR(TOK_SIZE) "s"
 
-int32_t* sequence = NULL;
-size_t seq_len = 0;
-
-// --- MODEL PARAMETERS (Pretend trained) ---
-
 // Embedding matrix [MAX_VOCAB][embed_dim]
 // todo: use NMatrix
-float embedding[MAX_VOCAB][EMBED_DIM];
-float embedding_g_grad[MAX_VOCAB][EMBED_DIM];
-float embedding_sum_sq_grad[MAX_VOCAB][EMBED_DIM];
+float embedding[MAX_VOCAB][EMBED_DIM] = {0};
+float embedding_g_grad[MAX_VOCAB][EMBED_DIM] = {0};
+float embedding_ada_grad[MAX_VOCAB][EMBED_DIM] = {0};
+size_t embedding_tokens_batch[MAX_VOCAB] = {0};
 
 // ------------------------------------------
-
-int token_to_id(Token token) {
-  for (int i = 0; i < MAX_VOCAB; i++) {
-    if (strncmp(token.token, vocabulary[i].token, MAX_TOKEN) == 0)
-      return i;
-  }
-
-  return -1;
-}
 
 Node* input_node;
 Node* linear_node;
@@ -164,16 +154,13 @@ void copy_context(NMatrix input, int* context) {
   assert(offset == INPUT_DIM);
 }
 
-void zero_embedding_grad(void) {
-  memset(embedding_g_grad, 0, sizeof(embedding_g_grad));
-}
-
-void acc_embedding_grad(NMatrix grad, int* context) {
+void acc_embedding_grad(NMatrix grad, int32_t* context) {
   assert(grad.rows == 1);
   assert(grad.cols == INPUT_DIM);
 
   int offset = 0;
   for (int t = 0; t < CONTEXT; t++) {
+    embedding_tokens_batch[context[t]] += 1;
     float* g_grad = embedding_g_grad[context[t]];
 
     for (int d = 0; d < EMBED_DIM; d++) {
@@ -185,22 +172,28 @@ void acc_embedding_grad(NMatrix grad, int* context) {
   assert(offset == INPUT_DIM);
 }
 
-void update_embedding(float lr) {
+void update_embedding(float lr, size_t batch_size) {
   for (int v = 0; v < MAX_VOCAB; v++) {
     if (v == PAD_TOKEN) continue;
+    if (embedding_tokens_batch[v] == 0) continue;
+
+    embedding_tokens_batch[v] = 0;
 
     float* emb = embedding[v];
     float* g_grad = embedding_g_grad[v];
-    float* sum_sq_grad = embedding_sum_sq_grad[v];
+    float* ada_grad = embedding_ada_grad[v];
 
     for (int d = 0; d < EMBED_DIM; d++) {
-      float g = g_grad[d];
+      // average the gradient: ∇W = ∇W / B
+      float g = g_grad[d] / batch_size;
 
-      sum_sq_grad[d] += g*g;
+      // update AdaGrad: Gnew = Gold + ∇W^2
+      ada_grad[d] += g*g;
 
-      emb[d] -= (lr / sqrtf(sum_sq_grad[d] + 1e-8f)) * g;
-      // emb[d] -= 0.05 * g;
-      (void)lr;
+      // udpate the weight: Wnew = Wold - lr/sqrt(Gnew) * ∇W
+      emb[d] -= (lr / (sqrtf(ada_grad[d]) + 1e-8f)) * g;
+
+      g_grad[d] = 0;
     }
   }
 }
@@ -242,7 +235,39 @@ float mat_max(NMatrix m) {
   return max;
 }
 
-void init_model(void) {
+typedef struct {
+  int32_t context[CONTEXT];
+  int32_t target;
+} Sample;
+
+DEFINE_ARRAY_SLICE(Sample);
+
+Malloc_Allocator mallocator = MALLOC_CREATE();
+
+//  Categorical Cross-Entropy Loss
+//  Loss = - dot(target, ln(y))
+//  dLoss = - target / y
+float cross_entropy_loss(NMatrix dL, NMatrix target, NMatrix y) {
+  float clip = 1e-15f;
+  mat_clip(softmax_node->output.value, clip, 1.0f);
+
+  float loss = 0;
+  for (int t = 0; t < MAX_VOCAB; t++)
+    loss -= (VEC_AT(target, t) * logf(VEC_AT(y, t)));
+
+  mat_one_minus_memberwise_div(dL, target, y, clip);
+  // mat_memberwise_div(dL, target_label, y, clip);
+  // mat_scale(dL, dL, -1);
+
+  return loss;
+}
+
+void smooth_target(NMatrix target, float eps) {
+  for (int t = 0; t < MAX_VOCAB; t++)
+    VEC_AT(target, t) = VEC_AT(target, t) * (1.0f - eps) + (eps / MAX_VOCAB);
+}
+
+void init_model(Sample_Array samples) {
   load_model();
 
   NMatrix dL = mat_alloc(1, MAX_VOCAB);
@@ -250,88 +275,67 @@ void init_model(void) {
 
   float cost = 0;
   int epoch = 0;
-  float lr = 0.9f / seq_len;
 
   zero_g_grads(softmax_node);
-  zero_embedding_grad();
-  memset(embedding_sum_sq_grad, 0, sizeof(embedding_sum_sq_grad));
+  memset(embedding_ada_grad, 0, sizeof(embedding_ada_grad));
 
   while (keep_running && epoch < 10000) {
     epoch += 1;
-    printf("\rtraining = %d cost = %f seq len = %zu\r", epoch, cost / seq_len, seq_len);
+    printf("\rtraining = %d cost = %f samples = %zu\r", epoch, cost / samples.count, samples.count);
 
     cost = 0;
-    zero_g_grads(softmax_node);
-    zero_embedding_grad();
+
+    size_t batch_size = 32;
 
     // Iterate through the sequence as a sliding window
     // Target is sequence[i], Context is sequence[i-CONTEXT] to sequence[i-1]
-    for (size_t i = 0; i < seq_len; i++) {
-      int32_t context[CONTEXT] = {0};
-
-      if (i <= CONTEXT) {
-        size_t pads = CONTEXT - i;
-        for (size_t j = 0; j < pads; j++)
-          context[j] = PAD_TOKEN;
-
-        for (size_t j = 0; j < i; j++)
-          context[j + pads] = sequence[j];
-      } else {
-        for (size_t j = 0; j < CONTEXT; j++)
-          context[j] = sequence[i - CONTEXT + j];
-      }
+    for (size_t i = 0; i < samples.count; i += batch_size) {
+      zero_g_grads(softmax_node);
 
       // for (int j = 0; j < CONTEXT; j++) {
       //     printf("[%s]", vocabulary[context[j]].token);
       // }
       // printf(" => [%s]\n", vocabulary[sequence[i]].token);
 
-      // Prepare training input vector from embeddings
-      copy_context(input_node->output.value, context);
+      size_t current_batch_size = samples.count - i < batch_size ? samples.count - i : batch_size;
 
-      assert(sequence[i] != PAD_TOKEN);
+      for (size_t batch = 0; batch < current_batch_size; batch++) {
+        Sample sample = samples.elems[i + batch];
 
-      // Labels for training: one-hot target
-      mat_fill(target_label, 0);
-      VEC_AT(target_label, sequence[i]) = 1.0f;
+        // Prepare training input vector from embeddings
+        copy_context(input_node->output.value, sample.context);
 
-      // smoothed target
-      float eps = 0.1;
-      for (int t = 0; t < MAX_VOCAB; t++)
-        VEC_AT(target_label, t) = VEC_AT(target_label, t) * (1.0f - eps) + (eps / MAX_VOCAB);
+        assert(sample.target != PAD_TOKEN);
 
-      // Forward pass
-      node_forward(softmax_node);
+        // Labels for training: one-hot target
+        mat_fill(target_label, 0);
+        VEC_AT(target_label, sample.target) = 1.0f;
 
-      // printf("Max probability in batch: %f\n", mat_max(softmax_node->output.value));
-      // printf("Min probability in batch: %f\n", mat_min(softmax_node->output.value));
+        // smoothed target
+        smooth_target(target_label, 0.1);
 
-      float clip = 1e-15f;
-      mat_clip(softmax_node->output.value, clip, 1.0f);
+        // Forward pass
+        node_forward(softmax_node);
 
-      float l = 0;
-      for (int t = 0; t < MAX_VOCAB; t++)
-        l += VEC_AT(target_label, t) * logf(VEC_AT(softmax_node->output.value, t));
-      cost += -l;
+        float clip = 1e-15f;
+        mat_clip(softmax_node->output.value, clip, 1.0f);
 
-      //  Categorical Cross-Entropy Loss
-      //  Loss = - dot(target, ln(y))
-      //  dLoss = - target / y
-      // mat_one_minus_memberwise_div(dL, target_label, softmax_node->output.value, clip);
-      mat_memberwise_div(dL, target_label, softmax_node->output.value, clip);
-      mat_scale(dL, dL, -1);
+        cost += cross_entropy_loss(dL, target_label, softmax_node->output.value);
 
-      // Backward pass and accumulate gradients
-      node_backward(softmax_node, dL);
+        // Backward pass and accumulate gradients
+        node_backward(softmax_node, dL);
 
-      // Accumulate gradients
-      acc_grads(softmax_node);
-      acc_embedding_grad(input_node->output.grad, context);
+        // Accumulate gradients
+        acc_grads(softmax_node);
+        acc_embedding_grad(input_node->output.grad, sample.context);
+      }
+
+      // Update the parameters
+      update_grads(softmax_node, 0.01 / current_batch_size);
+      update_embedding(0.2, current_batch_size);
     }
 
-    // Update the parameters
-    update_grads(softmax_node, lr);
-    update_embedding(lr);
+    array_shuffle(&samples);
   }
 
   //Batch Gradient Descent (BGD)
@@ -405,7 +409,10 @@ int32_t tokenize(
   return tokens_count;
 }
 
-int main(void) {
+Sample_Array prepare_data(void) {
+  int32_t* sequence = NULL;
+  size_t seq_len = 0;
+
   for (size_t i = 0; i < sizeof(training_text)/sizeof(char*); i++) {
     const char* text = training_text[i];
 
@@ -427,9 +434,23 @@ int main(void) {
     free(tokens);
   }
 
+  Sample_Array samples = ARRAY_CREATE(&mallocator.alloc);
+  array_ensure(&samples, seq_len);
+
   for (size_t i = 0; i < seq_len; i++) {
-    int32_t token = sequence[i];
-    printf("%s", vocabulary[token].token);
+    int32_t target = sequence[i];
+    printf("%s", vocabulary[target].token);
+
+    Sample sample = {
+      .target = target,
+    };
+
+    for (size_t c = 0; c < CONTEXT; c++) {
+      int32_t token_index = i - CONTEXT + c;
+      sample.context[c] = token_index < 0 ? PAD_TOKEN : sequence[token_index];
+    }
+
+    array_append(&samples, sample);
   }
 
   printf("\n");
@@ -451,6 +472,10 @@ int main(void) {
   // }
   // return 0;
 
+  return samples;
+}
+
+int main(void) {
   struct sigaction act;
   act.sa_handler = handle_sigint;
   sigemptyset(&act.sa_mask);
@@ -463,7 +488,10 @@ int main(void) {
   setvbuf(stdout, NULL, _IONBF, 0);
   //srand(time(NULL));
   srand(42);
-  init_model();
+
+  Sample_Array samples = prepare_data();
+
+  init_model(samples);
 
   while (true) {
     printf("Prompt:\n");

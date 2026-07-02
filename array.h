@@ -68,6 +68,11 @@ void _array_destroy(Generic_Ptr_Array* array, size_t elem_size) {
 #define array_destroy(array) \
   _array_destroy((Generic_Ptr_Array*)(array), sizeof((array)->elems[0]))
 
+#define array_ensure(array, size) \
+  do { \
+    _array_ensure((Generic_Ptr_Array*)(array), sizeof((array)->elems[0]), size); \
+  } while (0)
+
 #define array_append(array, e) \
   do { \
     _array_ensure((Generic_Ptr_Array*)(array), sizeof((array)->elems[0]), 32); \
@@ -91,12 +96,22 @@ void _array_destroy(Generic_Ptr_Array* array, size_t elem_size) {
 
 #define array_swap(array, x, y)                                     \
   do {                                                              \
-    if ((a) != (b)) {                                               \
+    if ((x) != (y)) {                                               \
       char temp[sizeof((array)->elems[0])];                         \
       memcpy(temp, (array)->elems+(x), sizeof(temp));               \
       memcpy((array)->elems+(x), (array)->elems+(y), sizeof(temp)); \
       memcpy((array)->elems+(y), temp, sizeof(temp));               \
     }                                                               \
+  } while (0)
+
+#define array_shuffle(array)                             \
+  do {                                                   \
+    if ((array)->count > 1) {                            \
+      for (size_t i = (array)->count - 1; i > 0; i--) {  \
+        size_t j = (size_t)rand() % (i + 1);             \
+        array_swap((array), i, j);                       \
+      }                                                  \
+    }                                                    \
   } while (0)
 
 #define ARRAY_CREATE(alloc) { .allocator = (alloc) }

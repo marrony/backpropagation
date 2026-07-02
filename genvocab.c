@@ -31,11 +31,14 @@ int comp_token(const void* a, const void* b) {
   return 0;
 }
 
+Malloc_Allocator mallocator = MALLOC_CREATE();
+
 int main(void) {
   int32_t* tokens = NULL;
   Token vocabulary[MAX_VOCAB] = {0};
 
   size_t token_count = gen_vocabulary(
+      &mallocator.alloc,
       training_text,
       sizeof(training_text)/sizeof(char*),
       &tokens,

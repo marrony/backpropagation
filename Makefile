@@ -25,6 +25,7 @@ generated/alice.h: generated books/alice.txt
 	(cat books/alice.txt && printf '\0') | xxd -i -name alice_txt > generated/alice.h
 
 generated/vocab.h: generated bin/genvocab
+	cp generated/vocab.h generated/vocab_old.h
 	./bin/genvocab > generated/vocab.h
 
 $(BINDIR)/%: %.c nn.h node.h game.h tokenizer.h generated/alice.h generated/vocab.h | $(BINDIR) raylib-5/libraylib.a

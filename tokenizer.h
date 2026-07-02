@@ -106,6 +106,7 @@ bool contains_space(Token* token) {
 #define BOS_TOKEN 2
 
 int32_t gen_vocabulary(
+    Allocator* global,
     const char* text[],
     size_t text_len,
     int32_t** tokens_ptr,
@@ -113,8 +114,7 @@ int32_t gen_vocabulary(
 ) {
   assert(MAX_VOCAB > 256);
 
-  Malloc_Allocator mallocator = MALLOC_CREATE();
-  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
+  Arena_Allocator arena = ARENA_CREATE(global, 1024*1024);
   Allocator* alloc = &arena.alloc;
 
   int32_t vocabulary_count = 0;
@@ -306,6 +306,8 @@ int32_t gen_vocabulary(
   }
 
   assert(vocabulary_count == MAX_VOCAB);
+
+  ARENA_DESTROY(global, &arena);
 
   return tokens_count;
 }
