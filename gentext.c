@@ -14,7 +14,7 @@
 #include "generated/vocab.h"
 
 const char *training_text[] = {
-  (const char*)alice_txt,
+  // (const char*)alice_txt,
   "the desert was silent except for the low, rhythmic hum of the wind sweeping across the dunes. for miles in every direction, nothing broke the horizon line but shifting sand and the occasional skeletal remains of ancient shrubs. evelyn checked her gps device, frowning at the uncoordinated coordinates flashing across the screen. the signal was dead. she had exactly two liters of water left, a compass that could not find true north, and six hours of daylight remaining before the temperature dropped below freezing.",
   "the desert is a landscape of surprising contrasts and quiet resilience. during the day, the sun beats down relentlessly, turning the sand into a glowing sea of gold. cacti and deep-rooted shrubs stand as silent sentinels, conserving every drop of precious moisture in their thick stems. yet, as twilight approaches, the extreme heat yields to a crisp, cooling breeze. the sky shifts into a canvas of violet and deep indigo. nocturnal creatures, such as the kit fox and the rattlesnake, emerge from their underground burrows to hunt and forage, breathing vibrant life into the quiet night.",
   "artificial intelligence has rapidly transformed from a theoretical concept into an everyday reality. machine learning algorithms now power everything from basic email filters to complex autonomous vehicles. by processing massive amounts of historical data, these systems can identify hidden patterns, make accurate predictions, and automate tedious tasks. however, this technological leap brings significant ethical challenges, including data privacy concerns and algorithmic bias. as these neural networks become increasingly sophisticated, developers face the crucial responsibility of ensuring transparency and fairness, so that these powerful digital tools ultimately benefit society as a whole.",
@@ -48,13 +48,9 @@ size_t seq_len = 0;
 // todo: use NMatrix
 float embedding[MAX_VOCAB][EMBED_DIM];
 float embedding_g_grad[MAX_VOCAB][EMBED_DIM];
+float embedding_sum_sq_grad[MAX_VOCAB][EMBED_DIM];
 
 // ------------------------------------------
-
-// Uniform random in [0, 1)
-float rand_uniform(void) {
-  return rand() / (float)RAND_MAX;
-}
 
 int token_to_id(Token token) {
   for (int i = 0; i < MAX_VOCAB; i++) {
@@ -67,6 +63,7 @@ int token_to_id(Token token) {
 
 Node* input_node;
 Node* linear_node;
+Node* relu_node;
 Node* hidden1_node;
 Node* softmax_node;
 
@@ -99,22 +96,36 @@ void save_model(void) {
 }
 
 void load_model(void) {
-  // Setup graph for training: input -> linear -> hidden1 -> softmax
-  // 64*32+32 + 32*2581+2581 + 2581*16 = 128549
+  // context = 8
+  // embed_dim = 8
+  // vocab_size = 512
+  // embeddings (64) -> linear (64x128) -> relu -> linear (128x512) -> softmax
+  int hidden_dim = 128;
   input_node = create_variable(1, INPUT_DIM);
-  linear_node = create_linear(input_node, INPUT_DIM, 32);
-  hidden1_node = create_linear(linear_node, 32, MAX_VOCAB);
+  linear_node = create_linear(input_node, INPUT_DIM, hidden_dim);
+  relu_node = create_relu(linear_node);
+  hidden1_node = create_linear(relu_node, hidden_dim, MAX_VOCAB);
   softmax_node = create_softmax(hidden1_node);
   softmax_node->temperature = 1.0;
 
   NMatrix emb = mat_init(MAX_VOCAB, EMBED_DIM, &embedding[0][0]);
 
+  // Xavier (Glorot): sqrt(1.0 / x)
+  // Used For: Linear layers, Tanh layers, or Softmax inputs.
+  //
+  // He (Kaiming): sqrt(2.0 / x)
+  // Used For: Layers followed by ReLU or LeakyReLU.
+
+  float std_embeddings = sqrtf(1.0f / INPUT_DIM);
+  float std_linear = sqrtf(2.0f / INPUT_DIM);
+  float std_hidden = sqrtf(1.0f / (hidden_dim+MAX_VOCAB));
+
   // Initialize embeddings and weights with small random values
-  mat_rand(emb);
-  mat_rand(linear_node->weight.value);
-  mat_rand(linear_node->bias.value);
-  mat_rand(hidden1_node->weight.value);
-  mat_rand(hidden1_node->bias.value);
+  mat_rand_normal(emb, 0, std_embeddings);
+  mat_rand_normal(linear_node->weight.value, 0, std_linear);
+  mat_fill(linear_node->bias.value, 0);
+  mat_rand_normal(hidden1_node->weight.value, 0, std_hidden);
+  mat_fill(hidden1_node->bias.value, 0);
 
   FILE* fp = fopen("models/gentext.bin", "rb");
   if (fp != NULL) {
@@ -180,43 +191,77 @@ void update_embedding(float lr) {
 
     float* emb = embedding[v];
     float* g_grad = embedding_g_grad[v];
-
-    // if (v == 0) {
-    //   printf("token = %d => ", v); mat_println(mat_init(1, EMBED_DIM, emb));
-    // }
+    float* sum_sq_grad = embedding_sum_sq_grad[v];
 
     for (int d = 0; d < EMBED_DIM; d++) {
-      emb[d] -= lr * g_grad[d];
+      float g = g_grad[d];
+
+      sum_sq_grad[d] += g*g;
+
+      emb[d] -= (lr / sqrtf(sum_sq_grad[d] + 1e-8f)) * g;
+      // emb[d] -= 0.05 * g;
+      (void)lr;
     }
   }
 }
 
-void init_model(void) {
-  // --- Mini Training Step (Sliding Window) ---
+void mat_one_minus_memberwise_div(NMatrix dst, NMatrix a, NMatrix b, float eps) {
+  assert(dst.cols == a.cols);
+  assert(dst.rows == a.rows);
+  assert(dst.cols == b.cols);
+  assert(dst.rows == b.rows);
 
-  // tokenize str => token
-  for (size_t i = 0; i < seq_len; i++) {
-    if (sequence[i] >= MAX_VOCAB) assert(false && "max_vocab");
+  for (int i = 0; i < dst.rows; i++) {
+    for (int j = 0; j < dst.cols; j++) {
+      MAT_AT(dst, i, j) = 1.0f - (MAT_AT(a, i, j) / (MAT_AT(b, i, j) + eps));
+    }
+  }
+}
+
+float mat_min(NMatrix m) {
+  float min = MAT_AT(m, 0, 0);
+
+  for (int i = 0; i < m.rows; i++) {
+    for (int j = 0; j < m.cols; j++) {
+      if (MAT_AT(m, i, j) < min) min = MAT_AT(m, i, j);
+    }
   }
 
-  load_model();
+  return min;
+}
 
-  int window_count = seq_len - CONTEXT;
+float mat_max(NMatrix m) {
+  float max = MAT_AT(m, 0, 0);
+
+  for (int i = 0; i < m.rows; i++) {
+    for (int j = 0; j < m.cols; j++) {
+      if (MAT_AT(m, i, j) > max) max = MAT_AT(m, i, j);
+    }
+  }
+
+  return max;
+}
+
+void init_model(void) {
+  load_model();
 
   NMatrix dL = mat_alloc(1, MAX_VOCAB);
   NMatrix target_label = mat_alloc(1, MAX_VOCAB);
-  float lr = 0.9f / window_count;
 
-  float cost = window_count;
-  // int max_epochs = 5000;
+  float cost = 0;
   int epoch = 0;
-  //for (int epoch = 0; epoch < max_epochs; epoch++) {
-  while (keep_running && cost/window_count >= 0.001 && epoch < 10000) {
+  float lr = 0.9f / seq_len;
+
+  zero_g_grads(softmax_node);
+  zero_embedding_grad();
+  memset(embedding_sum_sq_grad, 0, sizeof(embedding_sum_sq_grad));
+
+  while (keep_running && epoch < 10000) {
     epoch += 1;
-    printf("\rtraining = %d cost = %f\r", epoch, cost / window_count);
+    printf("\rtraining = %d cost = %f seq len = %zu\r", epoch, cost / seq_len, seq_len);
 
     cost = 0;
-    zero_grads(softmax_node);
+    zero_g_grads(softmax_node);
     zero_embedding_grad();
 
     // Iterate through the sequence as a sliding window
@@ -250,14 +295,30 @@ void init_model(void) {
       mat_fill(target_label, 0);
       VEC_AT(target_label, sequence[i]) = 1.0f;
 
+      // smoothed target
+      float eps = 0.1;
+      for (int t = 0; t < MAX_VOCAB; t++)
+        VEC_AT(target_label, t) = VEC_AT(target_label, t) * (1.0f - eps) + (eps / MAX_VOCAB);
+
       // Forward pass
       node_forward(softmax_node);
+
+      // printf("Max probability in batch: %f\n", mat_max(softmax_node->output.value));
+      // printf("Min probability in batch: %f\n", mat_min(softmax_node->output.value));
+
+      float clip = 1e-15f;
+      mat_clip(softmax_node->output.value, clip, 1.0f);
+
+      float l = 0;
+      for (int t = 0; t < MAX_VOCAB; t++)
+        l += VEC_AT(target_label, t) * logf(VEC_AT(softmax_node->output.value, t));
+      cost += -l;
 
       //  Categorical Cross-Entropy Loss
       //  Loss = - dot(target, ln(y))
       //  dLoss = - target / y
-      cost += -logf(VEC_AT(softmax_node->output.value, sequence[i]) + 1e-15f);
-      mat_memberwise_div(dL, target_label, softmax_node->output.value, 1e-15f);
+      // mat_one_minus_memberwise_div(dL, target_label, softmax_node->output.value, clip);
+      mat_memberwise_div(dL, target_label, softmax_node->output.value, clip);
       mat_scale(dL, dL, -1);
 
       // Backward pass and accumulate gradients
@@ -273,11 +334,15 @@ void init_model(void) {
     update_embedding(lr);
   }
 
+  //Batch Gradient Descent (BGD)
+  //Mini-batch Gradient Descent (MBGD)
+  //Stochastic Gradient Descent (SGD)
+  //AdaGrad/RMSProp
+  //Categorical Cross-Entropy Loss (CCE)
+
   save_model();
 
   printf("\n");
-
-  printf("%s\n", alice_txt);
 
   mat_free(dL);
   mat_free(target_label);
@@ -362,12 +427,12 @@ int main(void) {
     free(tokens);
   }
 
-  // for (size_t i = 0; i < seq_len; i++) {
-  //   int32_t token = sequence[i];
-  //   printf("%s", vocabulary[token].token);
-  // }
-  //
-  // printf("\n");
+  for (size_t i = 0; i < seq_len; i++) {
+    int32_t token = sequence[i];
+    printf("%s", vocabulary[token].token);
+  }
+
+  printf("\n");
 
   // const char* prompt = "she pictured to herself";
   // int32_t* tokens = NULL;

@@ -156,13 +156,44 @@ int32_t gen_vocabulary(
   int32_t *tokens = malloc(tokens_count * sizeof(int32_t));
   *tokens_ptr = tokens;
 
-  size_t x = 0;
+  size_t count = 0;
   for (size_t i = 0; i < text_len; i++) {
     for (size_t j = 0; j < strlen(text[i]); j++) {
       char ch = text[i][j];
-      tokens[x++] = vocabulary[ch + start].id;
+      tokens[count++] = vocabulary[ch + start].id;
     }
-    tokens[x++] = vocabulary[EOS_TOKEN].id;
+    tokens[count++] = vocabulary[EOS_TOKEN].id;
+  }
+
+  // merge spaces in the beginning of the words
+  int32_t last_token = vocabulary_count;
+  int32_t space_token = vocabulary[' ' + start].id;
+  for (size_t i = 0; i < tokens_count - 1; i++) {
+    if (tokens[i] == space_token) {
+      char* token_str = vocabulary[tokens[i+1]].token;
+      if (token_str[0] == ' ') continue;
+
+      int32_t found = -1;
+      for (int32_t j = last_token; j < vocabulary_count; j++) {
+        if (vocabulary[j].token[0] == ' ' && vocabulary[j].token[1] == token_str[0]) {
+          found = j;
+          break;
+        }
+      }
+
+      if (found == -1) {
+        found = vocabulary_count;
+        vocabulary[vocabulary_count].id = vocabulary_count;
+        vocabulary[vocabulary_count].token[0] = ' ';
+        vocabulary[vocabulary_count].token[1] = token_str[0];
+        vocabulary_count += 1;
+      }
+
+      for (size_t j = i; j < tokens_count-1; j++)
+        tokens[j] = tokens[j+1];
+      tokens[i] = found;
+      tokens_count -= 1;
+    }
   }
 
   bool punctuation[256] = {0};
@@ -177,8 +208,16 @@ int32_t gen_vocabulary(
   punctuation['\"'] = true;
   punctuation['('] = true;
   punctuation[')'] = true;
+  punctuation['\r'] = true;
+  punctuation['\n'] = true;
 
+  int32_t old_vocabulary_count = 0;
   while (vocabulary_count < MAX_VOCAB) {
+    if (old_vocabulary_count == vocabulary_count)
+      break;
+
+    old_vocabulary_count = vocabulary_count;
+
     size_t saved = SAVE(alloc);
 
     HashMap* hashmap = hashmap_create(alloc, 2*MAX_VOCAB, hash_blob, equal_blob, free_key, free_value);
@@ -227,7 +266,7 @@ int32_t gen_vocabulary(
       };
 
       //avoid merge
-      if (contains_space(vocabulary+pair.token0) || contains_space(vocabulary+pair.token1))
+      if (contains_space(vocabulary+pair.token1))
         continue;
 
       Byte_Buffer key = byte_buffer_from_parts(&pair, sizeof(pair));
@@ -237,7 +276,7 @@ int32_t gen_vocabulary(
         count = byte_buffer_get_int(value);
       }
 
-      if (count > max_count) {
+      if (count > 10 && count > max_count) {
         max_count = count;
         max_pair = pair;
       }

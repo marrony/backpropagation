@@ -3,6 +3,8 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+#define PRECISION 5
+
 void test_add(void) {
   printf("test_add\n");
   int N = 2;
@@ -20,14 +22,14 @@ void test_add(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x       = "); mat_print(x->output.value);
-  printf(" d(x)     = "); mat_println(x->output.grad);
+  printf("x       = "); mat_print(x->output.value, PRECISION);
+  printf(" d(x)     = "); mat_println(x->output.grad, PRECISION);
 
-  printf("y       = "); mat_print(y->output.value);
-  printf(" d(y)     = "); mat_println(y->output.grad);
+  printf("y       = "); mat_print(y->output.value, PRECISION);
+  printf(" d(y)     = "); mat_println(y->output.grad, PRECISION);
 
-  printf("(x + y) = "); mat_print(op->output.value);
-  printf(" d(x + y) = "); mat_println(op->output.grad);
+  printf("(x + y) = "); mat_print(op->output.value, PRECISION);
+  printf(" d(x + y) = "); mat_println(op->output.grad, PRECISION);
 
   // Forward: x + y = 2 + 1 = 3
   ASSERT_VEC_EQ(op->output.value, ((float[]) {3.0, 3.0}));
@@ -61,14 +63,14 @@ void test_sub(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x       = "); mat_print(x->output.value);
-  printf(" d(x)     = "); mat_println(x->output.grad);
+  printf("x       = "); mat_print(x->output.value, PRECISION);
+  printf(" d(x)     = "); mat_println(x->output.grad, PRECISION);
 
-  printf("y       = "); mat_print(y->output.value);
-  printf(" d(y)     = "); mat_println(y->output.grad);
+  printf("y       = "); mat_print(y->output.value, PRECISION);
+  printf(" d(y)     = "); mat_println(y->output.grad, PRECISION);
 
-  printf("(x - y) = "); mat_print(op->output.value);
-  printf(" d(x - y) = "); mat_println(op->output.grad);
+  printf("(x - y) = "); mat_print(op->output.value, PRECISION);
+  printf(" d(x - y) = "); mat_println(op->output.grad, PRECISION);
 
   // Forward: x - y = 2 - 1 = 1
   ASSERT_VEC_EQ(op->output.value, ((float[]) {1.0, 1.0}));
@@ -104,14 +106,14 @@ void test_mult(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x         = "); mat_println(x->output.value);
-  printf("d(x*y)/dx = "); mat_println(x->output.grad);
+  printf("x         = "); mat_println(x->output.value, PRECISION);
+  printf("d(x*y)/dx = "); mat_println(x->output.grad, PRECISION);
 
-  printf("y         = "); mat_println(y->output.value);
-  printf("d(x*y)/dy = "); mat_println(y->output.grad);
+  printf("y         = "); mat_println(y->output.value, PRECISION);
+  printf("d(x*y)/dy = "); mat_println(y->output.grad, PRECISION);
 
-  printf("x*y       = "); mat_println(op->output.value);
-  printf("dL/d(x*y) = "); mat_println(op->output.grad);
+  printf("x*y       = "); mat_println(op->output.value, PRECISION);
+  printf("dL/d(x*y) = "); mat_println(op->output.grad, PRECISION);
 
   // Forward: x * y = [1x2] * [2x2] = [1x2]
   // [2,2] * [3,3] = [6,6]
@@ -149,14 +151,14 @@ void test_div(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x       = "); mat_print(x->output.value);
-  printf(" d(x)     = "); mat_println(x->output.grad);
+  printf("x       = "); mat_print(x->output.value, PRECISION);
+  printf(" d(x)     = "); mat_println(x->output.grad, PRECISION);
 
-  printf("y       = "); mat_print(y->output.value);
-  printf(" d(y)     = "); mat_println(y->output.grad);
+  printf("y       = "); mat_print(y->output.value, PRECISION);
+  printf(" d(y)     = "); mat_println(y->output.grad, PRECISION);
 
-  printf("(x * y) = "); mat_print(op->output.value);
-  printf(" d(x / y) = "); mat_println(op->output.grad);
+  printf("(x * y) = "); mat_print(op->output.value, PRECISION);
+  printf(" d(x / y) = "); mat_println(op->output.grad, PRECISION);
 
   // Forward: x / y = 2 / 3 = 0.66666669
   ASSERT_VEC_EQ(op->output.value, ((float[]) {+0.66666669f, +0.66666669f}));
@@ -193,11 +195,11 @@ void test_linear(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x       = "); mat_print(x->output.value);
-  printf(" d(x)     = "); mat_println(x->output.grad);
+  printf("x       = "); mat_print(x->output.value, PRECISION);
+  printf(" d(x)     = "); mat_println(x->output.grad, PRECISION);
 
-  printf(" (x*W + b) = "); mat_println(op->output.value);
-  printf(" d(x*W + b) = "); mat_println(op->output.grad);
+  printf(" (x*W + b) = "); mat_println(op->output.value, PRECISION);
+  printf(" d(x*W + b) = "); mat_println(op->output.grad, PRECISION);
 
   // Forward: x*W + b (standard: W is 2×3, x is 1×2, output is 1×3)
   // y[0] = x[0]*W[0,0] + x[1]*W[1,0] + b[0] = 1*1 + 2*4 + 1 = 10
@@ -233,11 +235,11 @@ void test_sigmoid(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x       = "); mat_print(x->output.value);
-  printf(" d(x)     = "); mat_println(x->output.grad);
+  printf("x       = "); mat_print(x->output.value, PRECISION);
+  printf(" d(x)     = "); mat_println(x->output.grad, PRECISION);
 
-  printf("sigmoid(x) = "); mat_print(op->output.value);
-  printf(" d(sigmoid(x)) = "); mat_println(op->output.grad);
+  printf("sigmoid(x) = "); mat_print(op->output.value, PRECISION);
+  printf(" d(sigmoid(x)) = "); mat_println(op->output.grad, PRECISION);
 
   // Forward: sigmoid(0.5) = 1/(1+exp(-0.5)) = 0.62245935
   ASSERT_VEC_EQ(op->output.value, ((float[]) {+0.62245935, +0.62245935}));
@@ -268,11 +270,11 @@ void test_softmax(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x       = "); mat_print(x->output.value);
-  printf(" d(x)     = "); mat_println(x->output.grad);
+  printf("x       = "); mat_print(x->output.value, PRECISION);
+  printf(" d(x)     = "); mat_println(x->output.grad, PRECISION);
 
-  printf("softmax(x) = "); mat_print(op->output.value);
-  printf(" d(softmax(x)) = "); mat_println(op->output.grad);
+  printf("softmax(x) = "); mat_print(op->output.value, PRECISION);
+  printf(" d(softmax(x)) = "); mat_println(op->output.grad, PRECISION);
 
   // Forward: softmax([0.1, 0.5]) = [0.4013123399, 0.5986876601]
   // exp(0.1) = 1.1051709, exp(0.5) = 1.6487213
@@ -308,11 +310,11 @@ void test_relu(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x       = "); mat_print(x->output.value);
-  printf(" d(x)     = "); mat_println(x->output.grad);
+  printf("x       = "); mat_print(x->output.value, PRECISION);
+  printf(" d(x)     = "); mat_println(x->output.grad, PRECISION);
 
-  printf("relu(x) = "); mat_print(op->output.value);
-  printf(" d(relu(x)) = "); mat_println(op->output.grad);
+  printf("relu(x) = "); mat_print(op->output.value, PRECISION);
+  printf(" d(relu(x)) = "); mat_println(op->output.grad, PRECISION);
 
   // Forward: relu(x) = max(0, x)
   // relu(-1) = 0, relu(2) = 2
@@ -344,11 +346,11 @@ void test_square(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x       = "); mat_print(x->output.value);
-  printf(" d(x)     = "); mat_println(x->output.grad);
+  printf("x       = "); mat_print(x->output.value, PRECISION);
+  printf(" d(x)     = "); mat_println(x->output.grad, PRECISION);
 
-  printf("x^2     = "); mat_print(op->output.value);
-  printf(" d(x^2) = "); mat_println(op->output.grad);
+  printf("x^2     = "); mat_print(op->output.value, PRECISION);
+  printf(" d(x^2) = "); mat_println(op->output.grad, PRECISION);
 
   // Forward: x^2 = 2^2 = 4, 3^2 = 9
   ASSERT_VEC_EQ(op->output.value, ((float[]) {4.0, 9.0}));
@@ -378,11 +380,11 @@ void test_cube(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x       = "); mat_print(x->output.value);
-  printf(" d(x)     = "); mat_println(x->output.grad);
+  printf("x       = "); mat_print(x->output.value, PRECISION);
+  printf(" d(x)     = "); mat_println(x->output.grad, PRECISION);
 
-  printf("x^3     = "); mat_print(op->output.value);
-  printf(" d(x^3) = "); mat_println(op->output.grad);
+  printf("x^3     = "); mat_print(op->output.value, PRECISION);
+  printf(" d(x^3) = "); mat_println(op->output.grad, PRECISION);
 
   // Forward: x^3 = 2^3 = 8, 3^3 = 27
   ASSERT_VEC_EQ(op->output.value, ((float[]) {8.0, 27.0}));
@@ -412,11 +414,11 @@ void test_exp(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x       = "); mat_print(x->output.value);
-  printf(" d(x)     = "); mat_println(x->output.grad);
+  printf("x       = "); mat_print(x->output.value, PRECISION);
+  printf(" d(x)     = "); mat_println(x->output.grad, PRECISION);
 
-  printf("exp(x)  = "); mat_print(op->output.value);
-  printf(" d(exp(x)) = "); mat_println(op->output.grad);
+  printf("exp(x)  = "); mat_print(op->output.value, PRECISION);
+  printf(" d(exp(x)) = "); mat_println(op->output.grad, PRECISION);
 
   // Forward: exp(0) = 1, exp(1) = 2.718281828
   ASSERT_VEC_EQ(op->output.value, ((float[]) {1.0, 2.718281828}));
@@ -446,11 +448,11 @@ void test_negate(void) {
   node_forward(op);
   node_backward(op, dL);
 
-  printf("x       = "); mat_print(x->output.value);
-  printf(" d(x)     = "); mat_println(x->output.grad);
+  printf("x       = "); mat_print(x->output.value, PRECISION);
+  printf(" d(x)     = "); mat_println(x->output.grad, PRECISION);
 
-  printf("-x      = "); mat_print(op->output.value);
-  printf(" d(-x) = "); mat_println(op->output.grad);
+  printf("-x      = "); mat_print(op->output.value, PRECISION);
+  printf(" d(-x) = "); mat_println(op->output.grad, PRECISION);
 
   // Forward: -x = -2, -3
   ASSERT_VEC_EQ(op->output.value, ((float[]) {-2.0, -3.0}));
@@ -475,7 +477,7 @@ void test_constant(void) {
 
   node_forward(c);
 
-  printf("constant = "); mat_println(c->output.value);
+  printf("constant = "); mat_println(c->output.value, PRECISION);
 
   // Constant value should remain 5.0
   ASSERT_VEC_EQ(c->output.value, ((float[]) {5.0, 5.0}));
@@ -493,7 +495,7 @@ void test_variable(void) {
 
   node_forward(v);
 
-  printf("variable = "); mat_println(v->output.value);
+  printf("variable = "); mat_println(v->output.value, PRECISION);
 
   // Variable value should be set value
   ASSERT_VEC_EQ(v->output.value, ((float[]) {7.0, 7.0}));
@@ -541,17 +543,17 @@ void test_nmist(void) {
 
     node_backward(layer_03, dL);
 
-    printf("target  = "); mat_println(target);
-    printf("dL      = "); mat_println(dL);
+    printf("target  = "); mat_println(target, PRECISION);
+    printf("dL      = "); mat_println(dL, PRECISION);
 
-    printf("layer 0 = "); mat_println(layer_01->output.value);
-    printf("          "); mat_println(layer_01_linear->output.grad);
+    printf("layer 0 = "); mat_println(layer_01->output.value, PRECISION);
+    printf("          "); mat_println(layer_01_linear->output.grad, PRECISION);
 
-    printf("layer 1 = "); mat_println(layer_02->output.value);
-    printf("          "); mat_println(layer_02_linear->output.grad);
+    printf("layer 1 = "); mat_println(layer_02->output.value, PRECISION);
+    printf("          "); mat_println(layer_02_linear->output.grad, PRECISION);
 
-    printf("layer 2 = "); mat_println(layer_03->output.value);
-    printf("          "); mat_println(layer_03_linear->output.grad);
+    printf("layer 2 = "); mat_println(layer_03->output.value, PRECISION);
+    printf("          "); mat_println(layer_03_linear->output.grad, PRECISION);
 
     // int arg = mat_row_max(layer_03->output);
     // printf("%d ", arg);

@@ -848,6 +848,15 @@ void zero_grads(Node* node) {
   for (int i = 0; i < node->input_size; i++)
     zero_grads(node->input[i]);
 
+  mat_fill(node->output.grad, 0);
+  mat_fill(node->weight.grad, 0);
+  mat_fill(node->bias.grad, 0);
+}
+
+void zero_g_grads(Node* node) {
+  for (int i = 0; i < node->input_size; i++)
+    zero_g_grads(node->input[i]);
+
   mat_fill(node->output.g_grad, 0);
   mat_fill(node->weight.g_grad, 0);
   mat_fill(node->bias.g_grad, 0);

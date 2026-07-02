@@ -29,6 +29,40 @@ typedef struct {
 #define MAT_AT(m, row, col) ((m).elems[((m).cols)*(row) + (col)])
 #define VEC_AT(v, idx) MAT_AT((v), 0, (idx))
 
+// Uniform random in [0, 1)
+float rand_uniform(void) {
+  return rand() / (float)RAND_MAX;
+}
+
+// Gaussian random using Marsaglia Polar Method
+// Generates two independent normal samples at once (Box-Muller style)
+// Uses rejection sampling: samples u,v ~ U[-1,1], accepts if u²+v² < 1
+float random_normal(float mean, float stddev) {
+  static int hasSpare = 0;
+  static float spare;
+
+  if (hasSpare) {
+    hasSpare = 0;
+    return mean + stddev * spare;
+  }
+
+  hasSpare = 1;
+
+  float u, v, s;
+
+  do {
+    u = rand_uniform() * 2.0f - 1.0f;
+    v = rand_uniform() * 2.0f - 1.0f;
+    s = u*u + v*v;
+  } while (s >= 1.0f || s == 0.0f);
+
+  // Marsaglia formula: z = u * sqrt(-2*ln(s)/s)
+  s = sqrtf(-2.0f * logf(s) / s);
+
+  spare = v * s;
+  return mean + stddev * (u * s);
+}
+
 NMatrix mat_alloc(int rows, int cols) {
   return (NMatrix) {
     .elems = malloc(sizeof(float) * rows * cols),
@@ -45,7 +79,7 @@ NMatrix mat_init(int rows, int cols, float* data) {
   };
 }
 
-void mat_fprint(FILE* fp, NMatrix m) {
+void mat_fprint(FILE* fp, NMatrix m, int precision) {
   fprintf(fp, "[");
   for (int i = 0; i < m.rows; i++) {
     if (i > 0) fprintf(fp, " ");
@@ -53,24 +87,24 @@ void mat_fprint(FILE* fp, NMatrix m) {
     if (m.rows > 1) fprintf(fp, "[");
     for (int j = 0; j < m.cols; j++) {
       if (j > 0) fprintf(fp, " ");
-      fprintf(fp, "%+.8f", MAT_AT(m, i, j));
+      fprintf(fp, "%+.*f", precision, MAT_AT(m, i, j));
     }
     if (m.rows > 1) fprintf(fp, "]");
   }
   fprintf(fp, "]");
 }
 
-void mat_fprintln(FILE* fp, NMatrix m) {
-  mat_fprint(fp, m);
+void mat_fprintln(FILE* fp, NMatrix m, int precision) {
+  mat_fprint(fp, m, precision);
   fprintf(fp, "\n");
 }
 
-void mat_print(NMatrix m) {
-  mat_fprint(stdout, m);
+void mat_print(NMatrix m, int precision) {
+  mat_fprint(stdout, m, precision);
 }
 
-void mat_println(NMatrix m) {
-  mat_fprintln(stdout, m);
+void mat_println(NMatrix m, int precision) {
+  mat_fprintln(stdout, m, precision);
 }
 
 void assert_fmt(
@@ -114,9 +148,9 @@ void assert_vec_eq(const char* func, const char* file, int line, NMatrix va, con
     bool eq = (x*x) <= (0.001f*0.001f);
     if (!eq) {
       fprintf(stderr, "\nAssertion failed: (");
-      mat_fprint(stderr, va);
+      mat_fprint(stderr, va, 8);
       fprintf(stderr, " != ");
-      mat_fprint(stderr, mat_init(va.rows, va.cols, (float*)vb));
+      mat_fprint(stderr, mat_init(va.rows, va.cols, (float*)vb), 8);
       fprintf(stderr, "), function %s, file %s, line %d.\n", func, file, line);
       exit(1);
     }
@@ -800,6 +834,24 @@ void mat_rand(NMatrix m) {
   }
 }
 
+
+void mat_rand_normal(NMatrix m, float mean, float stddev) {
+  for (int i = 0; i < m.rows; i++) {
+    for (int j = 0; j < m.cols; j++) {
+      MAT_AT(m, i, j) = random_normal(mean, stddev);
+    }
+  }
+}
+
+void mat_clip(NMatrix m, float min, float max) {
+  for (int i = 0; i < m.rows; i++) {
+    for (int j = 0; j < m.cols; j++) {
+      if (MAT_AT(m, i, j) < min) MAT_AT(m, i, j) = min;
+      if (MAT_AT(m, i, j) > max) MAT_AT(m, i, j) = max;
+    }
+  }
+}
+
 /*
  * Calculates the forward function on x.
  *
@@ -942,7 +994,7 @@ void dsoftmax_temperature(NMatrix dst, NMatrix h, NMatrix dL_dh, float t) {
   assert(dst.rows == 1);
   assert(t > 0.0f);
 
-  // dL/dz = 1/t * Softmax(z) * [ dL/dh - dot(Softmax(z), dL/dh) ]
+  // dL/dz = 1/t * Softmax(z, t) * [ dL/dh - dot(Softmax(z, t), dL/dh) ]
   float dot = 0;
   for (int i = 0; i < h.cols; i++)
     dot += VEC_AT(h, i) * VEC_AT(dL_dh, i);

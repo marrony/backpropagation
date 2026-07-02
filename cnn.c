@@ -249,40 +249,6 @@ void softmax_backward(
   );
 }
 
-// Uniform random in [0, 1)
-float rand_uniform(void) {
-  return rand() / (float)RAND_MAX;
-}
-
-// Gaussian random using Marsaglia Polar Method
-// Generates two independent normal samples at once (Box-Muller style)
-// Uses rejection sampling: samples u,v ~ U[-1,1], accepts if u²+v² < 1
-float random_normal(float mean, float stddev) {
-  static int hasSpare = 0;
-  static float spare;
-
-  if (hasSpare) {
-    hasSpare = 0;
-    return mean + stddev * spare;
-  }
-
-  hasSpare = 1;
-
-  float u, v, s;
-
-  do {
-    u = rand_uniform() * 2.0f - 1.0f;
-    v = rand_uniform() * 2.0f - 1.0f;
-    s = u*u + v*v;
-  } while (s >= 1.0f || s == 0.0f);
-
-  // Marsaglia formula: z = u * sqrt(-2*ln(s)/s)
-  s = sqrtf(-2.0f * logf(s) / s);
-
-  spare = v * s;
-  return mean + stddev * (u * s);
-}
-
 float clampf(float x) {
   if (x < 0) return 0;
   if (x > 1) return 1;
