@@ -543,14 +543,18 @@ void mat_add(NMatrix dst, NMatrix a, NMatrix b) {
   assert(dst.cols == b.cols);
   assert(dst.rows == b.rows);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
-      assert(!isnan(MAT_AT(a, i, j)));
-      assert(!isnan(MAT_AT(b, i, j)));
+  int count = dst.rows * dst.cols;
+  for (int i = 0; i < count; i++)
+    dst.elems[i] = a.elems[i] + b.elems[i];
 
-      MAT_AT(dst, i, j) = MAT_AT(a, i, j) + MAT_AT(b, i, j);
-    }
-  }
+  // for (int i = 0; i < dst.rows; i++) {
+  //   for (int j = 0; j < dst.cols; j++) {
+  //     assert(!isnan(MAT_AT(a, i, j)));
+  //     assert(!isnan(MAT_AT(b, i, j)));
+  //
+  //     MAT_AT(dst, i, j) = MAT_AT(a, i, j) + MAT_AT(b, i, j);
+  //   }
+  // }
 }
 
 /**
@@ -574,14 +578,18 @@ void mat_weighted_add(NMatrix dst, NMatrix a, NMatrix b, float k) {
   assert(dst.cols == b.cols);
   assert(dst.rows == b.rows);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
-      assert(!isnan(MAT_AT(a, i, j)));
-      assert(!isnan(MAT_AT(b, i, j)));
+  int count = dst.rows * dst.cols;
+  for (int i = 0; i < count; i++)
+    dst.elems[i] = a.elems[i] + b.elems[i] * k;
 
-      MAT_AT(dst, i, j) = MAT_AT(a, i, j) + MAT_AT(b, i, j) * k;
-    }
-  }
+  // for (int i = 0; i < dst.rows; i++) {
+  //   for (int j = 0; j < dst.cols; j++) {
+  //     assert(!isnan(MAT_AT(a, i, j)));
+  //     assert(!isnan(MAT_AT(b, i, j)));
+  //
+  //     MAT_AT(dst, i, j) = MAT_AT(a, i, j) + MAT_AT(b, i, j) * k;
+  //   }
+  // }
 }
 
 /**
@@ -629,11 +637,15 @@ void mat_memberwise_mult(NMatrix dst, NMatrix a, NMatrix b) {
   assert(dst.cols == b.cols);
   assert(dst.rows == b.rows);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
-      MAT_AT(dst, i, j) = MAT_AT(a, i, j) * MAT_AT(b, i, j);
-    }
-  }
+  int count = dst.rows * dst.cols;
+  for (int i = 0; i < count; i++)
+    dst.elems[i] = a.elems[i] * b.elems[i];
+
+  // for (int i = 0; i < dst.rows; i++) {
+  //   for (int j = 0; j < dst.cols; j++) {
+  //     MAT_AT(dst, i, j) = MAT_AT(a, i, j) * MAT_AT(b, i, j);
+  //   }
+  // }
 }
 
 /**
@@ -656,11 +668,15 @@ void mat_memberwise_div(NMatrix dst, NMatrix a, NMatrix b, float eps) {
   assert(dst.cols == b.cols);
   assert(dst.rows == b.rows);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
-      MAT_AT(dst, i, j) = MAT_AT(a, i, j) / (MAT_AT(b, i, j) + eps);
-    }
-  }
+  int count = dst.rows * dst.cols;
+  for (int i = 0; i < count; i++)
+    dst.elems[i] = a.elems[i] / (b.elems[i] + eps);
+
+  // for (int i = 0; i < dst.rows; i++) {
+  //   for (int j = 0; j < dst.cols; j++) {
+  //     MAT_AT(dst, i, j) = MAT_AT(a, i, j) / (MAT_AT(b, i, j) + eps);
+  //   }
+  // }
 }
 
 /**
@@ -701,11 +717,15 @@ void mat_scale(NMatrix dst, NMatrix src, float k) {
   assert(dst.cols == src.cols);
   assert(dst.rows == src.rows);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
-      MAT_AT(dst, i, j) = MAT_AT(src, i, j) * k;
-    }
-  }
+  int count = dst.rows * dst.cols;
+  for (int i = 0; i < count; i++)
+    dst.elems[i] = src.elems[i] * k;
+
+  // for (int i = 0; i < dst.rows; i++) {
+  //   for (int j = 0; j < dst.cols; j++) {
+  //     MAT_AT(dst, i, j) = MAT_AT(src, i, j) * k;
+  //   }
+  // }
 }
 
 /**

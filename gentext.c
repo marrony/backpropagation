@@ -1,5 +1,6 @@
 #include <_stdlib.h>
 #include <ctype.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -246,17 +247,15 @@ Malloc_Allocator mallocator = MALLOC_CREATE();
 
 //  Categorical Cross-Entropy Loss
 //  Loss = - dot(target, ln(y))
-//  dLoss = - target / y
+//  dLoss = - target / y => 1 - target / y
 float cross_entropy_loss(NMatrix dL, NMatrix target, NMatrix y) {
-  float clip = 1e-15f;
-  mat_clip(softmax_node->output.value, clip, 1.0f);
-
   float loss = 0;
   for (int t = 0; t < MAX_VOCAB; t++)
     loss -= (VEC_AT(target, t) * logf(VEC_AT(y, t)));
 
-  mat_one_minus_memberwise_div(dL, target, y, clip);
-  // mat_memberwise_div(dL, target_label, y, clip);
+  float eps = 1e-15f;
+  mat_one_minus_memberwise_div(dL, target, y, eps);
+  // mat_memberwise_div(dL, target_label, y, eps);
   // mat_scale(dL, dL, -1);
 
   return loss;
@@ -280,12 +279,17 @@ void init_model(Sample_Array samples) {
   memset(embedding_ada_grad, 0, sizeof(embedding_ada_grad));
 
   while (keep_running && epoch < 10000) {
-    epoch += 1;
-    printf("\rtraining = %d cost = %f samples = %zu\r", epoch, cost / samples.count, samples.count);
+    int64_t start_us = get_system_micros();
 
+    epoch += 1;
     cost = 0;
 
     size_t batch_size = 32;
+    int64_t time_forward = 0;
+    int64_t time_backward = 0;
+    int64_t acc0_weights = 0;
+    int64_t acc1_weights = 0;
+    int64_t upd_weights = 0;
 
     // Iterate through the sequence as a sliding window
     // Target is sequence[i], Context is sequence[i-CONTEXT] to sequence[i-1]
@@ -315,27 +319,48 @@ void init_model(Sample_Array samples) {
         smooth_target(target_label, 0.1);
 
         // Forward pass
+        int64_t f_us = get_system_micros();
         node_forward(softmax_node);
+        time_forward += get_system_micros() - f_us;
 
-        float clip = 1e-15f;
-        mat_clip(softmax_node->output.value, clip, 1.0f);
+        mat_clip(softmax_node->output.value, 1e-15f, 1.0f);
 
         cost += cross_entropy_loss(dL, target_label, softmax_node->output.value);
 
         // Backward pass and accumulate gradients
+        int64_t b_us = get_system_micros();
         node_backward(softmax_node, dL);
+        time_backward += get_system_micros() - b_us;
 
         // Accumulate gradients
+        int64_t a0_us = get_system_micros();
         acc_grads(softmax_node);
+        acc0_weights += get_system_micros() - a0_us;
+        int64_t a1_us = get_system_micros();
         acc_embedding_grad(input_node->output.grad, sample.context);
+        acc1_weights += get_system_micros() - a1_us;
       }
 
       // Update the parameters
+      int64_t u_us = get_system_micros();
       update_grads(softmax_node, 0.01 / current_batch_size);
       update_embedding(0.2, current_batch_size);
+      upd_weights += get_system_micros() - u_us;
     }
 
     array_shuffle(&samples);
+
+    int64_t end_us = get_system_micros();
+    int64_t time_ms = (end_us - start_us) / 1000;
+
+    printf("\rtraining = %d cost = %f samples = %zu time = %lld ms forward = %lld backward = %lld acc = (%lld,%lld) upd = %lld\r",
+        epoch, cost / samples.count, samples.count, time_ms,
+        time_forward,
+        time_backward,
+        acc0_weights,
+        acc1_weights,
+        upd_weights
+        );
   }
 
   //Batch Gradient Descent (BGD)
