@@ -6,9 +6,11 @@
 typedef enum {
   NODE_CONSTANT,
   NODE_VARIABLE,
+  NODE_EMBEDDING,
   NODE_LINEAR,
   NODE_SIGMOID,
   NODE_SOFTMAX,
+  NODE_SOFTMAX_CROSS_ENTROPY,
   NODE_RELU,
   NODE_CONV2D,
   NODE_FLATTEN,
@@ -31,9 +33,11 @@ typedef enum {
 static const char* Node_Type_Str[__MAX_NODES+1] = {
   STR(NODE_CONSTANT),
   STR(NODE_VARIABLE),
+  STR(NODE_EMBEDDING),
   STR(NODE_LINEAR),
   STR(NODE_SIGMOID),
   STR(NODE_SOFTMAX),
+  STR(NODE_SOFTMAX_CROSS_ENTROPY),
   STR(NODE_RELU),
   STR(NODE_CONV2D),
   STR(NODE_FLATTEN),
@@ -145,6 +149,23 @@ Node* create_variable(int rows, int cols) {
   return node;
 }
 
+Node* create_embeddings(size_t max_vocab, size_t emb_dim, size_t context) {
+  Node* node = create_node(NODE_EMBEDDING);
+  node->input_size = 0;
+  init_param(&node->output, 1, emb_dim*context);
+  init_param(&node->weight, max_vocab, emb_dim);
+
+  // node->context = malloc(sizeof(int32_t)*context);
+  // node->embedding_tokens_batch = malloc(sizeof(int32_t)*max_vocab);
+  // memset(node->context, 0, sizeof(int32_t)*context);
+  // memset(node->embedding_tokens_batch, 0, sizeof(int32_t)*max_vocab);
+  // node->context_size = context;
+  // node->ada_grad = mat_alloc(max_vocab, emb_dim);
+  // mat_fill(node->ada_grad, 0);
+
+  return node;
+}
+
 Node* create_linear(Node* input, int in_size, int out_size) {
   Node* node = create_node(NODE_LINEAR);
   node->input[0] = input;
@@ -195,6 +216,14 @@ Node* create_softmax(Node* input) {
   int rows = node_get_value_rows(input);
   int cols = node_get_value_cols(input);
   Node* node = create_unary(NODE_SOFTMAX, input, rows, cols);
+  node->temperature = 1.0f;
+  return node;
+}
+
+Node* create_softmax_cross_entropy(Node* input) {
+  int rows = node_get_value_rows(input);
+  int cols = node_get_value_cols(input);
+  Node* node = create_unary(NODE_SOFTMAX_CROSS_ENTROPY, input, rows, cols);
   node->temperature = 1.0f;
   return node;
 }
@@ -301,6 +330,9 @@ void node_forward(Node* node) {
     case NODE_VARIABLE:
       break;
 
+    case NODE_EMBEDDING:
+      break;
+
     case NODE_LINEAR:
       // f(x) = x*W + b (standard convention: W is N×M, x is 1×N, output is 1×M)
       // x*W: [1×N] * [N×M] = [1×M]
@@ -317,6 +349,7 @@ void node_forward(Node* node) {
       break;
 
     case NODE_SOFTMAX:
+    case NODE_SOFTMAX_CROSS_ENTROPY:
       // f(x) = softmax(x) (row-wise normalization)
       // softmax(x)_j = exp(x_j) / Σ_k exp(x_k)
       node_forward(node->input[0]);
@@ -448,10 +481,32 @@ void node_forward(Node* node) {
   }
 }
 
+// y = f(x)
+// upstream   = dL/dy
+// local      = dy/dx
+// downstream = dL/dx
+//
+// downstream = local * upstream
+//
+// Rule:
+// A node should never write its downstream gradient into its own memory space (node->output.grad).
+// It must write it directly into its input's gradient space (node->input[0]->output.grad).
+// Exception:
+// Variables
+//
+// void node_backward(Node* node, NMatrix dL) {
+//   Node* input_x = node->input[0]
+//
+//   NMatrix dydx = f'(x)
+//   input_x->output.grad += dydx * dL
+//
+//   node_backward(input_x, input_x->output.grad);
+// }
+//
 void node_backward(Node* node, NMatrix dL) {
-  Param fx   = node->output;
-  Param w    = node->weight;
-  Param b    = node->bias;
+  Param fwd_out = node->output;
+  Param w       = node->weight;
+  Param b       = node->bias;
 
   Param x    = node->input[0] ? node->input[0]->output : NULL_PARAM;
   Param u    = node->input[0] ? node->input[0]->output : NULL_PARAM;
@@ -459,7 +514,7 @@ void node_backward(Node* node, NMatrix dL) {
 
   // printf("BACKWARD(%s) = [%dx%d]\n",
   //     Node_Type_Str[node->type],
-  //     fx.rows, fx.cols
+  //     fwd_out.rows, fwd_out.cols
   // );
 
   switch (node->type) {
@@ -472,7 +527,6 @@ void node_backward(Node* node, NMatrix dL) {
       //
       // downstream:
       //   dL/dx = 0 ⊙ dL = 0 (element-wise)
-      mat_fill(x.grad, 0);
       break;
 
     case NODE_VARIABLE:
@@ -484,8 +538,9 @@ void node_backward(Node* node, NMatrix dL) {
       //
       // downstream:
       //   dL/dx = I ⊙ dL = dL (element-wise)
-      mat_copy(fx.grad, dL);
-      // mat_copy(dL_dx, dL);
+      break;
+
+    case NODE_EMBEDDING:
       break;
 
     case NODE_LINEAR:
@@ -501,37 +556,13 @@ void node_backward(Node* node, NMatrix dL) {
       //   dL/dW = x^T * dL (matrix mult: [N×1] * [1×M] = [N×M])
       //   dL/db = dL (element-wise)
       //   dL/dx = dL * W^T (matrix mult: [1×M] * [M×N] = [1×N])
-      // Initialize gradients to zero
-      for (int i = 0; i < w.grad.rows; i++) {
-        for (int j = 0; j < w.grad.cols; j++) {
-          MAT_AT(w.grad, i, j) = 0;
-        }
-      }
-      for (int i = 0; i < b.grad.rows; i++) {
-        for (int j = 0; j < b.grad.cols; j++) {
-          MAT_AT(b.grad, i, j) = 0;
-        }
-      }
-      for (int i = 0; i < x.grad.rows; i++) {
-        for (int j = 0; j < x.grad.cols; j++) {
-          MAT_AT(x.grad, i, j) = 0;
-        }
-      }
-
-      // dL/dW[i,j] = dL[j] * x[i] (outer product)
-      // x^T is (2×1), dL is (1×3), result is (2×3) = W's shape
-      // Use mat_mult_A_transposed_and_B: w.grad = x^T × dL
-      // x (1×2), dL (1×3) -> x^T (2×1) × dL (1×3) = (2×3) ✓
-      mat_mult_A_transposed_and_B(w.grad, x.value, dL);
+      //
+      // dL/dW[i,j] = dL[j] * x[i]
+      mat_mult_A_transposed_and_B_acc(w.grad, x.value, dL);
       // dL_db = I * dL
-      mat_copy(b.grad, dL);
-      // dL_dx = dL * W^T (standard: W is N×M, x is 1×N, dL is 1×M)
-      // Use mat_mult_A_and_B_transposed: x.grad = dL × W^T
-      // dL (1×M), W (N×M), W^T (M×N), result (1×N)
-      mat_mult_A_and_B_transposed(x.grad, dL, w.value);
-
-      // Set output gradient to upstream gradient (like sigmoid, relu, softmax)
-      mat_copy(fx.grad, dL);
+      mat_add(b.grad, b.grad, dL);
+      // dL_dx = dL * W^T
+      mat_mult_A_and_B_transposed_acc(x.grad, dL, w.value);
 
       node_backward(node->input[0], x.grad);
       break;
@@ -545,8 +576,7 @@ void node_backward(Node* node, NMatrix dL) {
       //
       // downstream:
       //   dL/dx = (σ(x) * (1 - σ(x))) ⊙ dL (element-wise)
-      mat_copy(fx.grad, dL);
-      dsigmoid(x.grad, fx.value, dL);
+      dsigmoid(x.grad, fwd_out.value, dL);
       node_backward(node->input[0], x.grad);
       break;
 
@@ -559,8 +589,15 @@ void node_backward(Node* node, NMatrix dL) {
       //
       // downstream:
       //   dL/dx_ij = s_i * (dL_ij - Σ_k dL_kj * s_i) (row-wise)
-      mat_copy(fx.grad, dL);
-      dsoftmax_temperature(x.grad, fx.value, dL, node->temperature);
+      // h = Softmax(x, t)                           | node->output.value = Softmax(x, t)
+      // dL/dx = 1/t * h * [ dL/dh - dot(h, dL/dh) ] | x.grad = 1/t * node->output.value * [ dL - dot(node->output.value, dL) ]
+      dsoftmax_temperature(x.grad, fwd_out.value, dL, node->temperature);
+      node_backward(node->input[0], x.grad);
+      break;
+
+    case NODE_SOFTMAX_CROSS_ENTROPY:
+      mat_sub(x.grad, fwd_out.value, dL);
+      mat_scale(x.grad, x.grad, 1.0f / node->temperature);
       node_backward(node->input[0], x.grad);
       break;
 
@@ -573,8 +610,7 @@ void node_backward(Node* node, NMatrix dL) {
       //
       // downstream:
       //   dL/dx = I(ReLU'(x)) ⊙ dL (element-wise), where I(...) is indicator
-      mat_copy(fx.grad, dL);
-      drelu(x.grad, fx.value, dL);
+      drelu(x.grad, fwd_out.value, dL);
       node_backward(node->input[0], x.grad);
       break;
 
@@ -587,8 +623,6 @@ void node_backward(Node* node, NMatrix dL) {
       //
       // downstream:
       //   dL/dx_i = dL_reshaped to shape of x_i (identity mapping)
-      mat_copy(fx.grad, dL);
-
       for (int i = 0; i < node->input_size; i++) {
         Node* input = node->input[i];
 
@@ -619,8 +653,6 @@ void node_backward(Node* node, NMatrix dL) {
       //
       // downstream:
       //   dL/dx = conv2d_transpose(dL, W)
-      mat_copy(fx.grad, dL);
-
       mat_fill(x.grad, 0);
       mat_fill(w.grad, 0);
 
@@ -628,14 +660,14 @@ void node_backward(Node* node, NMatrix dL) {
         for (int j = 0; j < dL.cols; j++) {
           NMatrix dL_dx_reshaped = mat_reshape(
               x.grad,
-              fx.value.rows + w.grad.rows - 1,
-              fx.value.cols + w.grad.cols - 1
+              fwd_out.value.rows + w.grad.rows - 1,
+              fwd_out.value.cols + w.grad.cols - 1
           );
 
           NMatrix x_reshaped = mat_reshape(
               x.value,
-              fx.value.rows + w.grad.rows - 1,
-              fx.value.cols + w.grad.cols - 1
+              fwd_out.value.rows + w.grad.rows - 1,
+              fwd_out.value.cols + w.grad.cols - 1
           );
 
           float delta = MAT_AT(dL, i, j);
@@ -666,11 +698,9 @@ void node_backward(Node* node, NMatrix dL) {
       //
       // downstream:
       //   dL/dx = (2*x) ⊙ dL = 2*x*dL (element-wise)
-      mat_copy(fx.grad, dL);
-
       for (int i = 0; i < x.grad.rows; i++) {
         for (int j = 0; j < x.grad.cols; j++)
-          MAT_AT(x.grad, i, j) = 2*MAT_AT(x.value, i, j)*MAT_AT(dL, i, j);
+          MAT_AT(x.grad, i, j) += 2*MAT_AT(x.value, i, j)*MAT_AT(dL, i, j);
       }
 
       node_backward(node->input[0], x.grad);
@@ -685,11 +715,9 @@ void node_backward(Node* node, NMatrix dL) {
       //
       // downstream:
       //   dL/dx = (3*x⊙x) ⊙ dL = 3*x^2*dL (element-wise)
-      mat_copy(fx.grad, dL);
-
       for (int i = 0; i < x.grad.rows; i++) {
         for (int j = 0; j < x.grad.cols; j++)
-          MAT_AT(x.grad, i, j) = 3*MAT_AT(x.value, i, j)*MAT_AT(x.value, i, j)*MAT_AT(dL, i, j);
+          MAT_AT(x.grad, i, j) += 3*MAT_AT(x.value, i, j)*MAT_AT(x.value, i, j)*MAT_AT(dL, i, j);
       }
 
       node_backward(node->input[0], x.grad);
@@ -704,11 +732,8 @@ void node_backward(Node* node, NMatrix dL) {
       //
       // downstream:
       //   dL/dx = exp(x) ⊙ dL (element-wise)
-      mat_copy(fx.grad, dL);
-
-      for (int i = 0; i < x.grad.rows; i++) {
-        for (int j = 0; j < x.grad.cols; j++)
-          MAT_AT(x.grad, i, j) = MAT_AT(fx.value, i, j)*MAT_AT(dL, i, j);
+      for (int i = 0; i < dL.rows*dL.cols; i++) {
+        x.grad.elems[i] += fwd_out.value.elems[i]*dL.elems[i];
       }
 
       node_backward(node->input[0], x.grad);
@@ -723,12 +748,8 @@ void node_backward(Node* node, NMatrix dL) {
       //
       // downstream:
       //   dL/dx = (-1) ⊙ dL = -dL (element-wise)
-      mat_copy(fx.grad, dL);
-
-      for (int i = 0; i < x.grad.rows; i++) {
-        for (int j = 0; j < x.grad.cols; j++) {
-          MAT_AT(x.grad, i, j) = -MAT_AT(dL, i, j);
-        }
+      for (int i = 0; i < dL.rows*dL.cols; i++) {
+        x.grad.elems[i] += -dL.elems[i];
       }
 
       node_backward(node->input[0], x.grad);
@@ -745,8 +766,6 @@ void node_backward(Node* node, NMatrix dL) {
       // downstream:
       //   dL/du = dL * v^T (matrix mult: [N×P] * [P×M] = [N×M])
       //   dL/dv = u^T * dL (matrix mult: [M×N] * [N×P] = [M×P])
-      mat_copy(fx.grad, dL);
-
       mat_mult_A_and_B_transposed(u.grad, dL, v.value);
       mat_mult_A_transposed_and_B(v.grad, u.value, dL);
 
@@ -765,15 +784,11 @@ void node_backward(Node* node, NMatrix dL) {
       // downstream:
       //   dL/du = (1/v) ⊙ dL (element-wise)
       //   dL/dv = (-u/v²) ⊙ dL (element-wise)
-      mat_copy(fx.grad, dL);
+      for (int i = 0; i < dL.rows*dL.cols; i++) {
+        float inv_v = 1.0f / v.value.elems[i];
 
-      for (int i = 0; i < u.grad.rows; i++) {
-        for (int j = 0; j < u.grad.cols; j++) {
-          float one_over_v = 1.0 / MAT_AT(v.value, i, j);
-
-          MAT_AT(u.grad, i, j) = one_over_v * MAT_AT(dL, i, j);
-          MAT_AT(v.grad, i, j) = -MAT_AT(u.value, i, j) * one_over_v * one_over_v * MAT_AT(dL, i, j);
-        }
+        u.grad.elems[i] += inv_v * dL.elems[i];
+        v.grad.elems[i] += -u.value.elems[i] * inv_v * inv_v * dL.elems[i];
       }
 
       node_backward(node->input[0], u.grad);
@@ -791,9 +806,8 @@ void node_backward(Node* node, NMatrix dL) {
       // downstream:
       //   dL/du = I ⊙ dL = dL (element-wise)
       //   dL/dv = I ⊙ dL = dL (element-wise)
-      mat_copy(fx.grad, dL);
-      mat_copy(u.grad, dL);
-      mat_copy(v.grad, dL);
+      mat_add(u.grad, u.grad, dL);
+      mat_add(v.grad, v.grad, dL);
 
       node_backward(node->input[0], u.grad);
       node_backward(node->input[1], v.grad);
@@ -810,13 +824,9 @@ void node_backward(Node* node, NMatrix dL) {
       // downstream:
       //   dL/du = I ⊙ dL = dL (element-wise)
       //   dL/dv = (-I) ⊙ dL = -dL (element-wise)
-      mat_copy(fx.grad, dL);
-
-      for (int i = 0; i < u.grad.rows; i++) {
-        for (int j = 0; j < u.grad.cols; j++) {
-          MAT_AT(u.grad, i, j) = +MAT_AT(dL, i, j);
-          MAT_AT(v.grad, i, j) = -MAT_AT(dL, i, j);
-        }
+      for (int i = 0; i < dL.rows*dL.cols; i++) {
+        u.grad.elems[i] += +dL.elems[i];
+        v.grad.elems[i] += -dL.elems[i];
       }
 
       node_backward(node->input[0], u.grad);

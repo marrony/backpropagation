@@ -34,8 +34,8 @@ const char *training_text[] = {
   "the heavy bull ate grass. that male rooster ate grass. the heavy cow ate grass. that female hen ate grass. the loud bull woke farmers. a fierce rooster woke farmers. the loud cow woke farmers. a fierce hen woke farmers.",
 };
 
-#define CONTEXT 8
-#define EMBED_DIM 8
+#define CONTEXT 12
+#define EMBED_DIM 12
 #define INPUT_DIM (CONTEXT * EMBED_DIM)
 #define MAX_GENERATE 500
 
@@ -45,8 +45,8 @@ const char *training_text[] = {
 
 // Embedding matrix [MAX_VOCAB][embed_dim]
 // todo: use NMatrix
-float embedding[MAX_VOCAB][EMBED_DIM] = {0};
-float embedding_g_grad[MAX_VOCAB][EMBED_DIM] = {0};
+// float embedding[MAX_VOCAB][EMBED_DIM] = {0};
+// float embedding_g_grad[MAX_VOCAB][EMBED_DIM] = {0};
 float embedding_ada_grad[MAX_VOCAB][EMBED_DIM] = {0};
 size_t embedding_tokens_batch[MAX_VOCAB] = {0};
 
@@ -77,8 +77,7 @@ void mat_read(NMatrix mat, FILE* fp) {
 
 void save_model(void) {
   FILE* fp = fopen("models/gentext.bin", "wb");
-  NMatrix emb = mat_init(MAX_VOCAB, EMBED_DIM, &embedding[0][0]);
-  mat_write(emb, fp);
+  mat_write(input_node->weight.value, fp);
   mat_write(linear_node->weight.value, fp);
   mat_write(linear_node->bias.value, fp);
   mat_write(hidden1_node->weight.value, fp);
@@ -92,14 +91,12 @@ void load_model(void) {
   // vocab_size = 512
   // embeddings (64) -> linear (64x128) -> relu -> linear (128x512) -> softmax
   int hidden_dim = 128;
-  input_node = create_variable(1, INPUT_DIM);
+  input_node = create_embeddings(MAX_VOCAB, EMBED_DIM, CONTEXT);
   linear_node = create_linear(input_node, INPUT_DIM, hidden_dim);
   relu_node = create_relu(linear_node);
   hidden1_node = create_linear(relu_node, hidden_dim, MAX_VOCAB);
-  softmax_node = create_softmax(hidden1_node);
+  softmax_node = create_softmax_cross_entropy(hidden1_node);
   softmax_node->temperature = 1.0;
-
-  NMatrix emb = mat_init(MAX_VOCAB, EMBED_DIM, &embedding[0][0]);
 
   // Xavier (Glorot): sqrt(1.0 / x)
   // Used For: Linear layers, Tanh layers, or Softmax inputs.
@@ -112,7 +109,7 @@ void load_model(void) {
   float std_hidden = sqrtf(1.0f / (hidden_dim+MAX_VOCAB));
 
   // Initialize embeddings and weights with small random values
-  mat_rand_normal(emb, 0, std_embeddings);
+  mat_rand_normal(input_node->weight.value, 0, std_embeddings);
   mat_rand_normal(linear_node->weight.value, 0, std_linear);
   mat_fill(linear_node->bias.value, 0);
   mat_rand_normal(hidden1_node->weight.value, 0, std_hidden);
@@ -121,7 +118,7 @@ void load_model(void) {
   FILE* fp = fopen("models/gentext.bin", "rb");
   if (fp != NULL) {
     printf("model exists, continue training\n");
-    mat_read(emb, fp);
+    mat_read(input_node->weight.value, fp);
     mat_read(linear_node->weight.value, fp);
     mat_read(linear_node->bias.value, fp);
     mat_read(hidden1_node->weight.value, fp);
@@ -142,35 +139,23 @@ void copy_context(NMatrix input, int* context) {
   assert(input.rows == 1);
   assert(input.cols == INPUT_DIM);
 
-  int offset = 0;
   for (int t = 0; t < CONTEXT; t++) {
-    float* emb = embedding[context[t]];
-
-    for (int d = 0; d < EMBED_DIM; d++) {
-      VEC_AT(input, offset) = emb[d];
-      offset += 1;
-    }
+    NMatrix emb = mat_row(input_node->weight.value, context[t]);
+    NMatrix ctx = mat_row_slice(input, t*EMBED_DIM, EMBED_DIM);
+    mat_copy(ctx, emb);
   }
-
-  assert(offset == INPUT_DIM);
 }
 
 void acc_embedding_grad(NMatrix grad, int32_t* context) {
   assert(grad.rows == 1);
   assert(grad.cols == INPUT_DIM);
 
-  int offset = 0;
   for (int t = 0; t < CONTEXT; t++) {
     embedding_tokens_batch[context[t]] += 1;
-    float* g_grad = embedding_g_grad[context[t]];
-
-    for (int d = 0; d < EMBED_DIM; d++) {
-      g_grad[d] += VEC_AT(grad, offset);
-      offset += 1;
-    }
+    NMatrix g_grad = mat_row(input_node->weight.g_grad, context[t]);
+    NMatrix ctx = mat_row_slice(grad, t*EMBED_DIM, EMBED_DIM);
+    mat_add(g_grad, g_grad, ctx);
   }
-
-  assert(offset == INPUT_DIM);
 }
 
 void update_embedding(float lr, size_t batch_size) {
@@ -180,21 +165,21 @@ void update_embedding(float lr, size_t batch_size) {
 
     embedding_tokens_batch[v] = 0;
 
-    float* emb = embedding[v];
-    float* g_grad = embedding_g_grad[v];
+    NMatrix emb = input_node->weight.value;
+    NMatrix g_grad = input_node->weight.g_grad;
     float* ada_grad = embedding_ada_grad[v];
 
     for (int d = 0; d < EMBED_DIM; d++) {
       // average the gradient: ∇W = ∇W / B
-      float g = g_grad[d] / batch_size;
+      float g = MAT_AT(g_grad, v, d) / batch_size;
 
       // update AdaGrad: Gnew = Gold + ∇W^2
       ada_grad[d] += g*g;
 
       // udpate the weight: Wnew = Wold - lr/sqrt(Gnew) * ∇W
-      emb[d] -= (lr / (sqrtf(ada_grad[d]) + 1e-8f)) * g;
+      MAT_AT(emb, v, d) -= (lr / (sqrtf(ada_grad[d]) + 1e-15f)) * g;
 
-      g_grad[d] = 0;
+      MAT_AT(g_grad, v, d) = 0;
     }
   }
 }
@@ -253,8 +238,10 @@ float cross_entropy_loss(NMatrix dL, NMatrix target, NMatrix y) {
   for (int t = 0; t < MAX_VOCAB; t++)
     loss -= (VEC_AT(target, t) * logf(VEC_AT(y, t)));
 
-  float eps = 1e-15f;
-  mat_one_minus_memberwise_div(dL, target, y, eps);
+  mat_copy(dL, target);
+
+  // float eps = 1e-15f;
+  // mat_one_minus_memberwise_div(dL, target, y, eps);
   // mat_memberwise_div(dL, target_label, y, eps);
   // mat_scale(dL, dL, -1);
 
@@ -327,8 +314,11 @@ void init_model(Sample_Array samples) {
 
         cost += cross_entropy_loss(dL, target_label, softmax_node->output.value);
 
+        mat_clip(dL, -5, +5);
+
         // Backward pass and accumulate gradients
         int64_t b_us = get_system_micros();
+        zero_grads(softmax_node);
         node_backward(softmax_node, dL);
         time_backward += get_system_micros() - b_us;
 
@@ -343,8 +333,8 @@ void init_model(Sample_Array samples) {
 
       // Update the parameters
       int64_t u_us = get_system_micros();
-      update_grads(softmax_node, 0.01 / current_batch_size);
-      update_embedding(0.2, current_batch_size);
+      update_grads(softmax_node, 0.005 / current_batch_size);
+      update_embedding(0.05, current_batch_size);
       upd_weights += get_system_micros() - u_us;
     }
 

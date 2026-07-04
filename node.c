@@ -571,24 +571,47 @@ void test_nmist(void) {
   mat_free(test_labels);
 }
 
+void test_foobar(void) {
+  Node* input =  create_variable(1, 1);
+  Node* relu = create_relu(input);
+  Node* linear = create_linear(relu, 1, 1);
+  Node* add = create_multiply(linear, input);
+
+  MAT_AT(input->output.value, 0, 0) = 2;
+  MAT_AT(linear->weight.value, 0, 0) = 3;
+
+  NMatrix dL = mat_alloc(1, 1);
+  MAT_AT(dL, 0, 0) = 1;
+
+  node_forward(add);
+  zero_grads(add);
+  node_backward(add, dL);
+
+  printf("relu   = "); mat_println(relu->output.value, 8);
+  printf("linear = "); mat_println(linear->output.value, 8);
+  printf(" +     = "); mat_println(add->output.value, 8);
+  mat_println(input->output.grad, 8);
+}
+
 int main(void) {
   srand(0);
+  test_foobar();
 
-  test_add();
-  test_sub();
-  test_mult();
-  test_div();
-  test_linear();
-  test_sigmoid();
-  test_softmax();
-  test_relu();
-  test_square();
-  test_cube();
-  test_exp();
-  test_negate();
-  test_constant();
-  test_variable();
-  test_nmist();
+  // test_add();
+  // test_sub();
+  // test_mult();
+  // test_div();
+  // test_linear();
+  // test_sigmoid();
+  // test_softmax();
+  // test_relu();
+  // test_square();
+  // test_cube();
+  // test_exp();
+  // test_negate();
+  // test_constant();
+  // test_variable();
+  // test_nmist();
 
   return 0;
 }

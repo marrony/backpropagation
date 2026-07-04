@@ -203,11 +203,15 @@ NMatrix mat_reshape(NMatrix x, int rows, int cols) {
 }
 
 void mat_fill(NMatrix dst, float k) {
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
-      MAT_AT(dst, i, j) = k;
-    }
-  }
+  int count = dst.rows * dst.cols;
+  for (int i = 0; i < count; i++)
+    dst.elems[i] = k;
+
+  // for (int i = 0; i < dst.rows; i++) {
+  //   for (int j = 0; j < dst.cols; j++) {
+  //     MAT_AT(dst, i, j) = k;
+  //   }
+  // }
 }
 
 void mat_copy(NMatrix dst, NMatrix src) {
@@ -379,6 +383,16 @@ void mat_mult_A_and_B_transposed(NMatrix dst, NMatrix a, NMatrix b) {
   }
 }
 
+void mat_mult_A_and_B_transposed_acc(NMatrix dst, NMatrix a, NMatrix b) {
+  ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.rows, a.cols, b.cols, b.rows);
+
+  for (int i = 0; i < dst.rows; i++) {
+    for (int j = 0; j < dst.cols; j++) {
+      MAT_AT(dst, i, j) += mat_dot_row_row(a, b, i, j);
+    }
+  }
+}
+
 /**
  * Matrix multiplication with transpose and addition: dst = A × B^T + C
  * 
@@ -427,6 +441,16 @@ void mat_mult_A_transposed_and_B(NMatrix dst, NMatrix a, NMatrix b) {
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = mat_dot_col_col(a, b, i, j);
+    }
+  }
+}
+
+void mat_mult_A_transposed_and_B_acc(NMatrix dst, NMatrix a, NMatrix b) {
+  ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.cols, a.rows, b.rows, b.cols);
+
+  for (int i = 0; i < dst.rows; i++) {
+    for (int j = 0; j < dst.cols; j++) {
+      MAT_AT(dst, i, j) += mat_dot_col_col(a, b, i, j);
     }
   }
 }
@@ -864,12 +888,18 @@ void mat_rand_normal(NMatrix m, float mean, float stddev) {
 }
 
 void mat_clip(NMatrix m, float min, float max) {
-  for (int i = 0; i < m.rows; i++) {
-    for (int j = 0; j < m.cols; j++) {
-      if (MAT_AT(m, i, j) < min) MAT_AT(m, i, j) = min;
-      if (MAT_AT(m, i, j) > max) MAT_AT(m, i, j) = max;
-    }
+  int count = m.rows * m.cols;
+  for (int i = 0; i < count; i++) {
+    if (m.elems[i] < min) m.elems[i] = min;
+    if (m.elems[i] > max) m.elems[i] = max;
   }
+
+  // for (int i = 0; i < m.rows; i++) {
+  //   for (int j = 0; j < m.cols; j++) {
+  //     if (MAT_AT(m, i, j) < min) MAT_AT(m, i, j) = min;
+  //     if (MAT_AT(m, i, j) > max) MAT_AT(m, i, j) = max;
+  //   }
+  // }
 }
 
 /*
@@ -946,7 +976,7 @@ void dsigmoid(NMatrix dst, NMatrix h, NMatrix dL_dh) {
   assert(dst.rows == 1);
 
   for (int j = 0; j < h.cols; j++) {
-    VEC_AT(dst, j) = dsigmoidf(VEC_AT(h, j)) * VEC_AT(dL_dh, j);
+    VEC_AT(dst, j) += dsigmoidf(VEC_AT(h, j)) * VEC_AT(dL_dh, j);
   }
 }
 
@@ -963,18 +993,14 @@ static inline float dreluf(float x) {
 // returns if x > 0  : x
 //         if x <= 0 : 0
 void relu(NMatrix dst, NMatrix x) {
-  for (int i = 0; i < x.rows; i++) {
-    for (int j = 0; j < x.cols; j++) {
-      MAT_AT(dst, i, j) = reluf(MAT_AT(x, i, j));
-    }
+  for (int i = 0; i < dst.rows*dst.cols; i++) {
+    dst.elems[i] = reluf(x.elems[i]);
   }
 }
 
 void drelu(NMatrix dst, NMatrix h, NMatrix dL_dh) {
-  for (int i = 0; i < h.rows; i++) {
-    for (int j = 0; j < h.cols; j++) {
-      MAT_AT(dst, i, j) = dreluf(MAT_AT(h, i, j)) * MAT_AT(dL_dh, i, j);
-    }
+  for (int i = 0; i < dst.rows*dst.cols; i++) {
+    dst.elems[i] += dreluf(h.elems[i]) * dL_dh.elems[i];
   }
 }
 
@@ -1003,25 +1029,26 @@ void softmax_temperature(NMatrix dst, NMatrix x, float t) {
     sum += e;
   }
 
-  float inv_sum = 1.0f / sum;
+  float inv_sum = 1.0f / (sum + 1e-15f);
   for (int j = 0; j < x.cols; j++) {
     VEC_AT(dst, j) *= inv_sum;
   }
 }
 
-void dsoftmax_temperature(NMatrix dst, NMatrix h, NMatrix dL_dh, float t) {
+// h = Softmax(z, t)
+// dL/dz = 1/t * h * [ dL/dh - dot(h, dL/dh) ]
+void dsoftmax_temperature(NMatrix dLdz, NMatrix h, NMatrix dLdh, float t) {
   assert(h.rows == 1);
-  assert(dst.rows == 1);
+  assert(dLdz.rows == 1);
   assert(t > 0.0f);
 
-  // dL/dz = 1/t * Softmax(z, t) * [ dL/dh - dot(Softmax(z, t), dL/dh) ]
   float dot = 0;
   for (int i = 0; i < h.cols; i++)
-    dot += VEC_AT(h, i) * VEC_AT(dL_dh, i);
+    dot += VEC_AT(h, i) * VEC_AT(dLdh, i);
 
   float inv_t = 1.0f / t;
   for (int i = 0; i < h.cols; i++)
-    VEC_AT(dst, i) = inv_t * VEC_AT(h, i) * (VEC_AT(dL_dh, i) - dot);
+    VEC_AT(dLdz, i) += inv_t * VEC_AT(h, i) * (VEC_AT(dLdh, i) - dot);
 }
 
 void softmax(NMatrix dst, NMatrix x) {

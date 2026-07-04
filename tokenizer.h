@@ -69,7 +69,6 @@ Byte_Buffer byte_buffer_set_int(Byte_Buffer buf, int32_t value) {
   return buf;
 }
 
-#define MAX_VOCAB 512
 #define TOK_SIZE 31
 #define MAX_TOKEN (TOK_SIZE+1)
 
@@ -110,9 +109,10 @@ int32_t gen_vocabulary(
     const char* text[],
     size_t text_len,
     int32_t** tokens_ptr,
-    Token* vocabulary
+    Token* vocabulary,
+    int max_vocab
 ) {
-  assert(MAX_VOCAB > 256);
+  assert(max_vocab > 256);
 
   Arena_Allocator arena = ARENA_CREATE(global, 1024*1024);
   Allocator* alloc = &arena.alloc;
@@ -212,7 +212,7 @@ int32_t gen_vocabulary(
   punctuation['\n'] = true;
 
   int32_t old_vocabulary_count = 0;
-  while (vocabulary_count < MAX_VOCAB) {
+  while (vocabulary_count < max_vocab) {
     if (old_vocabulary_count == vocabulary_count)
       break;
 
@@ -220,7 +220,7 @@ int32_t gen_vocabulary(
 
     size_t saved = SAVE(alloc);
 
-    HashMap* hashmap = hashmap_create(alloc, 2*MAX_VOCAB, hash_blob, equal_blob, free_key, free_value);
+    HashMap* hashmap = hashmap_create(alloc, 2*max_vocab, hash_blob, equal_blob, free_key, free_value);
 
     for (int i = 0; i < vocabulary_count; i++) {
       Token_Pair pair = {
@@ -305,7 +305,7 @@ int32_t gen_vocabulary(
     RESTORE(alloc, saved);
   }
 
-  assert(vocabulary_count == MAX_VOCAB);
+  assert(vocabulary_count == max_vocab);
 
   ARENA_DESTROY(global, &arena);
 

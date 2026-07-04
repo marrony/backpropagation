@@ -33,6 +33,8 @@ int comp_token(const void* a, const void* b) {
 
 Malloc_Allocator mallocator = MALLOC_CREATE();
 
+#define MAX_VOCAB 512
+
 int main(void) {
   int32_t* tokens = NULL;
   Token vocabulary[MAX_VOCAB] = {0};
@@ -42,9 +44,11 @@ int main(void) {
       training_text,
       sizeof(training_text)/sizeof(char*),
       &tokens,
-      vocabulary
+      vocabulary,
+      MAX_VOCAB
   );
 
+  printf("#define MAX_VOCAB %d\n", MAX_VOCAB);
   printf("Token vocabulary[MAX_VOCAB] = {\n");
   for (int i = 0; i < MAX_VOCAB; i++) {
     printf("  { .id = %d, .token = {", vocabulary[i].id);
