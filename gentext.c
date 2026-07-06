@@ -43,13 +43,6 @@ const char *training_text[] = {
 #define TO_STR(x) TO_STR_HELPER(x)
 #define SCAN_TOKEN_FMT "%" TO_STR(TOK_SIZE) "s"
 
-// Embedding matrix [MAX_VOCAB][embed_dim]
-// todo: use NMatrix
-// float embedding[MAX_VOCAB][EMBED_DIM] = {0};
-// float embedding_g_grad[MAX_VOCAB][EMBED_DIM] = {0};
-float embedding_ada_grad[MAX_VOCAB][EMBED_DIM] = {0};
-size_t embedding_tokens_batch[MAX_VOCAB] = {0};
-
 // ------------------------------------------
 
 Node* input_node;
@@ -146,44 +139,6 @@ void copy_context(NMatrix input, int* context) {
   }
 }
 
-void acc_embedding_grad(NMatrix grad, int32_t* context) {
-  assert(grad.rows == 1);
-  assert(grad.cols == INPUT_DIM);
-
-  for (int t = 0; t < CONTEXT; t++) {
-    embedding_tokens_batch[context[t]] += 1;
-    NMatrix g_grad = mat_row(input_node->weight.g_grad, context[t]);
-    NMatrix ctx = mat_row_slice(grad, t*EMBED_DIM, EMBED_DIM);
-    mat_add(g_grad, g_grad, ctx);
-  }
-}
-
-void update_embedding(float lr, size_t batch_size) {
-  for (int v = 0; v < MAX_VOCAB; v++) {
-    if (v == PAD_TOKEN) continue;
-    if (embedding_tokens_batch[v] == 0) continue;
-
-    embedding_tokens_batch[v] = 0;
-
-    NMatrix emb = input_node->weight.value;
-    NMatrix g_grad = input_node->weight.g_grad;
-    float* ada_grad = embedding_ada_grad[v];
-
-    for (int d = 0; d < EMBED_DIM; d++) {
-      // average the gradient: ∇W = ∇W / B
-      float g = MAT_AT(g_grad, v, d) / batch_size;
-
-      // update AdaGrad: Gnew = Gold + ∇W^2
-      ada_grad[d] += g*g;
-
-      // udpate the weight: Wnew = Wold - lr/sqrt(Gnew) * ∇W
-      MAT_AT(emb, v, d) -= (lr / (sqrtf(ada_grad[d]) + 1e-15f)) * g;
-
-      MAT_AT(g_grad, v, d) = 0;
-    }
-  }
-}
-
 void mat_one_minus_memberwise_div(NMatrix dst, NMatrix a, NMatrix b, float eps) {
   assert(dst.cols == a.cols);
   assert(dst.rows == a.rows);
@@ -262,8 +217,9 @@ void init_model(Sample_Array samples) {
   float cost = 0;
   int epoch = 0;
 
+  Node_Ptr_Array order = ARRAY_CREATE(&mallocator.alloc);
+
   zero_g_grads(softmax_node);
-  memset(embedding_ada_grad, 0, sizeof(embedding_ada_grad));
 
   while (keep_running && epoch < 10000) {
     int64_t start_us = get_system_micros();
@@ -274,8 +230,7 @@ void init_model(Sample_Array samples) {
     size_t batch_size = 32;
     int64_t time_forward = 0;
     int64_t time_backward = 0;
-    int64_t acc0_weights = 0;
-    int64_t acc1_weights = 0;
+    int64_t acc_weights = 0;
     int64_t upd_weights = 0;
 
     // Iterate through the sequence as a sliding window
@@ -294,7 +249,7 @@ void init_model(Sample_Array samples) {
         Sample sample = samples.elems[i + batch];
 
         // Prepare training input vector from embeddings
-        copy_context(input_node->output.value, sample.context);
+        memcpy(input_node->context, sample.context, sizeof(sample.context));
 
         assert(sample.target != PAD_TOKEN);
 
@@ -307,7 +262,7 @@ void init_model(Sample_Array samples) {
 
         // Forward pass
         int64_t f_us = get_system_micros();
-        node_forward(softmax_node);
+        node_forward(softmax_node, &order);
         time_forward += get_system_micros() - f_us;
 
         mat_clip(softmax_node->output.value, 1e-15f, 1.0f);
@@ -319,22 +274,19 @@ void init_model(Sample_Array samples) {
         // Backward pass and accumulate gradients
         int64_t b_us = get_system_micros();
         zero_grads(softmax_node);
-        node_backward(softmax_node, dL);
+        mat_copy(softmax_node->output.grad, dL);
+        node_backward(&order);
         time_backward += get_system_micros() - b_us;
 
         // Accumulate gradients
-        int64_t a0_us = get_system_micros();
+        int64_t a_us = get_system_micros();
         acc_grads(softmax_node);
-        acc0_weights += get_system_micros() - a0_us;
-        int64_t a1_us = get_system_micros();
-        acc_embedding_grad(input_node->output.grad, sample.context);
-        acc1_weights += get_system_micros() - a1_us;
+        acc_weights += get_system_micros() - a_us;
       }
 
       // Update the parameters
       int64_t u_us = get_system_micros();
-      update_grads(softmax_node, 0.005 / current_batch_size);
-      update_embedding(0.05, current_batch_size);
+      update_grads(softmax_node, 0.005 / current_batch_size, current_batch_size);
       upd_weights += get_system_micros() - u_us;
     }
 
@@ -343,12 +295,11 @@ void init_model(Sample_Array samples) {
     int64_t end_us = get_system_micros();
     int64_t time_ms = (end_us - start_us) / 1000;
 
-    printf("\rtraining = %d cost = %f samples = %zu time = %lld ms forward = %lld backward = %lld acc = (%lld,%lld) upd = %lld\r",
+    printf("\rtraining = %d cost = %f samples = %zu time = %lld ms forward = %lld backward = %lld acc = %lld upd = %lld\r",
         epoch, cost / samples.count, samples.count, time_ms,
         time_forward,
         time_backward,
-        acc0_weights,
-        acc1_weights,
+        acc_weights,
         upd_weights
         );
   }
@@ -528,6 +479,7 @@ int main(void) {
     );
 
     int context[CONTEXT] = {0};
+    Node_Ptr_Array order = ARRAY_CREATE(&mallocator.alloc);
 
     if (tokens_count > CONTEXT)
       tokens_count = CONTEXT;
@@ -552,7 +504,7 @@ int main(void) {
       // t = 1.5 = creative
       // t = 3.0 = nonsensical
       softmax_node->temperature = 1.0;
-      node_forward(softmax_node);
+      node_forward(softmax_node, &order);
 
       // Sample next token
       // int next = mat_row_argmax(softmax_node->output.value); // deterministic greedy decoding

@@ -2,6 +2,8 @@
 #define NODE_H
 
 #include "nn.h"
+#include "allocator.h"
+#include "array.h"
 
 typedef enum {
   NODE_CONSTANT,
@@ -88,6 +90,12 @@ struct Node {
   Param weight;
   Param bias;
   float temperature;
+
+  //
+  int32_t* context;
+  size_t context_size;
+  size_t* embedding_tokens_batch;
+  NMatrix ada_grad;
 };
 
 #define NULL_MATRIX (NMatrix){NULL, 0, 0}
@@ -155,13 +163,15 @@ Node* create_embeddings(size_t max_vocab, size_t emb_dim, size_t context) {
   init_param(&node->output, 1, emb_dim*context);
   init_param(&node->weight, max_vocab, emb_dim);
 
-  // node->context = malloc(sizeof(int32_t)*context);
-  // node->embedding_tokens_batch = malloc(sizeof(int32_t)*max_vocab);
-  // memset(node->context, 0, sizeof(int32_t)*context);
-  // memset(node->embedding_tokens_batch, 0, sizeof(int32_t)*max_vocab);
-  // node->context_size = context;
-  // node->ada_grad = mat_alloc(max_vocab, emb_dim);
-  // mat_fill(node->ada_grad, 0);
+  node->context = malloc(sizeof(int32_t)*context);
+  node->context_size = context;
+  memset(node->context, 0, sizeof(int32_t)*context);
+
+  node->embedding_tokens_batch = malloc(sizeof(size_t)*max_vocab);
+  memset(node->embedding_tokens_batch, 0, sizeof(size_t)*max_vocab);
+
+  node->ada_grad = mat_alloc(max_vocab, emb_dim);
+  mat_fill(node->ada_grad, 0);
 
   return node;
 }
@@ -316,7 +326,10 @@ Node* create_sub(Node* input0, Node* input1) {
   return create_binary(NODE_SUB, input0, input1, N, M);
 }
 
-void node_forward(Node* node) {
+typedef Node* Node_Ptr;
+DEFINE_ARRAY(Node_Ptr);
+
+void node_forward(Node* node, Node_Ptr_Array* order) {
   Param fx   = node->output;
   Param w    = node->weight;
   Param b    = node->bias;
@@ -331,20 +344,27 @@ void node_forward(Node* node) {
       break;
 
     case NODE_EMBEDDING:
+      for (size_t t = 0; t < node->context_size; t++) {
+        int32_t token = node->context[t];
+        node->embedding_tokens_batch[token] += 1;
+        NMatrix value = mat_row(node->weight.value, token);
+        NMatrix ctx = mat_row_slice(node->output.value, t*12, 12);
+        mat_copy(ctx, value);
+      }
       break;
 
     case NODE_LINEAR:
       // f(x) = x*W + b (standard convention: W is N×M, x is 1×N, output is 1×M)
       // x*W: [1×N] * [N×M] = [1×M]
       // x*W + b: [1×M] + [1×M] = [1×M]
-      node_forward(node->input[0]);
+      node_forward(node->input[0], order);
       mat_mult_add(fx.value, x.value, w.value, b.value);
       break;
 
     case NODE_SIGMOID:
       // f(x) = σ(x) (element-wise sigmoid)
       // σ(x) = 1 / (1 + e^(-x))
-      node_forward(node->input[0]);
+      node_forward(node->input[0], order);
       sigmoid(fx.value, x.value);
       break;
 
@@ -352,14 +372,14 @@ void node_forward(Node* node) {
     case NODE_SOFTMAX_CROSS_ENTROPY:
       // f(x) = softmax(x) (row-wise normalization)
       // softmax(x)_j = exp(x_j) / Σ_k exp(x_k)
-      node_forward(node->input[0]);
+      node_forward(node->input[0], order);
       softmax_temperature(fx.value, x.value, node->temperature);
       break;
 
     case NODE_RELU:
       // f(x) = ReLU(x) (element-wise rectified linear unit)
       // ReLU(x) = max(0, x)
-      node_forward(node->input[0]);
+      node_forward(node->input[0], order);
       relu(fx.value, x.value);
       break;
 
@@ -368,7 +388,7 @@ void node_forward(Node* node) {
       // Reshapes each input to (1, size_i) and concatenates horizontally
       // [size₁] ⊕ [size₂] ⊕ ... ⊕ [sizeₙ] = [Σ size_i]
       for (int i = 0; i < node->input_size; i++) {
-        node_forward(node->input[i]);
+        node_forward(node->input[i], order);
 
         Node* input = node->input[i];
 
@@ -389,7 +409,7 @@ void node_forward(Node* node) {
     case NODE_CONV2D:
     {
       // f(x) = conv2d(x, weight)
-      node_forward(node->input[0]);
+      node_forward(node->input[0], order);
 
       NMatrix x_ = mat_reshape(x.value,
           fx.value.rows + w.value.rows - 1,
@@ -415,7 +435,7 @@ void node_forward(Node* node) {
     case NODE_SQUARE:
       // f(x) = x ⊙ x (element-wise squaring)
       // [N×M] ⊙ [N×M] = [N×M]
-      node_forward(node->input[0]);
+      node_forward(node->input[0], order);
       for (int i = 0; i < x.value.rows; i++) {
         for (int j = 0; j < x.value.cols; j++)
           MAT_AT(fx.value, i, j) = MAT_AT(x.value, i, j)*MAT_AT(x.value, i, j);
@@ -425,7 +445,7 @@ void node_forward(Node* node) {
     case NODE_CUBE:
       // f(x) = x ⊙ x ⊙ x (element-wise cubing)
       // [N×M] ⊙ [N×M] ⊙ [N×M] = [N×M]
-      node_forward(node->input[0]);
+      node_forward(node->input[0], order);
       for (int i = 0; i < x.value.rows; i++) {
         for (int j = 0; j < x.value.cols; j++)
           MAT_AT(fx.value, i, j) = MAT_AT(x.value, i, j)*MAT_AT(x.value, i, j)*MAT_AT(x.value, i, j);
@@ -435,7 +455,7 @@ void node_forward(Node* node) {
     case NODE_EXP:
       // f(x) = exp(x) (element-wise exponential)
       // exp(x)_ij = e^(x_ij)
-      node_forward(node->input[0]);
+      node_forward(node->input[0], order);
       for (int i = 0; i < x.value.rows; i++) {
         for (int j = 0; j < x.value.cols; j++)
           MAT_AT(fx.value, i, j) = expf(MAT_AT(x.value, i, j));
@@ -445,40 +465,41 @@ void node_forward(Node* node) {
     case NODE_NEGATE:
       // f(x) = -x (element-wise negation)
       // [N×M] -> [N×M]
-      node_forward(node->input[0]);
+      node_forward(node->input[0], order);
       mat_scale(fx.value, x.value, -1);
       break;
 
     case NODE_MULTIPLY:
       // f(u, v) = u * v (matrix multiplication)
       // [N×M] * [M×P] = [N×P]
-      node_forward(node->input[0]);
-      node_forward(node->input[1]);
+      node_forward(node->input[0], order);
+      node_forward(node->input[1], order);
       mat_mult(fx.value, u.value, v.value);
       break;
 
     case NODE_DIVIDE:
       // f(u, v) = u ⊘ v (element-wise division)
       // [N×M] ⊘ [N×M] = [N×M]
-      node_forward(node->input[0]);
-      node_forward(node->input[1]);
+      node_forward(node->input[0], order);
+      node_forward(node->input[1], order);
       mat_memberwise_div(fx.value, u.value, v.value, 1e-15f);
       break;
 
     case NODE_ADD:
       // f(u, v) = u + v
-      node_forward(node->input[0]);
-      node_forward(node->input[1]);
+      node_forward(node->input[0], order);
+      node_forward(node->input[1], order);
       mat_add(fx.value, u.value, v.value);
       break;
 
     case NODE_SUB:
       // f(u, v) = u - v
-      node_forward(node->input[0]);
-      node_forward(node->input[1]);
+      node_forward(node->input[0], order);
+      node_forward(node->input[1], order);
       mat_sub(fx.value, u.value, v.value);
       break;
   }
+  array_append(order, node);
 }
 
 // y = f(x)
@@ -503,10 +524,14 @@ void node_forward(Node* node) {
 //   node_backward(input_x, input_x->output.grad);
 // }
 //
-void node_backward(Node* node, NMatrix dL) {
+void node_backward(Node_Ptr_Array* order) {
+  if (order->count == 0) return;
+
+  Node* node    = array_pop_last(order);
   Param fwd_out = node->output;
   Param w       = node->weight;
   Param b       = node->bias;
+  NMatrix dL    = fwd_out.grad;
 
   Param x    = node->input[0] ? node->input[0]->output : NULL_PARAM;
   Param u    = node->input[0] ? node->input[0]->output : NULL_PARAM;
@@ -541,6 +566,11 @@ void node_backward(Node* node, NMatrix dL) {
       break;
 
     case NODE_EMBEDDING:
+      for (size_t t = 0; t < node->context_size; t++) {
+        NMatrix grad = mat_row(node->weight.grad, node->context[t]);
+        NMatrix ctx = mat_row_slice(dL, t*12, 12);
+        mat_add(grad, grad, ctx);
+      }
       break;
 
     case NODE_LINEAR:
@@ -563,8 +593,6 @@ void node_backward(Node* node, NMatrix dL) {
       mat_add(b.grad, b.grad, dL);
       // dL_dx = dL * W^T
       mat_mult_A_and_B_transposed_acc(x.grad, dL, w.value);
-
-      node_backward(node->input[0], x.grad);
       break;
 
     case NODE_SIGMOID:
@@ -577,7 +605,6 @@ void node_backward(Node* node, NMatrix dL) {
       // downstream:
       //   dL/dx = (σ(x) * (1 - σ(x))) ⊙ dL (element-wise)
       dsigmoid(x.grad, fwd_out.value, dL);
-      node_backward(node->input[0], x.grad);
       break;
 
     case NODE_SOFTMAX:
@@ -592,13 +619,11 @@ void node_backward(Node* node, NMatrix dL) {
       // h = Softmax(x, t)                           | node->output.value = Softmax(x, t)
       // dL/dx = 1/t * h * [ dL/dh - dot(h, dL/dh) ] | x.grad = 1/t * node->output.value * [ dL - dot(node->output.value, dL) ]
       dsoftmax_temperature(x.grad, fwd_out.value, dL, node->temperature);
-      node_backward(node->input[0], x.grad);
       break;
 
     case NODE_SOFTMAX_CROSS_ENTROPY:
       mat_sub(x.grad, fwd_out.value, dL);
       mat_scale(x.grad, x.grad, 1.0f / node->temperature);
-      node_backward(node->input[0], x.grad);
       break;
 
     case NODE_RELU:
@@ -611,7 +636,6 @@ void node_backward(Node* node, NMatrix dL) {
       // downstream:
       //   dL/dx = I(ReLU'(x)) ⊙ dL (element-wise), where I(...) is indicator
       drelu(x.grad, fwd_out.value, dL);
-      node_backward(node->input[0], x.grad);
       break;
 
     case NODE_FLATTEN:
@@ -637,8 +661,6 @@ void node_backward(Node* node, NMatrix dL) {
         );
 
         mat_copy(node->input[i]->output.grad, ith_dL_dx);
-
-        node_backward(node->input[i], ith_dL_dx);
       }
       break;
 
@@ -685,8 +707,6 @@ void node_backward(Node* node, NMatrix dL) {
           }
         }
       }
-
-      node_backward(node->input[0], x.grad);
       break;
 
     case NODE_SQUARE:
@@ -702,8 +722,6 @@ void node_backward(Node* node, NMatrix dL) {
         for (int j = 0; j < x.grad.cols; j++)
           MAT_AT(x.grad, i, j) += 2*MAT_AT(x.value, i, j)*MAT_AT(dL, i, j);
       }
-
-      node_backward(node->input[0], x.grad);
       break;
 
     case NODE_CUBE:
@@ -719,8 +737,6 @@ void node_backward(Node* node, NMatrix dL) {
         for (int j = 0; j < x.grad.cols; j++)
           MAT_AT(x.grad, i, j) += 3*MAT_AT(x.value, i, j)*MAT_AT(x.value, i, j)*MAT_AT(dL, i, j);
       }
-
-      node_backward(node->input[0], x.grad);
       break;
 
     case NODE_EXP:
@@ -735,8 +751,6 @@ void node_backward(Node* node, NMatrix dL) {
       for (int i = 0; i < dL.rows*dL.cols; i++) {
         x.grad.elems[i] += fwd_out.value.elems[i]*dL.elems[i];
       }
-
-      node_backward(node->input[0], x.grad);
       break;
 
     case NODE_NEGATE:
@@ -751,8 +765,6 @@ void node_backward(Node* node, NMatrix dL) {
       for (int i = 0; i < dL.rows*dL.cols; i++) {
         x.grad.elems[i] += -dL.elems[i];
       }
-
-      node_backward(node->input[0], x.grad);
       break;
 
     case NODE_MULTIPLY:
@@ -768,9 +780,6 @@ void node_backward(Node* node, NMatrix dL) {
       //   dL/dv = u^T * dL (matrix mult: [M×N] * [N×P] = [M×P])
       mat_mult_A_and_B_transposed(u.grad, dL, v.value);
       mat_mult_A_transposed_and_B(v.grad, u.value, dL);
-
-      node_backward(node->input[0], u.grad);
-      node_backward(node->input[1], v.grad);
       break;
 
     case NODE_DIVIDE:
@@ -790,9 +799,6 @@ void node_backward(Node* node, NMatrix dL) {
         u.grad.elems[i] += inv_v * dL.elems[i];
         v.grad.elems[i] += -u.value.elems[i] * inv_v * inv_v * dL.elems[i];
       }
-
-      node_backward(node->input[0], u.grad);
-      node_backward(node->input[1], v.grad);
       break;
 
     case NODE_ADD:
@@ -808,9 +814,6 @@ void node_backward(Node* node, NMatrix dL) {
       //   dL/dv = I ⊙ dL = dL (element-wise)
       mat_add(u.grad, u.grad, dL);
       mat_add(v.grad, v.grad, dL);
-
-      node_backward(node->input[0], u.grad);
-      node_backward(node->input[1], v.grad);
       break;
 
     case NODE_SUB:
@@ -828,11 +831,10 @@ void node_backward(Node* node, NMatrix dL) {
         u.grad.elems[i] += +dL.elems[i];
         v.grad.elems[i] += -dL.elems[i];
       }
-
-      node_backward(node->input[0], u.grad);
-      node_backward(node->input[1], v.grad);
       break;
   }
+
+  node_backward(order);
 }
 
 // accumulate grads
@@ -845,13 +847,44 @@ void acc_grads(Node* node) {
   mat_add(node->bias.g_grad, node->bias.g_grad, node->bias.grad);
 }
 
-void update_grads(Node* node, float lr) {
+void update_grads(Node* node, float lr, size_t batch_size) {
   for (int i = 0; i < node->input_size; i++)
-    update_grads(node->input[i], lr);
+    update_grads(node->input[i], lr, batch_size);
 
-  mat_weighted_add(node->output.value, node->output.value, node->output.g_grad, -lr);
-  mat_weighted_add(node->weight.value, node->weight.value, node->weight.g_grad, -lr);
-  mat_weighted_add(node->bias.value, node->bias.value, node->bias.g_grad, -lr);
+  if (node->type == NODE_EMBEDDING) {
+    int max_vocab = 512;
+    int embed_dim = 12;
+
+    lr = 0.05f;
+
+    for (int v = 0; v < max_vocab; v++) {
+      if (v == 0) continue;
+      if (node->embedding_tokens_batch[v] == 0) continue;
+
+      node->embedding_tokens_batch[v] = 0;
+
+      NMatrix emb = node->weight.value;
+      NMatrix g_grad = node->weight.g_grad;
+      NMatrix ada_grad = node->ada_grad;
+
+      for (int d = 0; d < embed_dim; d++) {
+        // average the gradient: ∇W = ∇W / B
+        float g = MAT_AT(g_grad, v, d) / batch_size;
+
+        // update AdaGrad: Gnew = Gold + ∇W^2
+        MAT_AT(ada_grad, v, d) += g*g;
+
+        // udpate the weight: Wnew = Wold - lr/sqrt(Gnew) * ∇W
+        MAT_AT(emb, v, d) -= (lr / (sqrtf(MAT_AT(ada_grad, v, d)) + 1e-15f)) * g;
+
+        MAT_AT(g_grad, v, d) = 0;
+      }
+    }
+  } else {
+    mat_weighted_add(node->output.value, node->output.value, node->output.g_grad, -lr);
+    mat_weighted_add(node->weight.value, node->weight.value, node->weight.g_grad, -lr);
+    mat_weighted_add(node->bias.value, node->bias.value, node->bias.g_grad, -lr);
+  }
 }
 
 void zero_grads(Node* node) {
