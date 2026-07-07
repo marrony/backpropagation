@@ -70,11 +70,11 @@ void mat_read(NMatrix mat, FILE* fp) {
 
 void save_model(void) {
   FILE* fp = fopen("models/gentext.bin", "wb");
-  mat_write(input_node->weight.value, fp);
-  mat_write(linear_node->weight.value, fp);
-  mat_write(linear_node->bias.value, fp);
-  mat_write(hidden1_node->weight.value, fp);
-  mat_write(hidden1_node->bias.value, fp);
+  mat_write(input_node->weight->value, fp);
+  mat_write(linear_node->weight->value, fp);
+  mat_write(linear_node->bias->value, fp);
+  mat_write(hidden1_node->weight->value, fp);
+  mat_write(hidden1_node->bias->value, fp);
   fclose(fp);
 }
 
@@ -102,20 +102,20 @@ void load_model(void) {
   float std_hidden = sqrtf(1.0f / (hidden_dim+MAX_VOCAB));
 
   // Initialize embeddings and weights with small random values
-  mat_rand_normal(input_node->weight.value, 0, std_embeddings);
-  mat_rand_normal(linear_node->weight.value, 0, std_linear);
-  mat_fill(linear_node->bias.value, 0);
-  mat_rand_normal(hidden1_node->weight.value, 0, std_hidden);
-  mat_fill(hidden1_node->bias.value, 0);
+  mat_rand_normal(input_node->weight->value, 0, std_embeddings);
+  mat_rand_normal(linear_node->weight->value, 0, std_linear);
+  mat_fill(linear_node->bias->value, 0);
+  mat_rand_normal(hidden1_node->weight->value, 0, std_hidden);
+  mat_fill(hidden1_node->bias->value, 0);
 
   FILE* fp = fopen("models/gentext.bin", "rb");
   if (fp != NULL) {
     printf("model exists, continue training\n");
-    mat_read(input_node->weight.value, fp);
-    mat_read(linear_node->weight.value, fp);
-    mat_read(linear_node->bias.value, fp);
-    mat_read(hidden1_node->weight.value, fp);
-    mat_read(hidden1_node->bias.value, fp);
+    mat_read(input_node->weight->value, fp);
+    mat_read(linear_node->weight->value, fp);
+    mat_read(linear_node->bias->value, fp);
+    mat_read(hidden1_node->weight->value, fp);
+    mat_read(hidden1_node->bias->value, fp);
     fclose(fp);
   }
 }
@@ -133,7 +133,7 @@ void copy_context(NMatrix input, int* context) {
   assert(input.cols == INPUT_DIM);
 
   for (int t = 0; t < CONTEXT; t++) {
-    NMatrix emb = mat_row(input_node->weight.value, context[t]);
+    NMatrix emb = mat_row(input_node->weight->value, context[t]);
     NMatrix ctx = mat_row_slice(input, t*EMBED_DIM, EMBED_DIM);
     mat_copy(ctx, emb);
   }
@@ -217,7 +217,7 @@ void init_model(Sample_Array samples) {
   float cost = 0;
   int epoch = 0;
 
-  Node_Ptr_Array order = ARRAY_CREATE(&mallocator.alloc);
+  Tensor_Ptr_Array order = ARRAY_CREATE(&mallocator.alloc);
 
   zero_g_grads(softmax_node);
 
@@ -245,6 +245,8 @@ void init_model(Sample_Array samples) {
 
       size_t current_batch_size = samples.count - i < batch_size ? samples.count - i : batch_size;
 
+      order.count = 0;
+
       for (size_t batch = 0; batch < current_batch_size; batch++) {
         Sample sample = samples.elems[i + batch];
 
@@ -262,19 +264,21 @@ void init_model(Sample_Array samples) {
 
         // Forward pass
         int64_t f_us = get_system_micros();
-        node_forward(softmax_node, &order);
+        Tensor* out = node_forward(softmax_node, &order);
         time_forward += get_system_micros() - f_us;
 
-        mat_clip(softmax_node->output.value, 1e-15f, 1.0f);
+        printf("tape size = %zu\n", order.count);
 
-        cost += cross_entropy_loss(dL, target_label, softmax_node->output.value);
+        mat_clip(out->value, 1e-15f, 1.0f);
+
+        cost += cross_entropy_loss(dL, target_label, out->value);
 
         mat_clip(dL, -5, +5);
 
         // Backward pass and accumulate gradients
         int64_t b_us = get_system_micros();
         zero_grads(softmax_node);
-        mat_copy(softmax_node->output.grad, dL);
+        mat_copy(out->grad, dL);
         node_backward(&order);
         time_backward += get_system_micros() - b_us;
 
@@ -282,6 +286,9 @@ void init_model(Sample_Array samples) {
         int64_t a_us = get_system_micros();
         acc_grads(softmax_node);
         acc_weights += get_system_micros() - a_us;
+
+        printf("tape size = %zu\n", order.count);
+        exit(0);
       }
 
       // Update the parameters
@@ -479,7 +486,7 @@ int main(void) {
     );
 
     int context[CONTEXT] = {0};
-    Node_Ptr_Array order = ARRAY_CREATE(&mallocator.alloc);
+    Tensor_Ptr_Array order = ARRAY_CREATE(&mallocator.alloc);
 
     if (tokens_count > CONTEXT)
       tokens_count = CONTEXT;
@@ -497,18 +504,19 @@ int main(void) {
 
     for (int step = 0; step < MAX_GENERATE; step++) {
       // Build input vector (concatenate embeddings)
-      copy_context(input_node->output.value, context);
+      // copy_context(input_node->output.value, context);
+      memcpy(input_node->context, context, sizeof(context));
 
       // t = 0.5 = deterministic
       // t = 1.0 = normal
       // t = 1.5 = creative
       // t = 3.0 = nonsensical
       softmax_node->temperature = 1.0;
-      node_forward(softmax_node, &order);
+      Tensor* output = node_forward(softmax_node, &order);
 
       // Sample next token
       // int next = mat_row_argmax(softmax_node->output.value); // deterministic greedy decoding
-      int next = sample(softmax_node->output.value); // stochastic probabilistic sampling
+      int next = sample(output->value); // stochastic probabilistic sampling
 
       printf("%s", vocabulary[next].token);
 

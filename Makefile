@@ -13,11 +13,11 @@ CFLAGS_DEBUG=-std=c17 -Werror -Wall -Wextra -Wno-initializer-overrides -pedantic
     -fsanitize=signed-integer-overflow \
     -fsanitize=unsigned-integer-overflow \
     -fsanitize=address -fassociative-math \
-    -O3
+    -g
 
 CFLAGS_RELEASE=-std=c17 -Werror -Wall -Wextra -I./raylib-5 -O3 -ffast-math
 
-CFLAGS=$(CFLAGS_RELEASE)
+CFLAGS=$(CFLAGS_DEBUG)
 
 LDFLAGS=-L ./raylib-5 -lraylib -framework Foundation \
     -framework CoreServices -framework CoreGraphics \
