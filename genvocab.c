@@ -1,5 +1,13 @@
 #include "tokenizer.h"
 
+#define BYTEBUFFER_IMPLEMENTATION
+#define ALLOCATOR_IMPLEMENATION
+#define HASHMAP_IMPLMENTATION
+
+#include "bytebuffer.h"
+#include "allocator.h"
+#include "hashmap.h"
+
 #include "generated/alice.h"
 
 const char *training_text[] = {

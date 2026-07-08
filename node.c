@@ -3,8 +3,15 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+#define BYTEBUFFER_IMPLEMENTATION
+#define ALLOCATOR_IMPLEMENATION
+
+#include "bytebuffer.h"
+#include "allocator.h"
+
 #define PRECISION 5
 
+#if 0
 void test_add(void) {
   printf("test_add\n");
   int N = 2;
@@ -570,27 +577,44 @@ void test_nmist(void) {
   mat_free(test_data);
   mat_free(test_labels);
 }
+#endif
+
+Malloc_Allocator mallocator = MALLOC_CREATE();
 
 void test_foobar(void) {
-  Node* input =  create_variable(1, 1);
-  Node* relu = create_relu(input);
-  Node* linear = create_linear(relu, 1, 1);
-  Node* add = create_multiply(linear, input);
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
 
-  MAT_AT(input->output.value, 0, 0) = 2;
-  MAT_AT(linear->weight.value, 0, 0) = 3;
+  Optimizer optimizer = {
+    .tensors = ARRAY_CREATE(&mallocator.alloc),
+    .ada_grad = ARRAY_CREATE(&mallocator.alloc),
+    .learning_rate = 0.05f,
+  };
 
-  NMatrix dL = mat_alloc(1, 1);
-  MAT_AT(dL, 0, 0) = 1;
+  Node* input =  create_embeddings(2, 2, 1);
+  Node* relu = create_relu(input, 2, 2);
 
-  node_forward(add);
-  zero_grads(add);
-  node_backward(add, dL);
+  register_tensor(&optimizer, &input->weight);
 
-  printf("relu   = "); mat_println(relu->output.value, 8);
-  printf("linear = "); mat_println(linear->output.value, 8);
-  printf(" +     = "); mat_println(add->output.value, 8);
-  mat_println(input->output.grad, 8);
+  for (int i = 0; i < 2; i++) {
+    MAT_AT(input->weight.value, i, 0) = +2;
+    MAT_AT(input->weight.value, i, 1) = -2;
+  }
+
+  Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
+
+  input->context[0] = 1;
+
+  Tensor* out = node_forward(&arena.alloc, relu, &tape);
+  MAT_AT(out->grad, 0, 0) = 10;
+  MAT_AT(out->grad, 0, 1) = 10;
+  node_backward(&tape);
+
+  update_grads(&optimizer, 1);
+
+  mat_println(out->value, PRECISION);
+
+  mat_println(input->weight.value, PRECISION);
+  mat_println(input->weight.grad, PRECISION);
 }
 
 int main(void) {

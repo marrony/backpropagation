@@ -14,6 +14,14 @@
 
 #include "array.h"
 
+#define BYTEBUFFER_IMPLEMENTATION
+#define ALLOCATOR_IMPLEMENATION
+#define HASHMAP_IMPLMENTATION
+
+#include "bytebuffer.h"
+#include "allocator.h"
+#include "hashmap.h"
+
 #include "generated/alice.h"
 #include "generated/vocab.h"
 
@@ -45,12 +53,12 @@ const char *training_text[] = {
 
 // ------------------------------------------
 
-Node* input_node;
+Node* embedding_node;
 Node* linear_node;
 Node* relu_node;
 Node* hidden1_node;
 Node* softmax_node;
-
+Node* target_node;
 
 void mat_write(NMatrix mat, FILE* fp) {
   fwrite(&mat.rows, sizeof(int32_t), 1, fp);
@@ -70,11 +78,11 @@ void mat_read(NMatrix mat, FILE* fp) {
 
 void save_model(void) {
   FILE* fp = fopen("models/gentext.bin", "wb");
-  mat_write(input_node->weight->value, fp);
-  mat_write(linear_node->weight->value, fp);
-  mat_write(linear_node->bias->value, fp);
-  mat_write(hidden1_node->weight->value, fp);
-  mat_write(hidden1_node->bias->value, fp);
+  mat_write(embedding_node->embeddings.value, fp);
+  mat_write(linear_node->weight.value, fp);
+  mat_write(linear_node->bias.value, fp);
+  mat_write(hidden1_node->weight.value, fp);
+  mat_write(hidden1_node->bias.value, fp);
   fclose(fp);
 }
 
@@ -84,11 +92,12 @@ void load_model(void) {
   // vocab_size = 512
   // embeddings (64) -> linear (64x128) -> relu -> linear (128x512) -> softmax
   int hidden_dim = 128;
-  input_node = create_embeddings(MAX_VOCAB, EMBED_DIM, CONTEXT);
-  linear_node = create_linear(input_node, INPUT_DIM, hidden_dim);
+  embedding_node = create_embeddings(MAX_VOCAB, EMBED_DIM, CONTEXT);
+  linear_node = create_linear(embedding_node, INPUT_DIM, hidden_dim);
   relu_node = create_relu(linear_node);
   hidden1_node = create_linear(relu_node, hidden_dim, MAX_VOCAB);
-  softmax_node = create_softmax_cross_entropy(hidden1_node);
+  target_node = create_variable(1, MAX_VOCAB);
+  softmax_node = create_softmax_cross_entropy(hidden1_node, target_node);
   softmax_node->temperature = 1.0;
 
   // Xavier (Glorot): sqrt(1.0 / x)
@@ -102,20 +111,20 @@ void load_model(void) {
   float std_hidden = sqrtf(1.0f / (hidden_dim+MAX_VOCAB));
 
   // Initialize embeddings and weights with small random values
-  mat_rand_normal(input_node->weight->value, 0, std_embeddings);
-  mat_rand_normal(linear_node->weight->value, 0, std_linear);
-  mat_fill(linear_node->bias->value, 0);
-  mat_rand_normal(hidden1_node->weight->value, 0, std_hidden);
-  mat_fill(hidden1_node->bias->value, 0);
+  mat_rand_normal(embedding_node->embeddings.value, 0, std_embeddings);
+  mat_rand_normal(linear_node->weight.value, 0, std_linear);
+  mat_zero(linear_node->bias.value);
+  mat_rand_normal(hidden1_node->weight.value, 0, std_hidden);
+  mat_zero(hidden1_node->bias.value);
 
   FILE* fp = fopen("models/gentext.bin", "rb");
   if (fp != NULL) {
     printf("model exists, continue training\n");
-    mat_read(input_node->weight->value, fp);
-    mat_read(linear_node->weight->value, fp);
-    mat_read(linear_node->bias->value, fp);
-    mat_read(hidden1_node->weight->value, fp);
-    mat_read(hidden1_node->bias->value, fp);
+    mat_read(embedding_node->embeddings.value, fp);
+    mat_read(linear_node->weight.value, fp);
+    mat_read(linear_node->bias.value, fp);
+    mat_read(hidden1_node->weight.value, fp);
+    mat_read(hidden1_node->bias.value, fp);
     fclose(fp);
   }
 }
@@ -126,17 +135,6 @@ void handle_sigint(int sig) {
   (void)sig;
 
   keep_running = 0;
-}
-
-void copy_context(NMatrix input, int* context) {
-  assert(input.rows == 1);
-  assert(input.cols == INPUT_DIM);
-
-  for (int t = 0; t < CONTEXT; t++) {
-    NMatrix emb = mat_row(input_node->weight->value, context[t]);
-    NMatrix ctx = mat_row_slice(input, t*EMBED_DIM, EMBED_DIM);
-    mat_copy(ctx, emb);
-  }
 }
 
 void mat_one_minus_memberwise_div(NMatrix dst, NMatrix a, NMatrix b, float eps) {
@@ -212,14 +210,27 @@ void init_model(Sample_Array samples) {
   load_model();
 
   NMatrix dL = mat_alloc(1, MAX_VOCAB);
-  NMatrix target_label = mat_alloc(1, MAX_VOCAB);
 
   float cost = 0;
   int epoch = 0;
 
-  Tensor_Ptr_Array order = ARRAY_CREATE(&mallocator.alloc);
+  Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
 
-  zero_g_grads(softmax_node);
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
+
+  Optimizer optimizer = {
+    .tensors = ARRAY_CREATE(&mallocator.alloc),
+    .history = ARRAY_CREATE(&mallocator.alloc),
+    .learning_rate = 0.05f,
+  };
+
+  // todo: move these calls to create_* functions
+  register_tensor(&optimizer, &embedding_node->embeddings);
+  register_tensor(&optimizer, &linear_node->weight);
+  register_tensor(&optimizer, &linear_node->bias);
+  register_tensor(&optimizer, &hidden1_node->weight);
+  register_tensor(&optimizer, &hidden1_node->bias);
+  // register_tensor(&optimizer, target_node->value);
 
   while (keep_running && epoch < 10000) {
     int64_t start_us = get_system_micros();
@@ -230,13 +241,12 @@ void init_model(Sample_Array samples) {
     size_t batch_size = 32;
     int64_t time_forward = 0;
     int64_t time_backward = 0;
-    int64_t acc_weights = 0;
     int64_t upd_weights = 0;
 
     // Iterate through the sequence as a sliding window
     // Target is sequence[i], Context is sequence[i-CONTEXT] to sequence[i-1]
     for (size_t i = 0; i < samples.count; i += batch_size) {
-      zero_g_grads(softmax_node);
+      size_t saved = SAVE(&arena.alloc);
 
       // for (int j = 0; j < CONTEXT; j++) {
       //     printf("[%s]", vocabulary[context[j]].token);
@@ -245,56 +255,64 @@ void init_model(Sample_Array samples) {
 
       size_t current_batch_size = samples.count - i < batch_size ? samples.count - i : batch_size;
 
-      order.count = 0;
+      tape.count = 0;
 
       for (size_t batch = 0; batch < current_batch_size; batch++) {
         Sample sample = samples.elems[i + batch];
 
         // Prepare training input vector from embeddings
-        memcpy(input_node->context, sample.context, sizeof(sample.context));
+        memcpy(embedding_node->context, sample.context, sizeof(sample.context));
 
         assert(sample.target != PAD_TOKEN);
 
         // Labels for training: one-hot target
-        mat_fill(target_label, 0);
-        VEC_AT(target_label, sample.target) = 1.0f;
+        mat_zero(target_node->value.value);
+        VEC_AT(target_node->value.value, sample.target) = 1.0f;
 
         // smoothed target
-        smooth_target(target_label, 0.1);
+        smooth_target(target_node->value.value, 0.1);
 
         // Forward pass
         int64_t f_us = get_system_micros();
-        Tensor* out = node_forward(softmax_node, &order);
+        Tensor* cross_out = node_forward(&arena.alloc, softmax_node, &tape);
         time_forward += get_system_micros() - f_us;
 
-        printf("tape size = %zu\n", order.count);
+        VEC_AT(cross_out->grad, 0) = 1.0f / current_batch_size;
 
-        mat_clip(out->value, 1e-15f, 1.0f);
+        // printf("tape size = %zu\n", tape.count);
 
-        cost += cross_entropy_loss(dL, target_label, out->value);
+        // mat_clip(cross_out->value, 1e-15f, 1.0f);
 
-        mat_clip(dL, -5, +5);
+        // printf("cost = %f\n", VEC_AT(cross_out->value, 0));
+        cost += VEC_AT(cross_out->value, 0);
 
-        // Backward pass and accumulate gradients
-        int64_t b_us = get_system_micros();
-        zero_grads(softmax_node);
-        mat_copy(out->grad, dL);
-        node_backward(&order);
-        time_backward += get_system_micros() - b_us;
+        // printf("cross out = "); mat_println(cross_out->value, 5);
+        // printf("tape_index = %zu\n", cross_out->tape_index);
 
-        // Accumulate gradients
-        int64_t a_us = get_system_micros();
-        acc_grads(softmax_node);
-        acc_weights += get_system_micros() - a_us;
+        // cost += cross_entropy_loss(dL, target_label, cross_out->value);
 
-        printf("tape size = %zu\n", order.count);
-        exit(0);
+        // mat_clip(dL, -5, +5);
       }
+
+      // Backward pass and accumulate gradients
+      int64_t b_us = get_system_micros();
+      node_backward(&tape);
+      time_backward += get_system_micros() - b_us;
+
+      // printf("before ="); mat_println(mat_row(embedding_node->weight.value, 502), 5);
 
       // Update the parameters
       int64_t u_us = get_system_micros();
-      update_grads(softmax_node, 0.005 / current_batch_size, current_batch_size);
+      update_grads_rms_prop(&optimizer, current_batch_size);
       upd_weights += get_system_micros() - u_us;
+
+      // printf("after  ="); mat_println(mat_row(embedding_node->weight.value, 502), 5);
+
+      // printf("%f\n", cost / current_batch_size);
+
+      // exit(0);
+
+      RESTORE(&arena.alloc, saved);
     }
 
     array_shuffle(&samples);
@@ -302,11 +320,10 @@ void init_model(Sample_Array samples) {
     int64_t end_us = get_system_micros();
     int64_t time_ms = (end_us - start_us) / 1000;
 
-    printf("\rtraining = %d cost = %f samples = %zu time = %lld ms forward = %lld backward = %lld acc = %lld upd = %lld\r",
+    printf("\rtraining = %d cost = %f samples = %zu time = %lld ms forward = %lld backward = %lld upd = %lld\r",
         epoch, cost / samples.count, samples.count, time_ms,
         time_forward,
         time_backward,
-        acc_weights,
         upd_weights
         );
   }
@@ -322,7 +339,6 @@ void init_model(Sample_Array samples) {
   printf("\n");
 
   mat_free(dL);
-  mat_free(target_label);
 }
 
 int sample(NMatrix probs) {
@@ -466,6 +482,8 @@ int main(void) {
 
   init_model(samples);
 
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
+
   while (true) {
     printf("Prompt:\n");
 
@@ -486,7 +504,7 @@ int main(void) {
     );
 
     int context[CONTEXT] = {0};
-    Tensor_Ptr_Array order = ARRAY_CREATE(&mallocator.alloc);
+    Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
 
     if (tokens_count > CONTEXT)
       tokens_count = CONTEXT;
@@ -504,15 +522,14 @@ int main(void) {
 
     for (int step = 0; step < MAX_GENERATE; step++) {
       // Build input vector (concatenate embeddings)
-      // copy_context(input_node->output.value, context);
-      memcpy(input_node->context, context, sizeof(context));
+      memcpy(embedding_node->context, context, sizeof(context));
 
       // t = 0.5 = deterministic
       // t = 1.0 = normal
       // t = 1.5 = creative
       // t = 3.0 = nonsensical
       softmax_node->temperature = 1.0;
-      Tensor* output = node_forward(softmax_node, &order);
+      Tensor* output = node_forward(&arena.alloc, softmax_node, &tape);
 
       // Sample next token
       // int next = mat_row_argmax(softmax_node->output.value); // deterministic greedy decoding

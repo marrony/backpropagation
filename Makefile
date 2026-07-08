@@ -17,7 +17,7 @@ CFLAGS_DEBUG=-std=c17 -Werror -Wall -Wextra -Wno-initializer-overrides -pedantic
 
 CFLAGS_RELEASE=-std=c17 -Werror -Wall -Wextra -I./raylib-5 -O3 -ffast-math
 
-CFLAGS=$(CFLAGS_DEBUG)
+CFLAGS=$(CFLAGS_RELEASE)
 
 LDFLAGS=-L ./raylib-5 -lraylib -framework Foundation \
     -framework CoreServices -framework CoreGraphics \
@@ -31,6 +31,9 @@ generated/alice.h: generated books/alice.txt
 generated/vocab.h: generated bin/genvocab
 	cp generated/vocab.h generated/vocab_old.h
 	./bin/genvocab > generated/vocab.h
+
+$(BINDIR)/genvocab: genvocab.c tokenizer.h generated/alice.h generated/vocab.h | $(BINDIR) raylib-5/libraylib.a
+	cc $(CFLAGS) $< -o $@ $(LDFLAGS)
 
 $(BINDIR)/%: %.c nn.h node.h game.h tokenizer.h generated/alice.h generated/vocab.h | $(BINDIR) raylib-5/libraylib.a
 	cc $(CFLAGS) $< -o $@ $(LDFLAGS)

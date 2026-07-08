@@ -58,11 +58,16 @@ static const char* Node_Type_Str[__MAX_NODES+1] = {
 typedef struct Node Node;
 typedef struct Tensor Tensor;
 
+typedef struct {
+  Node* node;
+  Tensor* output;
+  Tensor* input[MAX_INPUTS];
+} Tape_Node;
+
 struct Tensor {
   NMatrix value;
   NMatrix grad;
-  Node*   node;
-  Tensor* inputs[MAX_INPUTS];
+  size_t tape_index;
 };
 
 /*
@@ -89,35 +94,25 @@ struct Node {
   Node_Type type;
   Node* input[MAX_INPUTS];
   int input_size;
-  Tensor* weight;
-  Tensor* bias;
+  Tensor embeddings;
+  Tensor weight;
+  Tensor bias;
+  Tensor value;
   float temperature;
 
   //
   int32_t* context;
   size_t context_size;
-  size_t* embedding_tokens_batch;
-  NMatrix ada_grad;
 };
 
 #define NULL_MATRIX (NMatrix){NULL, 0, 0}
 #define NULL_PARAM (Param) {0}
 
-void init_param(Tensor* param, int rows, int cols) {
+void init_tensor(Tensor* param, int rows, int cols) {
   param->value  = mat_alloc(rows, cols);
   param->grad   = mat_alloc(rows, cols);
-  mat_fill(param->value, 0);
-  mat_fill(param->grad, 0);
-}
-
-int node_get_value_rows(Node* node) {
-  (void)node;
-  return 0; //node->output.value.rows;
-}
-
-int node_get_value_cols(Node* node) {
-  (void)node;
-  return node->weight->value.cols;
+  mat_zero(param->value);
+  mat_zero(param->grad);
 }
 
 void destroy_param(Tensor* param) {
@@ -139,45 +134,38 @@ Node* create_node(Node_Type type) {
   return node;
 }
 
+Tensor* create_tensor(int rows, int cols) {
+  Tensor* tensor = malloc(sizeof(Tensor));
+  tensor->tape_index = 0;
+  tensor->value = mat_alloc(rows, cols);
+  tensor->grad = mat_alloc(rows, cols);
+  mat_zero(tensor->value);
+  mat_zero(tensor->grad);
+  return tensor;
+}
+
 Node* create_constant(int rows, int cols) {
-  (void)rows;
-  (void)cols;
   Node* node = create_node(NODE_CONSTANT);
   node->input_size = 0;
+  init_tensor(&node->value, rows, cols);
   return node;
 }
 
 Node* create_variable(int rows, int cols) {
-  (void)rows;
-  (void)cols;
   Node* node = create_node(NODE_VARIABLE);
   node->input_size = 0;
+  init_tensor(&node->value, rows, cols);
   return node;
-}
-
-Tensor* create_tensor(Node* node, int rows, int cols) {
-  Tensor* tensor = malloc(sizeof(Tensor));
-  tensor->node = node;
-  tensor->value = mat_alloc(rows, cols);
-  tensor->grad = mat_alloc(rows, cols);
-  return tensor;
 }
 
 Node* create_embeddings(size_t max_vocab, size_t emb_dim, size_t context) {
   Node* node = create_node(NODE_EMBEDDING);
   node->input_size = 0;
-  // init_param(&node->output, 1, emb_dim*context);
-  node->weight = create_tensor(node, max_vocab, emb_dim);
+  init_tensor(&node->embeddings, max_vocab, emb_dim);
 
   node->context = malloc(sizeof(int32_t)*context);
   node->context_size = context;
   memset(node->context, 0, sizeof(int32_t)*context);
-
-  node->embedding_tokens_batch = malloc(sizeof(size_t)*max_vocab);
-  memset(node->embedding_tokens_batch, 0, sizeof(size_t)*max_vocab);
-
-  node->ada_grad = mat_alloc(max_vocab, emb_dim);
-  mat_fill(node->ada_grad, 0);
 
   return node;
 }
@@ -187,36 +175,22 @@ Node* create_linear(Node* input, int in_size, int out_size) {
   node->input[0] = input;
   node->input_size = 1;
 
-  // int rows = 1;//node_get_value_rows(input);
-  // int cols = node_get_value_cols(input);
-  // assert(rows*cols == in_size);
-
-  // node->output.value holds f(x) = x*W + b
-  // node->output.grad holds dL/d(output)
-  // init_param(&node->output, 1, out_size);
   // Standard convention: W is (input_dim × output_dim) = (in_size × out_size)
   // Forward: output = input × W + b, where input is (1×in_size), W is (in_size×out_size), output is (1×out_size)
-  node->weight = create_tensor(node, in_size, out_size);
-  node->bias   = create_tensor(node, 1, out_size);
-
-  // mat_rand(node->weight.value);
-  // mat_rand(node->bias.value);
+  init_tensor(&node->weight, in_size, out_size);
+  init_tensor(&node->bias, 1, out_size);
 
   return node;
 }
 
-Node* create_unary(Node_Type type, Node* input, int rows, int cols) {
-  (void)rows;
-  (void)cols;
+Node* create_unary(Node_Type type, Node* input) {
   Node* node = create_node(type);
   node->input[0] = input;
   node->input_size = 1;
   return node;
 }
 
-Node* create_binary(Node_Type type, Node* input0, Node* input1, int rows, int cols) {
-  (void)rows;
-  (void)cols;
+Node* create_binary(Node_Type type, Node* input0, Node* input1) {
   Node* node = create_node(type);
   node->input[0] = input0;
   node->input[1] = input1;
@@ -225,31 +199,23 @@ Node* create_binary(Node_Type type, Node* input0, Node* input1, int rows, int co
 }
 
 Node* create_sigmoid(Node* input) {
-  int rows = node_get_value_rows(input);
-  int cols = node_get_value_cols(input);
-  return create_unary(NODE_SIGMOID, input, rows, cols);
+  return create_unary(NODE_SIGMOID, input);
 }
 
 Node* create_softmax(Node* input) {
-  int rows = node_get_value_rows(input);
-  int cols = node_get_value_cols(input);
-  Node* node = create_unary(NODE_SOFTMAX, input, rows, cols);
+  Node* node = create_unary(NODE_SOFTMAX, input);
   node->temperature = 1.0f;
   return node;
 }
 
-Node* create_softmax_cross_entropy(Node* input) {
-  int rows = node_get_value_rows(input);
-  int cols = node_get_value_cols(input);
-  Node* node = create_unary(NODE_SOFTMAX_CROSS_ENTROPY, input, rows, cols);
+Node* create_softmax_cross_entropy(Node* input, Node* target) {
+  Node* node = create_binary(NODE_SOFTMAX_CROSS_ENTROPY, input, target);
   node->temperature = 1.0f;
   return node;
 }
 
 Node* create_relu(Node* input) {
-  int rows = node_get_value_rows(input);
-  int cols = node_get_value_cols(input);
-  return create_unary(NODE_RELU, input, rows, cols);
+  return create_unary(NODE_RELU, input);
 }
 
 Node* create_conv2d(Node* input, int img_size, int kern_size) {
@@ -260,8 +226,8 @@ Node* create_conv2d(Node* input, int img_size, int kern_size) {
   int conv_size = (img_size - kern_size + 1);
 
   // init_param(&node->output, conv_size, conv_size);
-  node->weight = create_tensor(node, kern_size, kern_size);
-  node->bias   = create_tensor(node, 1, conv_size);
+  init_tensor(&node->weight, kern_size, kern_size);
+  init_tensor(&node->bias, 1, conv_size);
 
   // mat_rand(node->weight.value);
   // mat_rand(node->bias.value);
@@ -292,124 +258,180 @@ Node* create_flatten(Node** inputs, int in_size) {
   return node;
 }
 
-Node* create_square(Node* input, int size) {
-  return create_unary(NODE_SQUARE, input, 1, size);
+Node* create_square(Node* input) {
+  return create_unary(NODE_SQUARE, input);
 }
 
-Node* create_cube(Node* input, int size) {
-  return create_unary(NODE_CUBE, input, 1, size);
+Node* create_cube(Node* input) {
+  return create_unary(NODE_CUBE, input);
 }
 
-Node* create_exp(Node* input, int size) {
-  return create_unary(NODE_EXP, input, 1, size);
+Node* create_exp(Node* input) {
+  return create_unary(NODE_EXP, input);
 }
 
-Node* create_negate(Node* input, int size) {
-  return create_unary(NODE_NEGATE, input, 1, size);
+Node* create_negate(Node* input) {
+  return create_unary(NODE_NEGATE, input);
 }
 
 Node* create_multiply(Node* input0, Node* input1) {
-  assert(node_get_value_cols(input0) == node_get_value_rows(input1));
-
   // [NxM] * [MxP] = [NxP]
-  int N = node_get_value_rows(input0);
-  int P = node_get_value_cols(input1);
-  return create_binary(NODE_MULTIPLY, input0, input1, N, P);
+  return create_binary(NODE_MULTIPLY, input0, input1);
 }
 
 Node* create_divide(Node* input0, Node* input1) {
-  int N = node_get_value_rows(input0);
-  int M = node_get_value_cols(input0);
-  return create_binary(NODE_DIVIDE, input0, input1, N, M);
+  return create_binary(NODE_DIVIDE, input0, input1);
 }
 
 Node* create_add(Node* input0, Node* input1) {
-  int N = node_get_value_rows(input0);
-  int M = node_get_value_cols(input0);
-  return create_binary(NODE_ADD, input0, input1, N, M);
+  return create_binary(NODE_ADD, input0, input1);
 }
 
 Node* create_sub(Node* input0, Node* input1) {
-  int N = node_get_value_rows(input0);
-  int M = node_get_value_cols(input0);
-  return create_binary(NODE_SUB, input0, input1, N, M);
+  return create_binary(NODE_SUB, input0, input1);
 }
+
+DEFINE_ARRAY(Tape_Node);
 
 typedef Tensor* Tensor_Ptr;
 DEFINE_ARRAY(Tensor_Ptr);
 
-Tensor* node_forward(Node* node, Tensor_Ptr_Array* tape) {
-  // NMatrix w    = node->weight;
-  // NMatrix b    = node->bias;
+DEFINE_ARRAY(NMatrix);
 
+typedef struct {
+  Tensor_Ptr_Array tensors;
+  NMatrix_Array history;
+  float learning_rate;
+} Optimizer;
+
+void register_tensor(Optimizer* opt, Tensor* tensor) {
+  NMatrix history = mat_alloc(tensor->grad.rows, tensor->grad.cols);
+  mat_zero(history);
+
+  array_append(&opt->tensors, tensor);
+  array_append(&opt->history, history);
+}
+
+Tensor* node_forward(Allocator* alloc, Node* node, Tape_Node_Array* tape) {
   Node* x = node->input[0];
 
-  Tensor* out = malloc(sizeof(Tensor));
+  Tensor* out = (Tensor*)ALLOC(alloc, sizeof(Tensor)).ptr;
   memset(out, 0, sizeof(Tensor));
-  out->node = node;
   out->value = NULL_MATRIX;
   out->grad = NULL_MATRIX;
+
+  Tape_Node tape_node = {
+    .node = node,
+    .output = out,
+  };
 
   switch (node->type) {
     case NODE_CONSTANT:
     case NODE_VARIABLE:
+      out->value = mat_alloc2(alloc, node->value.value.rows, node->value.value.cols);
+      out->grad = mat_alloc2(alloc, node->value.grad.rows, node->value.grad.cols);
+      mat_copy(out->value, node->value.value);
+      mat_zero(out->grad);
+
+      out = &node->value;
       break;
 
-    case NODE_EMBEDDING:
-      out->value = mat_alloc(1, node->context_size*12);
-      out->grad = mat_alloc(1, node->context_size*12);
+    case NODE_EMBEDDING: {
+      // todo: use mat_row_slice() and avoid copy.
+      // mat_println(node->weight.value, 5);
+      int cols = node->embeddings.value.cols;
+      out->value = mat_alloc2(alloc, 1, node->context_size*cols);
+      out->grad = mat_alloc2(alloc, 1, node->context_size*cols);
+      mat_zero(out->grad);
+
+      int32_t* context = (int32_t*)ALLOC(alloc, sizeof(int32_t)*node->context_size).ptr;
+      memcpy(context, node->context, sizeof(int32_t)*node->context_size);
+      
+      tape_node.input[0] = (Tensor*)context;
 
       for (size_t t = 0; t < node->context_size; t++) {
-        int32_t token = node->context[t];
-        node->embedding_tokens_batch[token] += 1;
+        // printf("emb(%-3d): %-3zu %-3zu = ", context[t], t*cols, t*cols + cols);
+        // mat_print(mat_row_slice(out->value, t*cols, cols), 5);
+        // mat_println(mat_row(node->weight.value, context[t]), 5);
+
         mat_copy(
-            mat_row_slice(out->value, t*12, 12),
-            mat_row(node->weight->value, token)
+            mat_row_slice(out->value, t*cols, cols),
+            mat_row(node->embeddings.value, context[t])
         );
       }
       break;
+    }
 
     case NODE_LINEAR: {
       // f(x) = x*W + b (standard convention: W is N×M, x is 1×N, output is 1×M)
       // x*W: [1×N] * [N×M] = [1×M]
       // x*W + b: [1×M] + [1×M] = [1×M]
-      Tensor* x_tensor = node_forward(x, tape);
+      Tensor* x_tensor = node_forward(alloc, x, tape);
 
-      out->inputs[0] = x_tensor;
-      out->value = mat_alloc(x_tensor->value.rows, node->weight->value.cols);
-      out->grad = mat_alloc(x_tensor->value.rows, node->weight->value.cols);
+      tape_node.input[0] = x_tensor;
+      out->value = mat_alloc2(alloc, x_tensor->value.rows, node->weight.value.cols);
+      out->grad = mat_alloc2(alloc, x_tensor->value.rows, node->weight.value.cols);
+      mat_zero(out->grad);
 
-      mat_mult_add(out->value, x_tensor->value, node->weight->value, node->bias->value);
+      mat_mult_add(out->value, x_tensor->value, node->weight.value, node->bias.value);
       break;
     }
 
     case NODE_SIGMOID: {
       // f(x) = σ(x) (element-wise sigmoid)
       // σ(x) = 1 / (1 + e^(-x))
-      Tensor* x_tensor = node_forward(x, tape);
+      Tensor* x_tensor = node_forward(alloc, x, tape);
       sigmoid(out->value, x_tensor->value);
       break;
     }
 
-    case NODE_SOFTMAX:
-    case NODE_SOFTMAX_CROSS_ENTROPY: {
+    case NODE_SOFTMAX: {
       // f(x) = softmax(x) (row-wise normalization)
       // softmax(x)_j = exp(x_j) / Σ_k exp(x_k)
-      Tensor* x_tensor = node_forward(node->input[0], tape);
-      out->inputs[0] = x_tensor;
-      out->value = mat_alloc(x_tensor->value.rows, x_tensor->value.cols);
-      out->grad = mat_alloc(x_tensor->value.rows, x_tensor->value.cols);
+      Tensor* x_tensor = node_forward(alloc, node->input[0], tape);
+      tape_node.input[0] = x_tensor;
+      out->value = mat_alloc2(alloc, x_tensor->value.rows, x_tensor->value.cols);
+      out->grad = mat_alloc2(alloc, x_tensor->value.rows, x_tensor->value.cols);
       softmax_temperature(out->value, x_tensor->value, node->temperature);
+    }
+
+    case NODE_SOFTMAX_CROSS_ENTROPY: {
+      Tensor* x_tensor = node_forward(alloc, node->input[0], tape);
+      Tensor* target_tensor = node_forward(alloc, node->input[1], tape);
+      Tensor* logits_tensor = (Tensor*)ALLOC(alloc, sizeof(Tensor)).ptr;
+
+      logits_tensor->value = mat_alloc2(alloc, x_tensor->value.rows, x_tensor->value.cols);
+      logits_tensor->grad = mat_alloc2(alloc, x_tensor->value.rows, x_tensor->value.cols);
+
+      tape_node.input[0] = x_tensor;
+      tape_node.input[1] = target_tensor;
+      tape_node.input[2] = logits_tensor;
+
+      out->value = mat_alloc2(alloc, 1, 1);
+      out->grad = mat_alloc2(alloc, 1, 1);
+      mat_zero(out->grad);
+
+      softmax_temperature(logits_tensor->value, x_tensor->value, node->temperature);
+
+      float loss = 0;
+      for (int i = 0; i < logits_tensor->value.cols; i++) {
+        float target = VEC_AT(target_tensor->value, i);
+        float y = VEC_AT(logits_tensor->value, i);
+        if (target > 0) loss -= target * logf(y + 1e-15f);
+      }
+
+      VEC_AT(out->value, 0) = loss;
       break;
     }
 
     case NODE_RELU: {
       // f(x) = ReLU(x) (element-wise rectified linear unit)
       // ReLU(x) = max(0, x)
-      Tensor* x_tensor = node_forward(node->input[0], tape);
-      out->inputs[0] = x_tensor;
-      out->value = mat_alloc(x_tensor->value.rows, x_tensor->value.cols);
-      out->grad = mat_alloc(x_tensor->value.rows, x_tensor->value.cols);
+      Tensor* x_tensor = node_forward(alloc, node->input[0], tape);
+      tape_node.input[0] = x_tensor;
+      out->value = mat_alloc2(alloc, x_tensor->value.rows, x_tensor->value.cols);
+      out->grad = mat_alloc2(alloc, x_tensor->value.rows, x_tensor->value.cols);
+      mat_zero(out->grad);
       relu(out->value, x_tensor->value);
       break;
     }
@@ -529,13 +551,14 @@ Tensor* node_forward(Node* node, Tensor_Ptr_Array* tape) {
       break;
   }
 
-  printf(
-      "FORWARD(%s) = [%dx%d]\n",
-      Node_Type_Str[node->type],
-      out->value.rows, out->value.cols
-  );
+  // printf(
+  //     "FORWARD(%s) = [%dx%d]\n",
+  //     Node_Type_Str[node->type],
+  //     out->value.rows, out->value.cols
+  // );
 
-  array_append(tape, out);
+  out->tape_index = tape->count;
+  array_append(tape, tape_node);
   return out;
 }
 
@@ -561,18 +584,20 @@ Tensor* node_forward(Node* node, Tensor_Ptr_Array* tape) {
 //   node_backward(input_x, input_x->output.grad);
 // }
 //
-void node_backward(Tensor_Ptr_Array* tape) {
+void node_backward(Tape_Node_Array* tape) {
   if (tape->count == 0) return;
 
-  Tensor* tensor = array_pop_last(tape);
-  Node* node = tensor->node;
+  Tape_Node tape_node = array_pop_last(tape);
+  Tensor* output = tape_node.output;
+  Node* node = tape_node.node;
 
-  NMatrix dL = tensor->grad;
+  NMatrix dL = output->grad;
 
-  printf("BACKWARD(%s) = [%dx%d]\n",
-      Node_Type_Str[node->type],
-      tensor->value.rows, tensor->value.cols
-  );
+  // printf("BACKWARD(%s) = [%dx%d]\n",
+  //     Node_Type_Str[node->type],
+  //     output->value.rows, output->value.cols
+  // );
+  // mat_println(mat_row_slice(dL, 0, 8), 5);
 
   switch (node->type) {
     case NODE_CONSTANT:
@@ -595,15 +620,27 @@ void node_backward(Tensor_Ptr_Array* tape) {
       //
       // downstream:
       //   dL/dx = I ⊙ dL = dL (element-wise)
+      // mat_copy(node->value.grad, dL);
       break;
 
-    case NODE_EMBEDDING:
+    case NODE_EMBEDDING: {
+      int cols = node->embeddings.value.cols;
+      int32_t* context = (int32_t*)tape_node.input[0];
+
       for (size_t t = 0; t < node->context_size; t++) {
-        NMatrix grad = mat_row(node->weight->grad, node->context[t]);
-        NMatrix ctx = mat_row_slice(dL, t*12, 12);
+        if (context[t] == 0) continue;
+
+        NMatrix grad = mat_row(node->embeddings.grad, context[t]);
+        NMatrix ctx = mat_row_slice(dL, t*cols, cols);
+
+        // printf("emb(%-3d): %-3zu %-3zu = ", context[t], t*cols, t*cols + cols);
+        // mat_println(ctx, 5);
+        // mat_println(grad, 5);
+
         mat_add(grad, grad, ctx);
       }
       break;
+    }
 
     case NODE_LINEAR:
       // upstream:
@@ -620,11 +657,11 @@ void node_backward(Tensor_Ptr_Array* tape) {
       //   dL/dx = dL * W^T (matrix mult: [1×M] * [M×N] = [1×N])
       //
       // dL_dW = x^T * dL
-      mat_mult_A_transposed_and_B_acc(node->weight->grad, tensor->inputs[0]->value, dL);
+      mat_mult_A_transposed_and_B_acc(node->weight.grad, tape_node.input[0]->value, dL);
       // dL_db = I * dL
-      mat_add(node->bias->grad, node->bias->grad, dL);
+      mat_add(node->bias.grad, node->bias.grad, dL);
       // dL_dx = dL * W^T
-      mat_mult_A_and_B_transposed_acc(tensor->inputs[0]->grad, dL, node->weight->value);
+      mat_mult_A_and_B_transposed_acc(tape_node.input[0]->grad, dL, node->weight.value);
       break;
 
     case NODE_SIGMOID:
@@ -653,10 +690,43 @@ void node_backward(Tensor_Ptr_Array* tape) {
       // dsoftmax_temperature(x.grad, fwd_out.value, dL, node->temperature);
       break;
 
-    case NODE_SOFTMAX_CROSS_ENTROPY:
-      mat_sub(tensor->grad, tensor->value, dL);
-      mat_scale(tensor->grad, tensor->grad, 1.0f / node->temperature);
+    case NODE_SOFTMAX_CROSS_ENTROPY: {
+      Tensor* x_tensor = tape_node.input[0];
+      Tensor* target_tensor = tape_node.input[1];
+      Tensor* logits_tensor = tape_node.input[2];
+
+      assert(dL.rows == 1);
+      assert(dL.cols == 1);
+      assert(x_tensor->grad.rows == logits_tensor->value.rows);
+      assert(x_tensor->grad.cols == logits_tensor->value.cols);
+      assert(x_tensor->grad.rows == target_tensor->value.rows);
+      assert(x_tensor->grad.cols == target_tensor->value.cols);
+
+      float inv_temperature = 1.0f / node->temperature;
+      float dL_dLoss = MAT_AT(dL, 0, 0);
+
+      // int argmax = mat_row_argmax(target_tensor->value);
+
+      // printf("x-entropy = %f %f\n", inv_temperature, dL_dLoss);
+      // printf("grad %f\n", VEC_AT(x_tensor->grad, argmax));
+
+      // 1/t * (y - target) * dL
+      for (int i = 0; i < x_tensor->grad.cols; i++) {
+        float prob = VEC_AT(logits_tensor->value, i);
+        float target = VEC_AT(target_tensor->value, i);
+        VEC_AT(x_tensor->grad, i) += dL_dLoss * inv_temperature * (prob - target);
+      }
+
+      // printf("target %f = ", VEC_AT(target_tensor->value, argmax));
+      // mat_println(mat_row_slice(target_tensor->value, 0, 8), 5);
+      //
+      // printf("prob   %f = ", VEC_AT(logits_tensor->value, argmax));
+      // mat_println(mat_row_slice(logits_tensor->value, 0, 8), 5);
+      //
+      // printf("grad %f = ", VEC_AT(x_tensor->grad, argmax));
+      // mat_println(mat_row_slice(x_tensor->grad, 0, 8), 5);
       break;
+    }
 
     case NODE_RELU:
       // upstream:
@@ -667,7 +737,10 @@ void node_backward(Tensor_Ptr_Array* tape) {
       //
       // downstream:
       //   dL/dx = I(ReLU'(x)) ⊙ dL (element-wise), where I(...) is indicator
-      drelu(tensor->grad, tensor->value, dL);
+      // printf("relu: "); mat_println(dL, 5);
+      // printf("relu: "); mat_println(tape_node.input[0]->value, 5);
+      drelu(tape_node.input[0]->grad, tape_node.input[0]->value, dL);
+      // printf("relu: "); mat_println(tape_node.input[0]->grad, 5);
       break;
 
     case NODE_FLATTEN:
@@ -707,8 +780,8 @@ void node_backward(Tensor_Ptr_Array* tape) {
       //
       // downstream:
       //   dL/dx = conv2d_transpose(dL, W)
-      // mat_fill(x.grad, 0);
-      // mat_fill(w.grad, 0);
+      // mat_zero(x.grad, 0);
+      // mat_zero(w.grad, 0);
       //
       // for (int i = 0; i < dL.rows; i++) {
       //   for (int j = 0; j < dL.cols; j++) {
@@ -869,73 +942,89 @@ void node_backward(Tensor_Ptr_Array* tape) {
   node_backward(tape);
 }
 
-// accumulate grads
-void acc_grads(Node* node) {
-  (void)node;
-  // for (int i = 0; i < node->input_size; i++)
-  //   acc_grads(node->input[i]);
-  //
-  // mat_add(node->output.g_grad, node->output.g_grad, node->output.grad);
-  // mat_add(node->weight.g_grad, node->weight.g_grad, node->weight.grad);
-  // mat_add(node->bias.g_grad, node->bias.g_grad, node->bias.grad);
+void update_grads_sgd(Optimizer* optimizer, size_t batch_size) {
+  (void)batch_size;
+
+  for (size_t i = 0; i < optimizer->tensors.count; i++) {
+    Tensor* tensor = optimizer->tensors.elems[i];
+
+    int elems = tensor->value.rows * tensor->value.cols;
+
+    for (int j = 0; j < elems; j++) {
+      float g = tensor->grad.elems[j]; // / batch_size;
+
+      float adapt_lr = optimizer->learning_rate;
+      tensor->value.elems[j] -= adapt_lr * g;
+
+      tensor->grad.elems[j] = 0;
+    }
+  }
 }
 
-void update_grads(Node* node, float lr, size_t batch_size) {
-  for (int i = 0; i < node->input_size; i++)
-    update_grads(node->input[i], lr, batch_size);
+void update_grads_rms_prop(Optimizer* optimizer, size_t batch_size) {
+  (void)batch_size;
 
-  // if (node->type == NODE_EMBEDDING) {
-  //   int max_vocab = 512;
-  //   int embed_dim = 12;
-  //
-  //   lr = 0.05f;
-  //
-  //   for (int v = 0; v < max_vocab; v++) {
-  //     if (v == 0) continue;
-  //     if (node->embedding_tokens_batch[v] == 0) continue;
-  //
-  //     node->embedding_tokens_batch[v] = 0;
-  //
-  //     NMatrix emb = node->weight.value;
-  //     NMatrix g_grad = node->weight.g_grad;
-  //     NMatrix ada_grad = node->ada_grad;
-  //
-  //     for (int d = 0; d < embed_dim; d++) {
-  //       // average the gradient: ∇W = ∇W / B
-  //       float g = MAT_AT(g_grad, v, d) / batch_size;
-  //
-  //       // update AdaGrad: Gnew = Gold + ∇W^2
-  //       MAT_AT(ada_grad, v, d) += g*g;
-  //
-  //       // udpate the weight: Wnew = Wold - lr/sqrt(Gnew) * ∇W
-  //       MAT_AT(emb, v, d) -= (lr / (sqrtf(MAT_AT(ada_grad, v, d)) + 1e-15f)) * g;
-  //
-  //       MAT_AT(g_grad, v, d) = 0;
-  //     }
-  //   }
-  // } else {
-  //   mat_weighted_add(node->output.value, node->output.value, node->output.g_grad, -lr);
-  //   mat_weighted_add(node->weight.value, node->weight.value, node->weight.g_grad, -lr);
-  //   mat_weighted_add(node->bias.value, node->bias.value, node->bias.g_grad, -lr);
-  // }
+  float eps = 1e-8f;
+  float beta = 0.99f;
+  float one_minus_beta = 1.0f - beta;
+
+  for (size_t i = 0; i < optimizer->tensors.count; i++) {
+    Tensor* tensor = optimizer->tensors.elems[i];
+    NMatrix h = optimizer->history.elems[i];
+
+    int elems = tensor->value.rows * tensor->value.cols;
+
+    for (int j = 0; j < elems; j++) {
+      // average the gradient: ∇W = ∇W / B
+      float g = tensor->grad.elems[j]; // / batch_size;
+
+      // update AdaGrad: Gnew = Gold + ∇W^2
+      h.elems[j] = (beta * h.elems[j]) + (one_minus_beta * g * g);
+
+      // udpate the weight: Wnew = Wold - lr/sqrt(Gnew) * ∇W
+      // if (h.elems[j] > 0) {
+        float adapt_lr = optimizer->learning_rate / (sqrtf(h.elems[j]) + eps);
+        tensor->value.elems[j] -= adapt_lr * g;
+
+        // printf("(%.3f %.3f) ", adapt_lr, h.elems[j]);
+      // }
+
+      tensor->grad.elems[j] = 0;
+    }
+    // printf("\n");
+  }
 }
 
-void zero_grads(Node* node) {
-  for (int i = 0; i < node->input_size; i++)
-    zero_grads(node->input[i]);
+void update_grads_ada_grad(Optimizer* optimizer, size_t batch_size) {
+  (void)batch_size;
 
-  // mat_fill(node->output.grad, 0);
-  // mat_fill(node->weight.grad, 0);
-  // mat_fill(node->bias.grad, 0);
-}
+  float eps = 1e-8f;
 
-void zero_g_grads(Node* node) {
-  for (int i = 0; i < node->input_size; i++)
-    zero_g_grads(node->input[i]);
+  for (size_t i = 0; i < optimizer->tensors.count; i++) {
+    Tensor* tensor = optimizer->tensors.elems[i];
+    NMatrix ada_grad = optimizer->history.elems[i];
 
-  // mat_fill(node->output.g_grad, 0);
-  // mat_fill(node->weight.g_grad, 0);
-  // mat_fill(node->bias.g_grad, 0);
+    int elems = tensor->value.rows * tensor->value.cols;
+
+    for (int j = 0; j < elems; j++) {
+      // average the gradient: ∇W = ∇W / B
+      float g = tensor->grad.elems[j]; // / batch_size;
+
+      // update AdaGrad: Gnew = Gold + ∇W^2
+      ada_grad.elems[j] += g * g;
+
+      // udpate the weight: Wnew = Wold - lr/sqrt(Gnew) * ∇W
+      if (ada_grad.elems[j] > 0) {
+        float adapt_lr = optimizer->learning_rate / (sqrtf(ada_grad.elems[j]) + eps);
+        tensor->value.elems[j] -= adapt_lr * g;
+
+        // printf("(%.3f %.3f) ", adapt_lr, ada_grad.elems[j]);
+      }
+
+      tensor->grad.elems[j] = 0;
+    }
+    // printf("\n");
+  }
 }
 
 #endif // NODE_H

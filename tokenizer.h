@@ -4,13 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define BYTEBUFFER_IMPLEMENTATION
 #include "bytebuffer.h"
-
-#define ALLOCATOR_IMPLEMENATION
 #include "allocator.h"
-
-#define HASHMAP_IMPLMENTATION
 #include "hashmap.h"
 
 #if (SIZE_MAX == 0xffffffffL)

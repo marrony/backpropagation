@@ -17,6 +17,8 @@
 
 #include <raylib.h>
 
+#include "allocator.h"
+
 #define ARRAY_LEN(a) (sizeof(a) / sizeof(*(a)))
 
 typedef struct {
@@ -77,6 +79,11 @@ NMatrix mat_init(int rows, int cols, float* data) {
     .rows = rows,
     .cols = cols,
   };
+}
+
+NMatrix mat_alloc2(Allocator* alloc, int rows, int cols) {
+  Byte_Buffer buf = ALLOC(alloc, rows*cols*sizeof(float));
+  return mat_init(rows, cols, (float*)buf.ptr);
 }
 
 void mat_fprint(FILE* fp, NMatrix m, int precision) {
@@ -202,16 +209,15 @@ NMatrix mat_reshape(NMatrix x, int rows, int cols) {
   };
 }
 
+void mat_zero(NMatrix m) {
+  int count = m.rows * m.cols;
+  memset(m.elems, 0, count*sizeof(float));
+}
+
 void mat_fill(NMatrix dst, float k) {
   int count = dst.rows * dst.cols;
   for (int i = 0; i < count; i++)
     dst.elems[i] = k;
-
-  // for (int i = 0; i < dst.rows; i++) {
-  //   for (int j = 0; j < dst.cols; j++) {
-  //     MAT_AT(dst, i, j) = k;
-  //   }
-  // }
 }
 
 void mat_copy(NMatrix dst, NMatrix src) {
@@ -768,7 +774,7 @@ void mat_scale(NMatrix dst, NMatrix src, float k) {
  */
 NMatrix mat_row_slice(NMatrix m, int start, int size) {
   assert(m.rows == 1);
-  assert(start+size <= m.cols);
+  if (start+size > m.cols) size = m.cols - start;
 
   return (NMatrix) {
     .elems = &(VEC_AT(m, start)),
@@ -1248,7 +1254,7 @@ NMatrix* create_outputs(Neuron_Network nn) {
 
   for (int i = 0; i < nn.layers; i++) {
     h[i] = mat_alloc(1, nn.w[i].cols);
-    mat_fill(h[i], 0);
+    mat_zero(h[i]);
   }
 
   return h;
@@ -1286,8 +1292,8 @@ Neuron_Network neuron_create(Neuron_Layer* layers, size_t layers_count) {
       mat_rand(w[i]);
       mat_rand(b[i]);
     } else {
-      mat_fill(w[i], 0);
-      mat_fill(b[i], 0);
+      mat_zero(w[i]);
+      mat_zero(b[i]);
     }
   }
 
@@ -1341,8 +1347,8 @@ void neuron_add(Neuron_Network* dst, Neuron_Network* src) {
 
 void neuron_zero(Neuron_Network* nn) {
   for (int32_t j = 0; j < nn->layers; j++) {
-    mat_fill(nn->w[j], 0);
-    mat_fill(nn->b[j], 0);
+    mat_zero(nn->w[j]);
+    mat_zero(nn->b[j]);
   }
 }
 
