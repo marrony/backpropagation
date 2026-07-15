@@ -254,8 +254,11 @@ void mat_copy(NMatrix dst, NMatrix src) {
   }
 }
 
-void mat_free(NMatrix m) {
-  free(m.elems);
+void mat_free(NMatrix* m) {
+  free(m->elems);
+  m->elems = NULL;
+  m->rows = 0;
+  m->cols = 0;
 }
 
 /**

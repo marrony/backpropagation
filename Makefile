@@ -15,7 +15,7 @@ CFLAGS_DEBUG=-std=c17 -Werror -Wall -Wextra -Wno-initializer-overrides -pedantic
     -fsanitize=address -fassociative-math \
     -g
 
-CFLAGS_RELEASE=-std=c17 -Werror -Wall -Wextra -I./raylib-5 -O3 -ffast-math
+CFLAGS_RELEASE=-std=c17 -Werror -Wall -Wextra -Wno-initializer-overrides -I./raylib-5 -O3 -ffast-math
 
 CFLAGS=$(CFLAGS_RELEASE)
 
@@ -34,6 +34,9 @@ generated/vocab.h: generated bin/genvocab
 
 $(BINDIR)/genvocab: genvocab.c tokenizer.h generated/alice.h generated/vocab.h | $(BINDIR) raylib-5/libraylib.a
 	cc $(CFLAGS) $< -o $@ $(LDFLAGS)
+
+$(BINDIR)/cnn-node: cnn-node.c
+	echo "cnn-node.c is broken"
 
 $(BINDIR)/%: %.c nn.h node.h game.h tokenizer.h generated/alice.h generated/vocab.h | $(BINDIR) raylib-5/libraylib.a
 	cc $(CFLAGS) $< -o $@ $(LDFLAGS)

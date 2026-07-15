@@ -116,8 +116,8 @@ void init_tensor(Tensor* param, int rows, int cols) {
 }
 
 void destroy_param(Tensor* param) {
-  mat_free(param->value);
-  mat_free(param->grad);
+  mat_free(&param->value);
+  mat_free(&param->grad);
 }
 
 void destroy_node(Node** node) {
