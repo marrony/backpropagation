@@ -1,1 +1,3 @@
 -I./raylib-5
+-I/opt/homebrew/Cellar/pcre2/10.47_1/include
+-DPCRE2_CODE_UNIT_WIDTH=8

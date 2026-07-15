@@ -1,9 +1,8 @@
-#include "tokenizer.h"
-
 #define BYTEBUFFER_IMPLEMENTATION
 #define ALLOCATOR_IMPLEMENATION
 #define HASHMAP_IMPLMENTATION
 
+#include "tokenizer.h"
 #include "bytebuffer.h"
 #include "allocator.h"
 #include "hashmap.h"
@@ -44,6 +43,23 @@ Malloc_Allocator mallocator = MALLOC_CREATE();
 #define MAX_VOCAB 512
 
 int main(void) {
+  Byte_Buffer_Array array = ARRAY_CREATE(&mallocator.alloc);
+
+  if (!pre_split((const char*)alice_txt, &array)) {
+    return 0;
+  }
+
+  printf("Count = %zu\n", array.count);
+
+  for (size_t i = 0; i < array.count; i++) {
+    Byte_Buffer buf = array.elems[i];
+
+    printf("Token: '%.*s'\n", (int)buf.len, buf.cptr);
+  }
+
+
+  return 0;
+
   int32_t* tokens = NULL;
   Token vocabulary[MAX_VOCAB] = {0};
 

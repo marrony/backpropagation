@@ -14,6 +14,7 @@ typedef struct {
   union {
     uint8_t* ptr;
     char* cptr;
+    void* void_ptr;
   };
   size_t len;
 } Byte_Buffer;

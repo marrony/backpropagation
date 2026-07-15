@@ -33,7 +33,7 @@ generated/vocab.h: generated bin/genvocab
 	./bin/genvocab > generated/vocab.h
 
 $(BINDIR)/genvocab: genvocab.c tokenizer.h generated/alice.h generated/vocab.h | $(BINDIR) raylib-5/libraylib.a
-	cc $(CFLAGS) $< -o $@ $(LDFLAGS)
+	cc $(CFLAGS) -DPCRE2_CODE_UNIT_WIDTH=8 $(shell pkg-config --libs libpcre2-8) $< -o $@ $(LDFLAGS) $(shell pkg-config --cflags libpcre2-8)
 
 $(BINDIR)/cnn-node: cnn-node.c
 	echo "cnn-node.c is broken"

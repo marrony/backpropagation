@@ -1,9 +1,11 @@
+#include <pcre2.h>
 #include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "array.h"
 #include "bytebuffer.h"
 #include "allocator.h"
 #include "hashmap.h"
@@ -67,20 +69,26 @@ Byte_Buffer byte_buffer_set_int(Byte_Buffer buf, int32_t value) {
 #define TOK_SIZE 31
 #define MAX_TOKEN (TOK_SIZE+1)
 
+typedef int32_t TokenID;
+
 typedef struct {
-  int32_t id;
+  TokenID id;
   char token[MAX_TOKEN];
 } Token;
 
 typedef struct {
-  int32_t id;
+  TokenID id;
   size_t size;
 } Token_Sorted;
 
 typedef struct {
-  int32_t token0;
-  int32_t token1;
+  TokenID token0;
+  TokenID token1;
 } Token_Pair;
+
+DEFINE_ARRAY(Byte_Buffer);
+DEFINE_ARRAY(TokenID);
+DEFINE_ARRAY(TokenID_Array);
 
 Byte_Buffer alloc_pair(Allocator* alloc, Token_Pair pair) {
   Byte_Buffer buf = byte_buffer_filled(alloc, sizeof(Token_Pair), 0);
@@ -99,20 +107,152 @@ bool contains_space(Token* token) {
 #define EOS_TOKEN 1
 #define BOS_TOKEN 2
 
+bool pre_split(const char* text, Byte_Buffer_Array* array) {
+  pcre2_code *re;
+  PCRE2_SPTR pattern = (PCRE2_SPTR)"(?i:\'s|\'t|\'re|\'ve|\'m|\'ll|\'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s";
+  PCRE2_SPTR subject = (PCRE2_SPTR)text;
+
+  int errornumber;
+  PCRE2_SIZE erroroffset;
+
+  // Compile using both UTF support and Unicode Character Properties (UCP)
+  re = pcre2_compile(
+      pattern,               /* the pattern */
+      PCRE2_ZERO_TERMINATED, /* indicates pattern is zero-terminated */
+      PCRE2_UTF | PCRE2_UCP, /* REQUIRED options for \p{L} and \p{N} */
+      &errornumber,          /* for error number */
+      &erroroffset,          /* for error offset */
+      NULL);                 /* use default compile context */
+
+  if (re == NULL) {
+    PCRE2_UCHAR buffer[256];
+    pcre2_get_error_message(errornumber, buffer, sizeof(buffer));
+    printf("PCRE2 compilation failed at offset %d: %s\n", (int)erroroffset, buffer);
+    return false;
+  }
+
+  pcre2_match_data *match_data = pcre2_match_data_create_from_pattern(re, NULL);
+  PCRE2_SIZE *ovector;
+  size_t subject_length = strlen((char *)subject);
+  size_t start_offset = 0;
+
+  // Loop to extract tokens matching the cl100k pattern (mimicking finditer)
+  while (start_offset < subject_length) {
+    int rc = pcre2_match(
+        re,                   /* the compiled pattern */
+        subject,              /* the subject string */
+        subject_length,       /* the length of the subject */
+        start_offset,         /* start at offset from previous match */
+        0,                    /* default options */
+        match_data,           /* block for storing the match result */
+        NULL);                /* use default match context */
+
+    if (rc < 0) {
+      if (rc == PCRE2_ERROR_NOMATCH) break; // No more matches found
+      printf("Matching error %d\n", rc);
+      break;
+    }
+
+    ovector = pcre2_get_ovector_pointer(match_data);
+
+    size_t nbytes = ovector[1] - ovector[0];
+    Byte_Buffer buf = byte_buffer_from_parts((char*)subject + ovector[0], nbytes);
+
+    array_append(array, buf);
+
+    // Advance past the match
+    start_offset = ovector[1];
+  }
+
+  // Clean up memory
+  pcre2_match_data_free(match_data);
+  pcre2_code_free(re);
+
+  return true;
+}
+
+void calculate_histogram(TokenID_Array_Array ids_list, int32_t* histogram, int32_t vocab_size) {
+  bool punctuation[256] = {0};
+  punctuation['.'] = true;
+  punctuation[','] = true;
+  punctuation['?'] = true;
+  punctuation['!'] = true;
+  punctuation[':'] = true;
+  punctuation[';'] = true;
+  punctuation['-'] = true;
+  punctuation['\''] = true;
+  punctuation['\"'] = true;
+  punctuation['('] = true;
+  punctuation[')'] = true;
+  punctuation['\r'] = true;
+  punctuation['\n'] = true;
+
+  for (size_t i = 0; i < ids_list.count; i++) {
+    TokenID_Array ids = ids_list.elems[i];
+
+    for (size_t j = 0; j < ids.count-1; j++) {
+      TokenID token0 = ids.elems[j + 0];
+      TokenID token1 = ids.elems[j + 1];
+
+      if (token0 > 0 && token0 < 256 && punctuation[token0]) continue;
+      if (token1 > 0 && token1 < 256 && punctuation[token1]) continue;
+
+      int32_t index = token0*vocab_size + token1;
+      histogram[index] += 1;
+    }
+  }
+}
+
+void array_remove_ith(TokenID_Array* array, size_t ith) {
+  for (size_t i = ith; i < array->count-1; i++)
+    array->elems[i] = array->elems[i+1];
+  array->count -=1;
+}
+
+void array_println(TokenID_Array array) {
+  printf("[");
+  for (size_t i = 0; i < array.count; i++)
+    printf("%d ", array.elems[i]);
+  printf("]\n");
+}
+
+void merge_ids(TokenID_Array_Array* ids_list, Token_Pair pair, TokenID new_token) {
+  for (size_t i = 0; i < ids_list->count; i++) {
+    TokenID_Array* ids = &ids_list->elems[i];
+
+    if (ids->count <= 1) continue;
+
+    for (size_t j = ids->count - 1; j > 0; j--) {
+      TokenID token0 = ids->elems[j-1];
+      TokenID token1 = ids->elems[j-0];
+
+      if (token0 == pair.token0 && token1 == pair.token1) {
+        array_remove_ith(ids, j);
+        ids->elems[j-1] = new_token;
+      }
+    }
+  }
+}
+
 int32_t gen_vocabulary(
     Allocator* global,
     const char* text[],
     size_t text_len,
-    int32_t** tokens_ptr,
     Token* vocabulary,
     int max_vocab
 ) {
   assert(max_vocab > 256);
 
-  Arena_Allocator arena = ARENA_CREATE(global, 1024*1024);
+  Arena_Allocator arena = ARENA_CREATE(global, 5*1024*1024);
   Allocator* alloc = &arena.alloc;
 
   int32_t vocabulary_count = 0;
+
+  for (int i = 0; i < 256; i++) {
+    vocabulary[vocabulary_count].id = vocabulary_count;
+    vocabulary[vocabulary_count].token[0] = i;
+    vocabulary_count += 1;
+  }
 
   Token token = {0};
 
@@ -134,168 +274,64 @@ int32_t gen_vocabulary(
   vocabulary[vocabulary_count] = token;
   vocabulary_count += 1;
 
-  int32_t start = vocabulary_count - 1;
+  TokenID_Array_Array ids_list = ARRAY_CREATE(global);
+  Byte_Buffer_Array words_array = ARRAY_CREATE(global);
 
-  for (int i = 1; i < 256; i++) {
-    vocabulary[vocabulary_count].id = vocabulary_count;
-    vocabulary[vocabulary_count].token[0] = i;
-    vocabulary_count += 1;
-  }
+  for (size_t text_idx = 0; text_idx < text_len; text_idx++) {
+    words_array.count = 0;
 
-  size_t tokens_count = 0;
-  for (size_t i = 0; i < text_len; i++) {
-    tokens_count += strlen(text[i]);
-    tokens_count += 1; //<EOS>
-  }
-
-  int32_t *tokens = malloc(tokens_count * sizeof(int32_t));
-  *tokens_ptr = tokens;
-
-  size_t count = 0;
-  for (size_t i = 0; i < text_len; i++) {
-    for (size_t j = 0; j < strlen(text[i]); j++) {
-      char ch = text[i][j];
-      tokens[count++] = vocabulary[ch + start].id;
+    if (!pre_split(text[text_idx], &words_array)) {
+      return 0;
     }
-    tokens[count++] = vocabulary[EOS_TOKEN].id;
-  }
 
-  // merge spaces in the beginning of the words
-  int32_t last_token = vocabulary_count;
-  int32_t space_token = vocabulary[' ' + start].id;
-  for (size_t i = 0; i < tokens_count - 1; i++) {
-    if (tokens[i] == space_token) {
-      char* token_str = vocabulary[tokens[i+1]].token;
-      if (token_str[0] == ' ') continue;
+    for (size_t word_idx = 0; word_idx < words_array.count; word_idx++) {
+      Byte_Buffer word = words_array.elems[word_idx];
+      TokenID_Array tokens = ARRAY_CREATE(global);
 
-      int32_t found = -1;
-      for (int32_t j = last_token; j < vocabulary_count; j++) {
-        if (vocabulary[j].token[0] == ' ' && vocabulary[j].token[1] == token_str[0]) {
-          found = j;
-          break;
-        }
+      // convert bytes to token id
+      for (size_t i = 0; i < word.len; i++) {
+        array_append(&tokens, vocabulary[word.ptr[i]].id);
       }
 
-      if (found == -1) {
-        found = vocabulary_count;
-        vocabulary[vocabulary_count].id = vocabulary_count;
-        vocabulary[vocabulary_count].token[0] = ' ';
-        vocabulary[vocabulary_count].token[1] = token_str[0];
-        vocabulary_count += 1;
-      }
-
-      for (size_t j = i; j < tokens_count-1; j++)
-        tokens[j] = tokens[j+1];
-      tokens[i] = found;
-      tokens_count -= 1;
+      array_append(&ids_list, tokens);
     }
   }
 
-  bool punctuation[256] = {0};
-  punctuation['.'] = true;
-  punctuation[','] = true;
-  punctuation['?'] = true;
-  punctuation['!'] = true;
-  punctuation[':'] = true;
-  punctuation[';'] = true;
-  punctuation['-'] = true;
-  punctuation['\''] = true;
-  punctuation['\"'] = true;
-  punctuation['('] = true;
-  punctuation[')'] = true;
-  punctuation['\r'] = true;
-  punctuation['\n'] = true;
+  size_t num_merges = max_vocab - 259;
 
-  int32_t old_vocabulary_count = 0;
-  while (vocabulary_count < max_vocab) {
-    if (old_vocabulary_count == vocabulary_count)
-      break;
-
-    old_vocabulary_count = vocabulary_count;
-
+  for (size_t i = 0; i < num_merges; i++) {
     size_t saved = SAVE(alloc);
 
-    HashMap* hashmap = hashmap_create(alloc, 2*max_vocab, hash_blob, equal_blob, free_key, free_value);
+    size_t histogram_size = sizeof(int32_t)*vocabulary_count*vocabulary_count;
+    int32_t* histogram = ALLOC(alloc, histogram_size).void_ptr;
+    memset(histogram, 0, histogram_size);
 
-    for (int i = 0; i < vocabulary_count; i++) {
-      Token_Pair pair = {
-        .token0 = i,
-        .token1 = -1,
-      };
-      hashmap_put(
-          hashmap,
-          alloc_pair(alloc, pair),
-          byte_buffer_filled(alloc, sizeof(int32_t), 0)
-      );
-    }
+    calculate_histogram(ids_list, histogram, vocabulary_count);
 
-    for (size_t i = 0; i < tokens_count - 1; i++) {
-      Token_Pair pair = {
-        .token0 = tokens[i+0],
-        .token1 = tokens[i+1],
-      };
-
-      if (pair.token0 > start && pair.token0-start < 256 && punctuation[pair.token0-start]) continue;
-      if (pair.token1 > start && pair.token1-start < 256 && punctuation[pair.token1-start]) continue;
-
-      Byte_Buffer key = byte_buffer_from_parts(&pair, sizeof(pair));
-
-      Byte_Buffer value = NULL_BYTE_BUFFER;
-      if (hashmap_get(hashmap, key, &value)) {
-        byte_buffer_set_int(value, byte_buffer_get_int(value) + 1);
-      } else {
-        hashmap_put(
-            hashmap,
-            alloc_pair(alloc, pair),
-            byte_buffer_filled(alloc, sizeof(int32_t), 0)
-        );
-      }
-    }
-
+    int32_t max_count = 0;
     Token_Pair max_pair = {0};
-    int max_count = 0;
-    for (size_t i = 0; i < tokens_count - 1; i++) {
-      Token_Pair pair = {
-        .token0 = tokens[i+0],
-        .token1 = tokens[i+1],
-      };
 
-      //avoid merge
-      if (contains_space(vocabulary+pair.token1))
-        continue;
+    for (TokenID token0 = 0; token0 < vocabulary_count; token0++) {
+      for (TokenID token1 = 0; token1 < vocabulary_count; token1++) {
+        int32_t index = token0*vocabulary_count + token1;
 
-      Byte_Buffer key = byte_buffer_from_parts(&pair, sizeof(pair));
-      Byte_Buffer value = NULL_BYTE_BUFFER;
-      int32_t count = 0;
-      if (hashmap_get(hashmap, key, &value)) {
-        count = byte_buffer_get_int(value);
-      }
-
-      if (count > 10 && count > max_count) {
-        max_count = count;
-        max_pair = pair;
-      }
-    }
-
-    if (max_count > 0) {
-      int32_t new_token = vocabulary_count;
-      vocabulary_count += 1;
-
-      vocabulary[new_token].id = new_token;
-      strncpy(vocabulary[new_token].token, vocabulary[max_pair.token0].token, MAX_TOKEN);
-      strncat(vocabulary[new_token].token, vocabulary[max_pair.token1].token, MAX_TOKEN);
-
-      for (size_t i = tokens_count - 2; i > 0; i--) {
-        int32_t token0 = tokens[i+0];
-        int32_t token1 = tokens[i+1];
-        if (token0 == max_pair.token0 && token1 == max_pair.token1) {
-          for (size_t j = i; j < tokens_count-1; j++)
-            tokens[j] = tokens[j+1];
-          tokens[i] = new_token;
-          tokens_count -= 1;
+        if (histogram[index] > max_count) {
+          max_count = histogram[index];
+          max_pair.token0 = token0;
+          max_pair.token1 = token1;
         }
       }
     }
+
+    if (max_count == 0) break;
+
+    TokenID new_token = i + 259;
+    vocabulary[new_token].id = new_token;
+    strncpy(vocabulary[new_token].token, vocabulary[max_pair.token0].token, MAX_TOKEN);
+    strncat(vocabulary[new_token].token, vocabulary[max_pair.token1].token, MAX_TOKEN);
+    vocabulary_count += 1;
+
+    merge_ids(&ids_list, max_pair, new_token);
 
     RESTORE(alloc, saved);
   }
@@ -304,6 +340,5 @@ int32_t gen_vocabulary(
 
   ARENA_DESTROY(global, &arena);
 
-  return tokens_count;
+  return 0;
 }
-
