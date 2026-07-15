@@ -581,12 +581,13 @@ void test_nmist(void) {
 
 Malloc_Allocator mallocator = MALLOC_CREATE();
 
+#if 0
 void test_foobar(void) {
   Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
 
   Optimizer optimizer = {
     .tensors = ARRAY_CREATE(&mallocator.alloc),
-    .ada_grad = ARRAY_CREATE(&mallocator.alloc),
+    .history = ARRAY_CREATE(&mallocator.alloc),
     .learning_rate = 0.05f,
   };
 
@@ -616,26 +617,279 @@ void test_foobar(void) {
   mat_println(input->weight.value, PRECISION);
   mat_println(input->weight.grad, PRECISION);
 }
+#endif
+
+void test_relu(int times) {
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
+
+  Node* input =  create_variable(1, 3);
+  Node* relu = create_relu(input);
+
+  Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
+
+  mat_copy(input->value.value, mat_init(1, 3, (float[]){0.4967, -0.1383, 0.6477}));
+
+  for (int i = 0; i < times; i++) {
+    Tensor* out = node_forward(&arena.alloc, relu, &tape);
+
+    ASSERT_VEC_EQ(out->value, ((float[]) {0.4967, 0.0000, 0.6477}));
+
+    mat_copy(out->grad, mat_init(1, 3, (float[]){-0.2509, 0.9014, 0.4640}));
+  }
+
+  node_backward(&tape);
+
+  ASSERT_VEC_EQ(input->value.grad, ((float[]){-0.2509*times, 0.0000*times, 0.4640*times}));
+}
+
+void test_linear(int times) {
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
+
+  Node* input =  create_variable(1, 3);
+  Node* linear = create_linear(input, 3, 2);
+
+  Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
+
+  mat_copy(input->value.value, mat_init(1, 3, (float[]){0.4967, -0.1383, 0.6477}));
+  mat_copy(linear->weight.value, mat_init(3, 2, (float[]){
+        1.5230, -0.2342,
+        -0.2341, 1.5792,
+        0.7674, -0.4695
+  }));
+  mat_copy(linear->bias.value, mat_init(1, 2, (float[]){0.5426, -0.4634}));
+
+  for (int i = 0; i < times; i++) {
+    Tensor* out = node_forward(&arena.alloc, linear, &tape);
+
+    ASSERT_VEC_EQ(out->value, ((float[]) {1.8285, -1.1022}));
+
+    mat_copy(out->grad, mat_init(1, 2, (float[]){-0.4657, 0.2420}));
+  }
+  node_backward(&tape);
+
+  ASSERT_VEC_EQ(input->value.grad, ((float[]) {-0.7659377289*times, 0.4911870575*times, -0.4709969330*times}));
+  ASSERT_VEC_EQ(mat_row(linear->weight.grad, 0), ((float[]) {-0.2313132095*times, 0.1202013493*times}));
+  ASSERT_VEC_EQ(mat_row(linear->weight.grad, 1), ((float[]) {0.0644063616*times, -0.0334685545*times}));
+  ASSERT_VEC_EQ(mat_row(linear->weight.grad, 2), ((float[]) {-0.3016338539*times, 0.1567432785*times}));
+  ASSERT_VEC_EQ(linear->bias.grad, ((float[]) {-0.4657*times, 0.2420*times}));
+}
+
+void test_softmax(int times) {
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
+
+  Node* input =  create_variable(1, 3);
+  Node* softmax = create_softmax(input);
+
+  Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
+
+  mat_copy(input->value.value, mat_init(1, 3, (float[]){0.3, 0.5, 0.9}));
+
+  for (int i = 0; i < times; i++) {
+    Tensor* out = node_forward(&arena.alloc, softmax, &tape);
+
+    ASSERT_VEC_EQ(out->value, ((float[]) {+0.24731, +0.30206, +0.45063}));
+
+    mat_copy(out->grad, mat_init(1, 3, (float[]){0, 0, 1}));
+  }
+  node_backward(&tape);
+
+  ASSERT_VEC_EQ(input->value.grad, ((float[]){-0.11144412*times, -0.13611814*times, 0.24756226*times}));
+}
+
+void test_softmax_cross_entropy(int times) {
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
+
+  Node* input =  create_variable(1, 3);
+  Node* target =  create_variable(1, 3);
+  Node* softmax = create_softmax_cross_entropy(input, target);
+
+  Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
+
+  mat_copy(input->value.value, mat_init(1, 3, (float[]){0.3, 0.5, 0.9}));
+  mat_copy(target->value.value, mat_init(1, 3, (float[]){0, 0, 1}));
+
+  for (int i = 0; i < times; i++) {
+    Tensor* out = node_forward(&arena.alloc, softmax, &tape);
+
+    ASSERT_VEC_EQ(out->value, ((float[]) {0.7971}));
+
+    mat_copy(out->grad, mat_init(1, 1, (float[]){1}));
+  }
+
+  node_backward(&tape);
+
+  ASSERT_VEC_EQ(input->value.grad, ((float[]){0.247309184*times, 0.302064109*times, -0.549373198*times}));
+}
+
+void test_embeddings(int times) {
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
+  Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
+
+  // [2x3]
+  Node* embeddings = create_embeddings(3, 3, 4);
+  embeddings->context[0] = 0;
+  embeddings->context[1] = 2;
+  embeddings->context[2] = 1;
+  embeddings->context[3] = 2;
+  mat_copy(embeddings->embeddings.value, mat_init(3, 3, (float[]){
+        0.4967, -0.1383, 0.6477,
+        -0.2509, 0.9014, 0.4640,
+        0.2472, 0.3021, -0.5494,
+  }));
+
+  for (int i = 0; i < times; i++) {
+    Tensor* out = node_forward(&arena.alloc, embeddings, &tape);
+
+    ASSERT_VEC_EQ(out->value, ((float[]) {
+          0.4967, -0.1383, 0.6477, // 0
+          0.2472, 0.3021, -0.5494, // 2
+          -0.2509, 0.9014, 0.4640, // 1
+          0.2472, 0.3021, -0.5494, // 2
+    }));
+
+    mat_copy(out->grad, mat_init(1, 12, (float[]){
+          1, 2, 3,    // 0
+          4, 5, 6,    // 2
+          7, 8, 9,    // 1
+          10, 11, 12, // 2
+    }));
+  }
+  node_backward(&tape);
+
+  ASSERT_VEC_EQ(mat_row(embeddings->embeddings.grad, 0), ((float[]) {0, 0, 0}));
+  ASSERT_VEC_EQ(mat_row(embeddings->embeddings.grad, 1), ((float[]) {7*times, 8*times, 9*times}));
+  ASSERT_VEC_EQ(mat_row(embeddings->embeddings.grad, 2), ((float[]) {(4+10)*times, (5+11)*times, (6+12)*times}));
+}
+
+void test_composed(int times) {
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
+
+  Node* input =  create_variable(1, 3);
+  Node* target =  create_variable(1, 2);
+  Node* linear = create_linear(input, 3, 2);
+  Node* relu = create_relu(linear);
+  Node* softmax = create_softmax_cross_entropy(relu, target);
+
+  Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
+
+  mat_copy(input->value.value, mat_init(1, 3, (float[]){0.4967, -0.1383, 0.6477}));
+  mat_copy(linear->weight.value, mat_init(3, 2, (float[]){
+        1.5230, -0.2342,
+        -0.2341, 1.5792,
+        0.7674, -0.4695
+  }));
+  mat_copy(linear->bias.value, mat_init(1, 2, (float[]){0.5426, -0.4634}));
+  mat_copy(target->value.value, mat_init(1, 2, (float[]){0, 1}));
+
+  for (int i = 0; i < times; i++) {
+    Tensor* out = node_forward(&arena.alloc, softmax, &tape);
+
+    ASSERT_VEC_EQ(out->value, ((float[]) {1.9775}));
+
+    mat_copy(out->grad, mat_init(1, 1, (float[]){1}));
+  }
+
+  node_backward(&tape);
+
+  ASSERT_VEC_EQ(input->value.grad, ((float[]) {1.3121888733*times, -0.2016964149*times, 0.6611785126*times}));
+  ASSERT_VEC_EQ(mat_row(linear->weight.grad, 0), ((float[]) {+0.4279479599*times, 0.0000}));
+  ASSERT_VEC_EQ(mat_row(linear->weight.grad, 1), ((float[]) {-0.1191568375*times, 0.0000}));
+  ASSERT_VEC_EQ(mat_row(linear->weight.grad, 2), ((float[]) {+0.5580473709*times, 0.0000}));
+  ASSERT_VEC_EQ(linear->bias.grad, ((float[]) {+0.8615821838*times, 0.0000}));
+}
+
+void test_multiply(int times) {
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
+
+  Node* u =  create_variable(2, 2);
+  Node* v =  create_variable(2, 1);
+  Node* multiply = create_multiply(u, v);
+
+  Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
+
+  mat_copy(u->value.value, mat_init(2, 2, (float[]){
+        0.4967, -0.1383,
+        0.6477, +0.9014,
+  }));
+  mat_copy(v->value.value, mat_init(2, 1, (float[]){
+        2,
+        2,
+  }));
+
+  for (int i = 0; i < times; i++) {
+    Tensor* out = node_forward(&arena.alloc, multiply, &tape);
+
+    ASSERT_VEC_EQ(mat_row(out->value, 0), ((float[]) {+0.71679997}));
+    ASSERT_VEC_EQ(mat_row(out->value, 1), ((float[]) {+3.09820008}));
+
+    mat_copy(out->grad, mat_init(2, 1, (float[]){
+          -0.2509,
+          0.4640,
+    }));
+  }
+
+  node_backward(&tape);
+
+  ASSERT_VEC_EQ(mat_row(u->value.grad, 0), ((float[]){-0.5018*times, -0.5018*times}));
+  ASSERT_VEC_EQ(mat_row(u->value.grad, 1), ((float[]){+0.9280*times, +0.9280*times}));
+
+  ASSERT_VEC_EQ(mat_row(v->value.grad, 0), ((float[]){0.1759108925*times}));
+  ASSERT_VEC_EQ(mat_row(v->value.grad, 1), ((float[]){0.4529494476*times}));
+}
+
+void test_multiply_add(int times) {
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
+
+  Node* u =  create_variable(2, 2);
+  Node* v =  create_variable(2, 1);
+  Node* multiply = create_multiply(u, v);
+  Node* add = create_add(multiply, v);
+
+  Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
+
+  mat_copy(u->value.value, mat_init(2, 2, (float[]){
+        0.4967, -0.1383,
+        0.6477, +0.9014,
+  }));
+  mat_copy(v->value.value, mat_init(2, 1, (float[]){
+        2,
+        2,
+  }));
+
+  for (int i = 0; i < times; i++) {
+    Tensor* out = node_forward(&arena.alloc, add, &tape);
+
+    ASSERT_VEC_EQ(mat_row(out->value, 0), ((float[]) {+0.71679997 + 2}));
+    ASSERT_VEC_EQ(mat_row(out->value, 1), ((float[]) {+3.09820008 + 2}));
+
+    mat_copy(out->grad, mat_init(2, 1, (float[]){
+          -0.2509,
+          0.4640,
+    }));
+  }
+
+  node_backward(&tape);
+
+  ASSERT_VEC_EQ(mat_row(u->value.grad, 0), ((float[]){-0.5018*times, -0.5018*times}));
+  ASSERT_VEC_EQ(mat_row(u->value.grad, 1), ((float[]){+0.9280*times, +0.9280*times}));
+
+  ASSERT_VEC_EQ(mat_row(v->value.grad, 0), ((float[]){(0.1759108925 - 0.2509)*times}));
+  ASSERT_VEC_EQ(mat_row(v->value.grad, 1), ((float[]){(0.4529494476 + 0.4640)*times}));
+}
 
 int main(void) {
   srand(0);
-  test_foobar();
 
-  // test_add();
-  // test_sub();
-  // test_mult();
-  // test_div();
-  // test_linear();
-  // test_sigmoid();
-  // test_softmax();
-  // test_relu();
-  // test_square();
-  // test_cube();
-  // test_exp();
-  // test_negate();
-  // test_constant();
-  // test_variable();
-  // test_nmist();
+  test_relu(100);
+  test_linear(100);
+  test_softmax(100);
+  test_softmax_cross_entropy(100);
+  test_embeddings(100);
+  test_composed(100);
+  test_multiply(100);
+  test_multiply_add(100);
+
+  printf("All tests passed\n");
 
   return 0;
 }

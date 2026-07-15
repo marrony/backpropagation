@@ -43,7 +43,7 @@ const char *training_text[] = {
 };
 
 #define CONTEXT 12
-#define EMBED_DIM 12
+#define EMBED_DIM 16
 #define INPUT_DIM (CONTEXT * EMBED_DIM)
 #define MAX_GENERATE 500
 
@@ -106,15 +106,17 @@ void load_model(void) {
   // He (Kaiming): sqrt(2.0 / x)
   // Used For: Layers followed by ReLU or LeakyReLU.
 
-  float std_embeddings = sqrtf(1.0f / INPUT_DIM);
-  float std_linear = sqrtf(2.0f / INPUT_DIM);
-  float std_hidden = sqrtf(1.0f / (hidden_dim+MAX_VOCAB));
+  float std_embeddings = sqrtf(6.0f / (MAX_VOCAB+EMBED_DIM)) * 1;
+  float std_linear = sqrtf(6.0f / (EMBED_DIM+hidden_dim)) * 1;
+  float std_hidden = sqrtf(6.0f / (hidden_dim+MAX_VOCAB)) * 1;
+
+  printf("inits = %f %f %f\n", std_embeddings, std_linear, std_hidden);
 
   // Initialize embeddings and weights with small random values
-  mat_rand_normal(embedding_node->embeddings.value, 0, std_embeddings);
-  mat_rand_normal(linear_node->weight.value, 0, std_linear);
+  mat_rand_uniform(embedding_node->embeddings.value, -std_embeddings, +std_embeddings);
+  mat_rand_uniform(linear_node->weight.value, -std_linear, +std_linear);
   mat_zero(linear_node->bias.value);
-  mat_rand_normal(hidden1_node->weight.value, 0, std_hidden);
+  mat_rand_uniform(hidden1_node->weight.value, -std_hidden, +std_hidden);
   mat_zero(hidden1_node->bias.value);
 
   FILE* fp = fopen("models/gentext.bin", "rb");
@@ -209,18 +211,17 @@ void smooth_target(NMatrix target, float eps) {
 void init_model(Sample_Array samples) {
   load_model();
 
-  NMatrix dL = mat_alloc(1, MAX_VOCAB);
-
   float cost = 0;
   int epoch = 0;
 
   Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
 
-  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 2*1024*1024);
 
   Optimizer optimizer = {
     .tensors = ARRAY_CREATE(&mallocator.alloc),
     .history = ARRAY_CREATE(&mallocator.alloc),
+    .second = ARRAY_CREATE(&mallocator.alloc),
     .learning_rate = 0.05f,
   };
 
@@ -253,6 +254,8 @@ void init_model(Sample_Array samples) {
       // }
       // printf(" => [%s]\n", vocabulary[sequence[i]].token);
 
+      int32_t tokens_in_batch[MAX_VOCAB] = {0};
+
       size_t current_batch_size = samples.count - i < batch_size ? samples.count - i : batch_size;
 
       tape.count = 0;
@@ -263,6 +266,9 @@ void init_model(Sample_Array samples) {
         // Prepare training input vector from embeddings
         memcpy(embedding_node->context, sample.context, sizeof(sample.context));
 
+        for (int i = 0; i < CONTEXT; i++)
+          tokens_in_batch[sample.context[i]] += 1;
+
         assert(sample.target != PAD_TOKEN);
 
         // Labels for training: one-hot target
@@ -270,7 +276,7 @@ void init_model(Sample_Array samples) {
         VEC_AT(target_node->value.value, sample.target) = 1.0f;
 
         // smoothed target
-        smooth_target(target_node->value.value, 0.1);
+        // smooth_target(target_node->value.value, 0.1);
 
         // Forward pass
         int64_t f_us = get_system_micros();
@@ -299,11 +305,25 @@ void init_model(Sample_Array samples) {
       node_backward(&tape);
       time_backward += get_system_micros() - b_us;
 
+      // mat_println(mat_row(embedding_node->embeddings.value, 12), 5);
+      // mat_println(mat_row(embedding_node->embeddings.grad, 12), 5);
+
       // printf("before ="); mat_println(mat_row(embedding_node->weight.value, 502), 5);
+
+      // NMatrix avg = mat_alloc2(&arena.alloc, 1, embedding_node->embeddings.grad.cols);
+      // mat_zero(avg);
+      // mat_avg_row(avg, embedding_node->embeddings.grad);
+      //
+      // for (int z = 0; z < softmax_node->weight.grad.rows; z++)
+      //   mat_println(mat_row(softmax_node->weight.grad, z), 5);
+      //
+      // mat_println(avg, 5);
+      //
+      // exit(0);
 
       // Update the parameters
       int64_t u_us = get_system_micros();
-      update_grads_rms_prop(&optimizer, current_batch_size);
+      update_grads_adam(&optimizer, epoch, &embedding_node->embeddings, tokens_in_batch);
       upd_weights += get_system_micros() - u_us;
 
       // printf("after  ="); mat_println(mat_row(embedding_node->weight.value, 502), 5);
@@ -311,6 +331,10 @@ void init_model(Sample_Array samples) {
       // printf("%f\n", cost / current_batch_size);
 
       // exit(0);
+
+      // size_t actual = SAVE(&arena.alloc);
+      // size_t bytes_allocated = actual - saved;
+      // printf("%zu %zu = %zu kb\n", saved, actual, bytes_allocated / 1024);
 
       RESTORE(&arena.alloc, saved);
     }
@@ -337,8 +361,6 @@ void init_model(Sample_Array samples) {
   save_model();
 
   printf("\n");
-
-  mat_free(dL);
 }
 
 int sample(NMatrix probs) {

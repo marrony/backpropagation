@@ -36,6 +36,18 @@ float rand_uniform(void) {
   return rand() / (float)RAND_MAX;
 }
 
+float rand_uniform2(float min, float max) {
+  float s = rand_uniform();
+  return min + s * (max - min);
+}
+
+void mat_rand_uniform(NMatrix mat, float min, float max) {
+  for (int i = 0; i < mat.rows; i++) {
+    for (int j = 0; j < mat.cols; j++)
+      MAT_AT(mat, i, j) = rand_uniform2(min, max);
+  }
+}
+
 // Gaussian random using Marsaglia Polar Method
 // Generates two independent normal samples at once (Box-Muller style)
 // Uses rejection sampling: samples u,v ~ U[-1,1], accepts if u²+v² < 1
@@ -148,6 +160,11 @@ void assert_eq(const char* func, const char* file, int line, float a, float b) {
 }
 
 void assert_vec_eq(const char* func, const char* file, int line, NMatrix va, const float* vb) {
+  if (va.rows != 1 || va.cols <= 0) {
+    fprintf(stderr, "\nInvalid vector: function %s, file %s, line %d.\n", func, file, line);
+    exit(1);
+  }
+
   for (int i = 0; i < va.cols; i++) {
     float a = VEC_AT(va, i);
     float b = vb[i];
@@ -344,24 +361,21 @@ void mat_sum_row(NMatrix dst, NMatrix src) {
 void mat_mult(NMatrix dst, NMatrix a, NMatrix b) {
   ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.rows, a.cols, b.rows, b.cols);
 
-#if 1
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = mat_dot_row_col(a, b, i, j);
     }
   }
-#else
-  memset(dst.elems, 0, sizeof(float)*dst.rows*dst.cols);
-  for (int i = 0; i < a.rows; i++) {
-    for (int j = 0; j < a.cols; j++) {
-      float v = MAT_AT(a, i, j);
+}
 
-      for (int k = 0; k < b.cols; k++) {
-        MAT_AT(dst, i, k) +=  v * MAT_AT(b, j, k);
-      }
+void mat_mult_acc(NMatrix dst, NMatrix a, NMatrix b) {
+  ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.rows, a.cols, b.rows, b.cols);
+
+  for (int i = 0; i < dst.rows; i++) {
+    for (int j = 0; j < dst.cols; j++) {
+      MAT_AT(dst, i, j) += mat_dot_row_col(a, b, i, j);
     }
   }
-#endif
 }
 
 /**
@@ -845,6 +859,14 @@ int mat_row_argmax(NMatrix row) {
   return max_index;
 }
 
+void mat_avg_row(NMatrix avg, NMatrix m) {
+  for (int z = 0; z < m.rows; z++) {
+    mat_add(avg, avg, mat_row(m, z));
+  }
+
+  mat_scale(avg, avg, 1.0f / m.rows);
+}
+
 /**
  * Set matrix to identity matrix.
  * 
@@ -987,11 +1009,11 @@ void dsigmoid(NMatrix dst, NMatrix h, NMatrix dL_dh) {
 }
 
 static inline float reluf(float x) {
-  return x > 0 ? x : 0;
+  return x > 0 ? x : 0.01*x;
 }
 
 static inline float dreluf(float x) {
-  return x > 0 ? 1 : 0;
+  return x > 0 ? 1 : 0.01;
 }
 
 // Relu function
@@ -1015,22 +1037,24 @@ void drelu(NMatrix dst, NMatrix h, NMatrix dL_dh) {
 //           exp(x[i]/t)
 // returns --------------
 //         sum(exp(x[j]/t))
-void softmax_temperature(NMatrix dst, NMatrix x, float t) {
+float softmax_temperature(NMatrix dst, NMatrix x, float t) {
   assert(x.rows == 1);
   assert(dst.rows == 1);
   assert(t > 0.0f);
 
-  float m = VEC_AT(x, 0);
+  float max_logit = VEC_AT(x, 0);
 
   for (int j = 0; j < x.cols; j++) {
-    if (VEC_AT(x, j) > m) m = VEC_AT(x, j);
+    float logit = VEC_AT(x, j);
+    if (logit > max_logit) max_logit = logit;
   }
 
   float inv_t = 1.0f / t;
 
   float sum = 0;
   for (int j = 0; j < x.cols; j++) {
-    float e = expf((VEC_AT(x, j) - m) * inv_t);
+    float logit = VEC_AT(x, j);
+    float e = expf((logit - max_logit) * inv_t);
     VEC_AT(dst, j) = e;
     sum += e;
   }
@@ -1039,6 +1063,8 @@ void softmax_temperature(NMatrix dst, NMatrix x, float t) {
   for (int j = 0; j < x.cols; j++) {
     VEC_AT(dst, j) *= inv_sum;
   }
+
+  return max_logit + logf(sum);
 }
 
 // h = Softmax(z, t)
