@@ -1040,34 +1040,79 @@ void drelu(NMatrix dst, NMatrix h, NMatrix dL_dh) {
 //           exp(x[i]/t)
 // returns --------------
 //         sum(exp(x[j]/t))
-float softmax_temperature(NMatrix dst, NMatrix x, float t) {
-  assert(x.rows == 1);
-  assert(dst.rows == 1);
-  assert(t > 0.0f);
+void softmax_temperature(
+    NMatrix probs,
+    NMatrix logits,
+    float temperature
+) {
+  assert(logits.rows == 1);
+  assert(probs.rows == 1);
+  assert(temperature > 0.0f);
 
-  float max_logit = VEC_AT(x, 0);
+  float inv_t = 1.0f / temperature;
+  float max_logit = -FLT_MAX;
 
-  for (int j = 0; j < x.cols; j++) {
-    float logit = VEC_AT(x, j);
+  // 1. Find the maximum scaled logit for numerical stability
+  for (int j = 0; j < logits.cols; j++) {
+    float logit = VEC_AT(logits, j) * inv_t;
     if (logit > max_logit) max_logit = logit;
   }
 
-  float inv_t = 1.0f / t;
-
-  float sum = 0;
-  for (int j = 0; j < x.cols; j++) {
-    float logit = VEC_AT(x, j);
-    float e = expf((logit - max_logit) * inv_t);
-    VEC_AT(dst, j) = e;
-    sum += e;
+  // 2. Compute the sum of exponentials (shifted)
+  float sum_exp = 0;
+  for (int j = 0; j < logits.cols; j++) {
+    float logit = VEC_AT(logits, j) * inv_t;
+    sum_exp += expf(logit - max_logit);
   }
 
-  float inv_sum = 1.0f / (sum + 1e-15f);
-  for (int j = 0; j < x.cols; j++) {
-    VEC_AT(dst, j) *= inv_sum;
+  // 3. Calculate the log of the sum of exponentials
+  float log_sum_exp = max_logit + logf(sum_exp);
+
+  // 4. Calculate Forward Softmax Probabilities
+  for (int j = 0; j < logits.cols; j++) {
+    float logit = VEC_AT(logits, j) * inv_t - log_sum_exp;
+    VEC_AT(probs, j) = expf(logit);
+  }
+}
+
+float softmax_cross_entropy_temperature(
+    NMatrix probs,
+    NMatrix logits,
+    NMatrix target,
+    float temperature
+) {
+  assert(logits.rows == 1);
+  assert(probs.rows == 1);
+  assert(temperature > 0.0f);
+
+  float inv_t = 1.0f / temperature;
+  float max_logit = -FLT_MAX;
+
+  // 1. Find the maximum scaled logit for numerical stability
+  for (int j = 0; j < logits.cols; j++) {
+    float logit = VEC_AT(logits, j) * inv_t;
+    if (logit > max_logit) max_logit = logit;
   }
 
-  return max_logit + logf(sum);
+  // 2. Compute the sum of exponentials (shifted)
+  float sum_exp = 0;
+  for (int j = 0; j < logits.cols; j++) {
+    float logit = VEC_AT(logits, j) * inv_t;
+    sum_exp += expf(logit - max_logit);
+  }
+
+  // 3. Calculate the log of the sum of exponentials
+  float log_sum_exp = max_logit + logf(sum_exp);
+
+  // 4. Calculate Forward Softmax Probabilities and Cross-Entropy Loss
+  float loss = 0;
+  for (int j = 0; j < logits.cols; j++) {
+    float logit = VEC_AT(logits, j) * inv_t - log_sum_exp;
+    VEC_AT(probs, j) = expf(logit);
+    loss -= VEC_AT(target, j) * logit;
+  }
+
+  return loss;
 }
 
 // h = Softmax(z, t)

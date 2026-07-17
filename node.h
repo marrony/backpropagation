@@ -53,7 +53,7 @@ static const char* Node_Type_Str[__MAX_NODES+1] = {
   STR(NODE_SUB),
 };
 
-#define MAX_INPUTS 16
+#define MAX_INPUTS 4
 
 typedef struct Node Node;
 typedef struct Tensor Tensor;
@@ -402,15 +402,15 @@ Tensor* node_forward(Allocator* alloc, Node* node, Tape_Node_Array* tape) {
     case NODE_SOFTMAX: {
       // f(x) = softmax(x) (row-wise normalization)
       // softmax(x)_j = exp(x_j) / Σ_k exp(x_k)
-      Tensor* x_tensor = node_forward(alloc, node->input[0], tape);
-      tape_node.input[0] = x_tensor;
-      out->value = mat_alloc2(alloc, x_tensor->value.rows, x_tensor->value.cols);
-      out->grad = mat_alloc2(alloc, x_tensor->value.rows, x_tensor->value.cols);
+      Tensor* logits_tensor = node_forward(alloc, node->input[0], tape);
+      tape_node.input[0] = logits_tensor;
+      out->value = mat_alloc2(alloc, logits_tensor->value.rows, logits_tensor->value.cols);
+      out->grad = mat_alloc2(alloc, logits_tensor->value.rows, logits_tensor->value.cols);
 
       for (int i = 0; i < out->value.rows; i++) {
         softmax_temperature(
             mat_row(out->value, i),
-            mat_row(x_tensor->value, i),
+            mat_row(logits_tensor->value, i),
             node->temperature
         );
       }
@@ -418,53 +418,33 @@ Tensor* node_forward(Allocator* alloc, Node* node, Tape_Node_Array* tape) {
     }
 
     case NODE_SOFTMAX_CROSS_ENTROPY: {
-      Tensor* x_tensor = node_forward(alloc, node->input[0], tape);
+      Tensor* logits_tensor = node_forward(alloc, node->input[0], tape);
       Tensor* target_tensor = ALLOC(alloc, sizeof(Tensor)).void_ptr;
-      Tensor* logits_tensor = ALLOC(alloc, sizeof(Tensor)).void_ptr;
+      Tensor* probs_tensor = ALLOC(alloc, sizeof(Tensor)).void_ptr;
 
-      target_tensor->value = mat_alloc2(alloc, x_tensor->value.rows, x_tensor->value.cols);
+      target_tensor->value = mat_alloc2(alloc, logits_tensor->value.rows, logits_tensor->value.cols);
       target_tensor->grad = NULL_MATRIX;
       mat_copy(target_tensor->value, node->target);
 
-      logits_tensor->value = mat_alloc2(alloc, x_tensor->value.rows, x_tensor->value.cols);
-      logits_tensor->grad = NULL_MATRIX;
+      probs_tensor->value = mat_alloc2(alloc, logits_tensor->value.rows, logits_tensor->value.cols);
+      probs_tensor->grad = NULL_MATRIX;
 
-      tape_node.input[0] = x_tensor;
+      tape_node.input[0] = logits_tensor;
       tape_node.input[1] = target_tensor;
-      tape_node.input[2] = logits_tensor;
+      tape_node.input[2] = probs_tensor;
 
-      int batch_size = logits_tensor->value.rows;
-      int feature_size = logits_tensor->value.cols;
+      int batch_size = probs_tensor->value.rows;
 
       out->value = mat_alloc2(alloc, batch_size, 1);
       out->grad = mat_alloc2(alloc, batch_size, 1);
       mat_zero(out->grad);
 
-      float inv_t = 1.0f / node->temperature;
-
       for (int b = 0; b < batch_size; b++) {
-        float log_sum = softmax_temperature(
+        MAT_AT(out->value, b, 0) = softmax_cross_entropy_temperature(
+            mat_row(probs_tensor->value, b),
             mat_row(logits_tensor->value, b),
-            mat_row(x_tensor->value, b),
-            node->temperature
-        );
-      (void)inv_t;
-      (void)log_sum;
-
-        float loss = 0;
-        for (int f = 0; f < feature_size; f++) {
-          float target = MAT_AT(target_tensor->value, b, f);
-          if (target > 0) {
-            float prob = MAT_AT(logits_tensor->value, b, f);
-            if (prob < 1e-7f) prob = 1e-7f;
-            loss -= target * logf(prob);
-
-            // float logit = MAT_AT(x_tensor->value, b, f);
-            // loss += target * (log_sum - logit * inv_t);
-          }
-        }
-
-        MAT_AT(out->value, b, 0) = loss;
+            mat_row(target_tensor->value, b),
+            node->temperature);
       }
 
       break;
@@ -760,48 +740,26 @@ void node_backward(Tape_Node_Array* tape) {
     }
 
     case NODE_SOFTMAX_CROSS_ENTROPY: {
-      Tensor* x_tensor = tape_node.input[0];
+      Tensor* logits_tensor = tape_node.input[0];
       Tensor* target_tensor = tape_node.input[1];
-      Tensor* logits_tensor = tape_node.input[2];
+      Tensor* probs_tensor = tape_node.input[2];
 
       assert(dL.rows == 1);
       assert(dL.cols == 1);
-      assert(x_tensor->grad.rows == logits_tensor->value.rows);
-      assert(x_tensor->grad.cols == logits_tensor->value.cols);
-      assert(x_tensor->grad.rows == target_tensor->value.rows);
-      assert(x_tensor->grad.cols == target_tensor->value.cols);
+      assert(logits_tensor->grad.rows == probs_tensor->value.rows);
+      assert(logits_tensor->grad.cols == probs_tensor->value.cols);
+      assert(logits_tensor->grad.rows == target_tensor->value.rows);
+      assert(logits_tensor->grad.cols == target_tensor->value.cols);
 
       float inv_temperature = 1.0f / node->temperature;
       float dL_dLoss = MAT_AT(dL, 0, 0);
 
-      // int argmax = mat_row_argmax(target_tensor->value);
-      // g_argmax = argmax;
-
-      // printf("x-entropy = %f %f\n", inv_temperature, dL_dLoss);
-      // printf("grad %f\n", VEC_AT(x_tensor->grad, argmax));
-
       // 1/t * (y - target) * dL
-      for (int i = 0; i < x_tensor->grad.cols; i++) {
-        float prob = VEC_AT(logits_tensor->value, i);
+      for (int i = 0; i < logits_tensor->grad.cols; i++) {
+        float prob = VEC_AT(probs_tensor->value, i);
         float target = VEC_AT(target_tensor->value, i);
-        VEC_AT(x_tensor->grad, i) += dL_dLoss * inv_temperature * (prob - target);
+        VEC_AT(logits_tensor->grad, i) += dL_dLoss * inv_temperature * (prob - target);
       }
-
-      // printf("DEBUG: dL_dLoss value is: %f\n", dL_dLoss);
-      // printf("DEBUG: First prob: %f, First target: %f, x tensor: %f\n",
-      //     VEC_AT(logits_tensor->value, argmax),
-      //     VEC_AT(target_tensor->value, argmax),
-      //     VEC_AT(x_tensor->grad, argmax));
-      
-      // printf("target %f = ", VEC_AT(target_tensor->value, argmax));
-      // mat_println(mat_row_slice(target_tensor->value, 0, 8), 5);
-      //
-      // printf("prob   %f = ", VEC_AT(logits_tensor->value, argmax));
-      // mat_println(mat_row_slice(logits_tensor->value, 0, 8), 5);
-      //
-      // printf("grad %f = ", VEC_AT(x_tensor->grad, argmax));
-      // printf("sof = "); mat_println(mat_row_slice(x_tensor->grad, 0, 10), 5);
-      // mat_println(x_tensor->grad, 5);
       break;
     }
 
