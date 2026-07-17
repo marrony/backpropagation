@@ -17,11 +17,12 @@ CFLAGS_DEBUG=-std=c17 -Werror -Wall -Wextra -Wno-initializer-overrides -pedantic
 
 CFLAGS_RELEASE=-std=c17 -Werror -Wall -Wextra -Wno-initializer-overrides -I./raylib-5 -O3 -ffast-math
 
-CFLAGS=$(CFLAGS_RELEASE)
+CFLAGS=$(CFLAGS_RELEASE) -DPCRE2_CODE_UNIT_WIDTH=8 $(shell pkg-config --cflags libpcre2-8) 
 
 LDFLAGS=-L ./raylib-5 -lraylib -framework Foundation \
     -framework CoreServices -framework CoreGraphics \
-    -framework AppKit -framework IOKit
+    -framework AppKit -framework IOKit \
+		$(shell pkg-config --libs libpcre2-8)
 
 all: $(PROGS)
 
@@ -32,8 +33,8 @@ generated/vocab.h: generated bin/genvocab
 	cp generated/vocab.h generated/vocab_old.h
 	./bin/genvocab > generated/vocab.h
 
-$(BINDIR)/genvocab: genvocab.c tokenizer.h generated/alice.h generated/vocab.h | $(BINDIR) raylib-5/libraylib.a
-	cc $(CFLAGS) -DPCRE2_CODE_UNIT_WIDTH=8 $(shell pkg-config --libs libpcre2-8) $< -o $@ $(LDFLAGS) $(shell pkg-config --cflags libpcre2-8)
+$(BINDIR)/genvocab: genvocab.c tokenizer.h generated/alice.h generated/vocab.h | $(BINDIR)
+	cc $(CFLAGS) $< -o $@ $(LDFLAGS)
 
 $(BINDIR)/cnn-node: cnn-node.c
 	echo "cnn-node.c is broken"
