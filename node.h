@@ -319,8 +319,10 @@ void register_tensor(Optimizer* opt, Tensor* tensor) {
   array_append(&opt->second, second);
 }
 
-Tensor* node_forward(Allocator* alloc, Node* node, Tape_Node_Array* tape) {
-  Tensor* out = (Tensor*)ALLOC(alloc, sizeof(Tensor)).ptr;
+Tensor* node_forward(Arena_Allocator* arena, Node* node, Tape_Node_Array* tape) {
+  size_t saved = SAVE(&arena->alloc);
+
+  Tensor* out = (Tensor*)ALLOC(&arena->alloc, sizeof(Tensor)).ptr;
   memset(out, 0, sizeof(Tensor));
   out->value = NULL_MATRIX;
   out->grad = NULL_MATRIX;
@@ -333,39 +335,29 @@ Tensor* node_forward(Allocator* alloc, Node* node, Tape_Node_Array* tape) {
   switch (node->type) {
     case NODE_CONSTANT:
     case NODE_VARIABLE:
-      out->value = mat_alloc2(alloc, node->value.value.rows, node->value.value.cols);
-      out->grad = mat_alloc2(alloc, node->value.grad.rows, node->value.grad.cols);
-      mat_copy(out->value, node->value.value);
-      mat_zero(out->grad);
-
+      // delete Tensor allocated
+      RESTORE(&arena->alloc, saved);
       out = &node->value;
       break;
 
     case NODE_EMBEDDING: {
       int cols = node->embeddings.value.cols;
-      out->value = mat_alloc2(alloc, 1, node->context_size*cols);
-      out->grad = mat_alloc2(alloc, 1, node->context_size*cols);
+      out->value = mat_alloc2(&arena->alloc, 1, node->context_size*cols);
+      out->grad = mat_alloc2(&arena->alloc, 1, node->context_size*cols);
       mat_zero(out->grad);
 
-      int32_t* context = (int32_t*)ALLOC(alloc, sizeof(int32_t)*node->context_size).ptr;
+      int32_t* context = (int32_t*)ALLOC(&arena->alloc, sizeof(int32_t)*node->context_size).ptr;
       memcpy(context, node->context, sizeof(int32_t)*node->context_size);
       
       tape_node.input[0] = (Tensor*)context;
 
       for (size_t t = 0; t < node->context_size; t++) {
-        // printf("emb(%-3d): %-3zu %-3zu = ", context[t], t*cols, t*cols + cols);
-        // mat_print(mat_row_slice(out->value, t*cols, cols), 5);
-        // mat_println(mat_row(node->weight.value, context[t]), 5);
-
         mat_copy(
             mat_row_slice(mat_row(out->value, 0), t*cols, cols),
             mat_row(node->embeddings.value, context[t])
         );
       }
 
-      // printf("EMBEDDING OUTPUT MATRIX AUDIT:\n");
-      // mat_println(out->value, 5);
-      
       break;
     }
 
@@ -373,14 +365,12 @@ Tensor* node_forward(Allocator* alloc, Node* node, Tape_Node_Array* tape) {
       // f(x) = x*W + b (standard convention: W is N×M, x is 1×N, output is 1×M)
       // x*W: [1×N] * [N×M] = [1×M]
       // x*W + b: [1×M] + [1×M] = [1×M]
-      Tensor* x_tensor = node_forward(alloc, node->input[0], tape);
+      Tensor* x_tensor = node_forward(arena, node->input[0], tape);
 
       tape_node.input[0] = x_tensor;
-      out->value = mat_alloc2(alloc, x_tensor->value.rows, node->weight.value.cols);
-      out->grad = mat_alloc2(alloc, x_tensor->value.rows, node->weight.value.cols);
+      out->value = mat_alloc2(&arena->alloc, x_tensor->value.rows, node->weight.value.cols);
+      out->grad = mat_alloc2(&arena->alloc, x_tensor->value.rows, node->weight.value.cols);
       mat_zero(out->grad);
-
-      // mat_mult_add(out->value, x_tensor->value, node->weight.value, node->bias.value);
 
       // broadcasting the bias
       mat_mult(out->value, x_tensor->value, node->weight.value);
@@ -394,7 +384,7 @@ Tensor* node_forward(Allocator* alloc, Node* node, Tape_Node_Array* tape) {
     case NODE_SIGMOID: {
       // f(x) = σ(x) (element-wise sigmoid)
       // σ(x) = 1 / (1 + e^(-x))
-      Tensor* x_tensor = node_forward(alloc, node->input[0], tape);
+      Tensor* x_tensor = node_forward(arena, node->input[0], tape);
       sigmoid(out->value, x_tensor->value);
       break;
     }
@@ -402,10 +392,10 @@ Tensor* node_forward(Allocator* alloc, Node* node, Tape_Node_Array* tape) {
     case NODE_SOFTMAX: {
       // f(x) = softmax(x) (row-wise normalization)
       // softmax(x)_j = exp(x_j) / Σ_k exp(x_k)
-      Tensor* logits_tensor = node_forward(alloc, node->input[0], tape);
+      Tensor* logits_tensor = node_forward(arena, node->input[0], tape);
       tape_node.input[0] = logits_tensor;
-      out->value = mat_alloc2(alloc, logits_tensor->value.rows, logits_tensor->value.cols);
-      out->grad = mat_alloc2(alloc, logits_tensor->value.rows, logits_tensor->value.cols);
+      out->value = mat_alloc2(&arena->alloc, logits_tensor->value.rows, logits_tensor->value.cols);
+      out->grad = mat_alloc2(&arena->alloc, logits_tensor->value.rows, logits_tensor->value.cols);
 
       for (int i = 0; i < out->value.rows; i++) {
         softmax_temperature(
@@ -418,15 +408,15 @@ Tensor* node_forward(Allocator* alloc, Node* node, Tape_Node_Array* tape) {
     }
 
     case NODE_SOFTMAX_CROSS_ENTROPY: {
-      Tensor* logits_tensor = node_forward(alloc, node->input[0], tape);
-      Tensor* target_tensor = ALLOC(alloc, sizeof(Tensor)).void_ptr;
-      Tensor* probs_tensor = ALLOC(alloc, sizeof(Tensor)).void_ptr;
+      Tensor* logits_tensor = node_forward(arena, node->input[0], tape);
+      Tensor* target_tensor = ALLOC(&arena->alloc, sizeof(Tensor)).void_ptr;
+      Tensor* probs_tensor = ALLOC(&arena->alloc, sizeof(Tensor)).void_ptr;
 
-      target_tensor->value = mat_alloc2(alloc, logits_tensor->value.rows, logits_tensor->value.cols);
+      target_tensor->value = mat_alloc2(&arena->alloc, logits_tensor->value.rows, logits_tensor->value.cols);
       target_tensor->grad = NULL_MATRIX;
       mat_copy(target_tensor->value, node->target);
 
-      probs_tensor->value = mat_alloc2(alloc, logits_tensor->value.rows, logits_tensor->value.cols);
+      probs_tensor->value = mat_alloc2(&arena->alloc, logits_tensor->value.rows, logits_tensor->value.cols);
       probs_tensor->grad = NULL_MATRIX;
 
       tape_node.input[0] = logits_tensor;
@@ -435,8 +425,8 @@ Tensor* node_forward(Allocator* alloc, Node* node, Tape_Node_Array* tape) {
 
       int batch_size = probs_tensor->value.rows;
 
-      out->value = mat_alloc2(alloc, batch_size, 1);
-      out->grad = mat_alloc2(alloc, batch_size, 1);
+      out->value = mat_alloc2(&arena->alloc, batch_size, 1);
+      out->grad = mat_alloc2(&arena->alloc, batch_size, 1);
       mat_zero(out->grad);
 
       for (int b = 0; b < batch_size; b++) {
@@ -453,10 +443,10 @@ Tensor* node_forward(Allocator* alloc, Node* node, Tape_Node_Array* tape) {
     case NODE_RELU: {
       // f(x) = ReLU(x) (element-wise rectified linear unit)
       // ReLU(x) = max(0, x)
-      Tensor* x_tensor = node_forward(alloc, node->input[0], tape);
+      Tensor* x_tensor = node_forward(arena, node->input[0], tape);
       tape_node.input[0] = x_tensor;
-      out->value = mat_alloc2(alloc, x_tensor->value.rows, x_tensor->value.cols);
-      out->grad = mat_alloc2(alloc, x_tensor->value.rows, x_tensor->value.cols);
+      out->value = mat_alloc2(&arena->alloc, x_tensor->value.rows, x_tensor->value.cols);
+      out->grad = mat_alloc2(&arena->alloc, x_tensor->value.rows, x_tensor->value.cols);
       mat_zero(out->grad);
       relu(out->value, x_tensor->value);
       break;
@@ -549,12 +539,12 @@ Tensor* node_forward(Allocator* alloc, Node* node, Tape_Node_Array* tape) {
     case NODE_MULTIPLY: {
       // // f(u, v) = u * v (matrix multiplication)
       // // [N×M] * [M×P] = [N×P]
-      Tensor* u_tensor = node_forward(alloc, node->input[0], tape);
-      Tensor* v_tensor = node_forward(alloc, node->input[1], tape);
+      Tensor* u_tensor = node_forward(arena, node->input[0], tape);
+      Tensor* v_tensor = node_forward(arena, node->input[1], tape);
       tape_node.input[0] = u_tensor;
       tape_node.input[1] = v_tensor;
-      out->value = mat_alloc2(alloc, u_tensor->value.rows, v_tensor->value.cols);
-      out->grad  = mat_alloc2(alloc, u_tensor->value.rows, v_tensor->value.cols);
+      out->value = mat_alloc2(&arena->alloc, u_tensor->value.rows, v_tensor->value.cols);
+      out->grad  = mat_alloc2(&arena->alloc, u_tensor->value.rows, v_tensor->value.cols);
       mat_zero(out->grad);
       mat_mult(out->value, u_tensor->value, v_tensor->value);
     }
@@ -569,12 +559,12 @@ Tensor* node_forward(Allocator* alloc, Node* node, Tape_Node_Array* tape) {
 
     case NODE_ADD: {
       // // f(u, v) = u + v
-      Tensor* u_tensor = node_forward(alloc, node->input[0], tape);
-      Tensor* v_tensor = node_forward(alloc, node->input[1], tape);
+      Tensor* u_tensor = node_forward(arena, node->input[0], tape);
+      Tensor* v_tensor = node_forward(arena, node->input[1], tape);
       tape_node.input[0] = u_tensor;
       tape_node.input[1] = v_tensor;
-      out->value = mat_alloc2(alloc, u_tensor->value.rows, v_tensor->value.cols);
-      out->grad  = mat_alloc2(alloc, u_tensor->value.rows, v_tensor->value.cols);
+      out->value = mat_alloc2(&arena->alloc, u_tensor->value.rows, v_tensor->value.cols);
+      out->grad  = mat_alloc2(&arena->alloc, u_tensor->value.rows, v_tensor->value.cols);
       mat_zero(out->grad);
       mat_add(out->value, u_tensor->value, v_tensor->value);
       break;
@@ -599,67 +589,50 @@ Tensor* node_forward(Allocator* alloc, Node* node, Tape_Node_Array* tape) {
   return out;
 }
 
-// y = f(x)
-// upstream   = dL/dy
-// local      = dy/dx
+//          y = f(x)
+//   upstream = dL/dy
+//      local = dy/dx
 // downstream = dL/dx
 //
 // downstream = local * upstream
-//
-// Rule:
-// A node should never write its downstream gradient into its own memory space (node->output.grad).
-// It must write it directly into its input's gradient space (node->input[0]->output.grad).
-// Exception:
-// Variables
-//
-// void node_backward(Node* node, NMatrix dL) {
-//   Node* input_x = node->input[0]
-//
-//   NMatrix dydx = f'(x)
-//   input_x->output.grad += dydx * dL
-//
-//   node_backward(input_x, input_x->output.grad);
-// }
+//      dL/dx = dy/dx * dL/dy
 void node_backward(Tape_Node_Array* tape) {
-  // static int g_argmax = 0;
-
   if (tape->count == 0) return;
 
   Tape_Node tape_node = array_pop_last(tape);
-  Tensor* output = tape_node.output;
   Node* node = tape_node.node;
 
-  NMatrix dL = output->grad;
+  NMatrix dLdy = tape_node.output->grad;
 
   // printf("BACKWARD(%s) = [%dx%d]\n",
   //     Node_Type_Str[node->type],
-  //     output->value.rows, output->value.cols
+  //     tape_node.output->value.rows,
+  //     tape_node.output->value.cols
   // );
-  // mat_println(mat_row_slice(dL, 0, 8), 5);
 
   switch (node->type) {
     case NODE_CONSTANT:
       // upstream:
-      //   dL/d(c) = dL
+      //   dL/d(c) = dL/dy
       //
       // local:
       //   d(c)/dx = 0 (element-wise)
       //
       // downstream:
-      //   dL/dx = 0 ⊙ dL = 0 (element-wise)
+      //   dL/dx = 0 ⊙ dL/dy = 0 (element-wise)
       mat_zero(node->value.grad);
       break;
 
     case NODE_VARIABLE:
       // upstream:
-      //   dL/d(x) = dL
+      //   dL/d(x) = dL/dy
       //
       // local:
       //   d(x)/dx = I (identity, element-wise)
       //
       // downstream:
-      //   dL/dx = I ⊙ dL = dL (element-wise)
-      // mat_copy(node->value.grad, dL);
+      //   dL/dx = I ⊙ dL/dy = dL/dy (element-wise)
+      // mat_copy(node->value.grad, dLdy);
       break;
 
     case NODE_EMBEDDING: {
@@ -669,92 +642,74 @@ void node_backward(Tape_Node_Array* tape) {
       for (size_t t = 0; t < node->context_size; t++) {
         // NMatrix value = mat_row(node->embeddings.value, context[t]);
         NMatrix grad = mat_row(node->embeddings.grad, context[t]);
-        NMatrix ctx = mat_row_slice(dL, t*cols, cols);
-
-        // if (context[t] == 12) {
-        //   printf("emb(%-3d): %-3zu %-3zu\n", context[t], t*cols, t*cols + cols);
-        //   printf("value   : "); mat_println(value, 5);
-        //   printf("ctx     : "); mat_println(ctx, 5);
-        //   printf("grad    : "); mat_println(grad, 5);
-        // }
-
+        NMatrix ctx = mat_row_slice(dLdy, t*cols, cols);
         mat_add(grad, grad, ctx);
-
-        // if (context[t] == 12) {
-        //   printf("grad    : "); mat_println(grad, 5);
-        // }
       }
       break;
     }
 
     case NODE_LINEAR:
       // upstream:
-      //   dL/d(x*W + b) = dL
+      //   dL/d(x*W + b) = dL/dy
       //
       // local:
-      //   d(x*W + b)/dW = x (outer product)
-      //   d(x*W + b)/db = 1 (element-wise)
-      //   d(x*W + b)/dx = W^T (matrix transpose)
+      //   d(x*W + b)/dW = x
+      //   d(x*W + b)/db = I
+      //   d(x*W + b)/dx = W^T
       //
-      // downstream (standard convention: W is N×M, x is 1×N, dL is 1×M):
-      //   dL/dW = x^T * dL (matrix mult: [N×1] * [1×M] = [N×M])
-      //   dL/db = dL (element-wise)
-      //   dL/dx = dL * W^T (matrix mult: [1×M] * [M×N] = [1×N])
+      // downstream:
+      //   dL/dW = x^T * dL/dy (matrix mult: [P×N] * [N×M] = [P×M])
+      //   dL/db = dL/dy       (element-wise)
+      //   dL/dx = dL/dy * W^T (matrix mult: [N×M] * [M×P] = [N×P])
       //
-      // dL_dW = x^T * dL
-      mat_mult_A_transposed_and_B_acc(node->weight.grad, tape_node.input[0]->value, dL);
-      // dL_db = I * dL
-      mat_add(node->bias.grad, node->bias.grad, dL);
-      // dL_dx = dL * W^T
-      mat_mult_A_and_B_transposed_acc(tape_node.input[0]->grad, dL, node->weight.value);
-      // printf("DEBUG: dL*W^T: "); mat_println(tape_node.input[0]->grad, 5);
+      // standard convention:
+      //   x is [N×P], W is [P×M], b is [NxM], dL/dy is [N×M]
 
+      // dL_dW = x^T * dL/dy
+      mat_mult_A_transposed_and_B_acc(node->weight.grad, tape_node.input[0]->value, dLdy);
+      // dL_db = I * dL/dy
+      mat_add(node->bias.grad, node->bias.grad, dLdy);
+      // dL_dx = dL/dy * W^T
+      mat_mult_A_and_B_transposed_acc(tape_node.input[0]->grad, dLdy, node->weight.value);
       break;
 
     case NODE_SIGMOID:
-      // // upstream:
-      // //   dL/d(σ(x)) = dL
-      // //
-      // // local:
-      // //   d(σ(x))/dx = σ(x) * (1 - σ(x)) (element-wise)
-      // //
-      // // downstream:
-      // //   dL/dx = (σ(x) * (1 - σ(x))) ⊙ dL (element-wise)
-      // dsigmoid(x.grad, fwd_out.value, dL);
+      // upstream:
+      //   dL/d(σ(x)) = dL/dy
+      //
+      // local:
+      //   d(σ(x))/dx = σ(x) * (1 - σ(x)) (element-wise)
+      //
+      // downstream:
+      //   dL/dx = (σ(x) * (1 - σ(x))) ⊙ dL/dy (element-wise)
+      // dsigmoid(x.grad, fwd_out.value, dLdy);
       break;
 
-    case NODE_SOFTMAX: {
+    case NODE_SOFTMAX:
       // upstream:
-      //   dL/d(softmax(x)) = dL
+      //   dL/d(softmax(x)) = dL/dy
       //
       // local:
       //   d(softmax(x))/dx_ij = s_i * (δ_ij - s_i) (element-wise, row-wise)
       //
       // downstream:
       //   dL/dx_ij = s_i * (dL_ij - Σ_k dL_kj * s_i) (row-wise)
-      // h = Softmax(x, t)                           | node->output.value = Softmax(x, t)
-      // dL/dx = 1/t * h * [ dL/dh - dot(h, dL/dh) ] | x.grad = 1/t * node->output.value * [ dL - dot(node->output.value, dL) ]
-      Tensor* x_tensor = tape_node.input[0];
-      dsoftmax_temperature(x_tensor->grad, output->value, dL, node->temperature);
+      dsoftmax_temperature(
+          tape_node.input[0]->grad,
+          tape_node.output->value,
+          dLdy,
+          node->temperature);
       break;
-    }
 
     case NODE_SOFTMAX_CROSS_ENTROPY: {
       Tensor* logits_tensor = tape_node.input[0];
       Tensor* target_tensor = tape_node.input[1];
       Tensor* probs_tensor = tape_node.input[2];
 
-      assert(dL.rows == 1);
-      assert(dL.cols == 1);
-      assert(logits_tensor->grad.rows == probs_tensor->value.rows);
-      assert(logits_tensor->grad.cols == probs_tensor->value.cols);
-      assert(logits_tensor->grad.rows == target_tensor->value.rows);
-      assert(logits_tensor->grad.cols == target_tensor->value.cols);
-
       float inv_temperature = 1.0f / node->temperature;
-      float dL_dLoss = MAT_AT(dL, 0, 0);
+      float dL_dLoss = MAT_AT(dLdy, 0, 0);
 
-      // 1/t * (y - target) * dL
+      // 1/t * (y - target) * dLdy
       for (int i = 0; i < logits_tensor->grad.cols; i++) {
         float prob = VEC_AT(probs_tensor->value, i);
         float target = VEC_AT(target_tensor->value, i);
@@ -765,19 +720,19 @@ void node_backward(Tape_Node_Array* tape) {
 
     case NODE_RELU:
       // upstream:
-      //   dL/d(ReLU(x)) = dL
+      //   dL/d(relu(x)) = dL/dy
       //
       // local:
-      //   d(ReLU(x))/dx = 1 if x > 0 else 0 (element-wise)
+      //   d(relu(x))/dx = 1 if x > 0 else 0 (element-wise)
       //
       // downstream:
-      //   dL/dx = I(ReLU'(x)) ⊙ dL (element-wise), where I(...) is indicator
-      drelu(tape_node.input[0]->grad, tape_node.input[0]->value, dL);
+      //   dL/dx = I(relu'(x)) ⊙ dL/dy (element-wise)
+      drelu(tape_node.input[0]->grad, tape_node.input[0]->value, dLdy);
       break;
 
     case NODE_FLATTEN:
       // upstream:
-      //   dL/d(concat(x₁, x₂, ..., xₙ)) = dL
+      //   dL/d(concat(x₁, x₂, ..., xₙ)) = dL/dy
       //
       // local:
       //   d(concat)/dx_i = I (identity, reshaping)
@@ -792,7 +747,7 @@ void node_backward(Tape_Node_Array* tape) {
       //   int size = rows * cols;
       //
       //   NMatrix ith_dL_dx = mat_reshape(
-      //     mat_row_slice(dL, i*size, size),
+      //     mat_row_slice(dLdy, i*size, size),
       //     rows,
       //     cols
       //   );
@@ -803,20 +758,20 @@ void node_backward(Tape_Node_Array* tape) {
 
     case NODE_CONV2D:
       // upstream:
-      //   dL/d(conv2d(x, W)) = dL
+      //   dL/d(conv2d(x, W)) = dL/dy
       //
       // local:
-      //   d(conv2d)/dW = x_padded ⊙ dL (element-wise)
+      //   d(conv2d)/dW = x_padded ⊙ dL/dy (element-wise)
       //   d(conv2d)/db = 1 (element-wise)
-      //   d(conv2d)/dx = conv2d_transpose(dL, W)
+      //   d(conv2d)/dx = conv2d_transpose(dL/dy, W)
       //
       // downstream:
-      //   dL/dx = conv2d_transpose(dL, W)
+      //   dL/dx = conv2d_transpose(dL/dy, W)
       // mat_zero(x.grad, 0);
       // mat_zero(w.grad, 0);
       //
-      // for (int i = 0; i < dL.rows; i++) {
-      //   for (int j = 0; j < dL.cols; j++) {
+      // for (int i = 0; i < dLdy.rows; i++) {
+      //   for (int j = 0; j < dLdy.cols; j++) {
       //     NMatrix dL_dx_reshaped = mat_reshape(
       //         x.grad,
       //         fwd_out.value.rows + w.grad.rows - 1,
@@ -829,7 +784,7 @@ void node_backward(Tape_Node_Array* tape) {
       //         fwd_out.value.cols + w.grad.cols - 1
       //     );
       //
-      //     float delta = MAT_AT(dL, i, j);
+      //     float delta = MAT_AT(dLdy, i, j);
       //     // Bias gradient
       //     // grad_b[f] += delta;
       //
@@ -848,125 +803,133 @@ void node_backward(Tape_Node_Array* tape) {
 
     case NODE_SQUARE:
       // upstream:
-      //   dL/d(x⊙x) = dL
+      //   dL/d(x⊙x) = dL/dy
       //
       // local:
       //   d(x⊙x)/dx = 2*x (element-wise)
       //
       // downstream:
-      //   dL/dx = (2*x) ⊙ dL = 2*x*dL (element-wise)
+      //   dL/dx = (2*x) ⊙ dL/dy = 2*x*dL/dy (element-wise)
       // for (int i = 0; i < x.grad.rows; i++) {
       //   for (int j = 0; j < x.grad.cols; j++)
-      //     MAT_AT(x.grad, i, j) += 2*MAT_AT(x.value, i, j)*MAT_AT(dL, i, j);
+      //     MAT_AT(x.grad, i, j) += 2*MAT_AT(x.value, i, j)*MAT_AT(dLdy, i, j);
       // }
       break;
 
     case NODE_CUBE:
       // upstream:
-      //   dL/d(x⊙x⊙x) = dL
+      //   dL/d(x⊙x⊙x) = dL/dy
       //
       // local:
       //   d(x⊙x⊙x)/dx = 3*x⊙x (element-wise)
       //
       // downstream:
-      //   dL/dx = (3*x⊙x) ⊙ dL = 3*x^2*dL (element-wise)
+      //   dL/dx = (3*x⊙x) ⊙ dL/dy = 3*x^2*dL/dy (element-wise)
       // for (int i = 0; i < x.grad.rows; i++) {
       //   for (int j = 0; j < x.grad.cols; j++)
-      //     MAT_AT(x.grad, i, j) += 3*MAT_AT(x.value, i, j)*MAT_AT(x.value, i, j)*MAT_AT(dL, i, j);
+      //     MAT_AT(x.grad, i, j) += 3*MAT_AT(x.value, i, j)*MAT_AT(x.value, i, j)*MAT_AT(dLdy, i, j);
       // }
       break;
 
     case NODE_EXP:
       // upstream:
-      //   dL/d(exp(x)) = dL
+      //   dL/d(exp(x)) = dL/dy
       //
       // local:
       //   d(exp(x))/dx = exp(x) (element-wise)
       //
       // downstream:
-      //   dL/dx = exp(x) ⊙ dL (element-wise)
-      // for (int i = 0; i < dL.rows*dL.cols; i++) {
-      //   x.grad.elems[i] += fwd_out.value.elems[i]*dL.elems[i];
+      //   dL/dx = exp(x) ⊙ dL/dy (element-wise)
+      // for (int i = 0; i < dLdy.rows*dLdy.cols; i++) {
+      //   x.grad.elems[i] += fwd_out.value.elems[i]*dLdy.elems[i];
       // }
       break;
 
     case NODE_NEGATE:
       // upstream:
-      //   dL/d(-x) = dL
+      //   dL/d(-x) = dL/dy
       //
       // local:
       //   d(-x)/dx = -1 (element-wise)
       //
       // downstream:
-      //   dL/dx = (-1) ⊙ dL = -dL (element-wise)
-      // for (int i = 0; i < dL.rows*dL.cols; i++) {
-      //   x.grad.elems[i] += -dL.elems[i];
+      //   dL/dx = (-1) ⊙ dL/dy = -dL/dy (element-wise)
+      // for (int i = 0; i < dLdy.rows*dLdy.cols; i++) {
+      //   x.grad.elems[i] += -dLdy.elems[i];
       // }
       break;
 
     case NODE_MULTIPLY:
       // upstream:
-      //   dL/d(u*v) = dL
+      //   dL/d(u*v) = dL/dy
       //
       // local:
       //   d(u*v)/du = v^T (matrix transpose)
       //   d(u*v)/dv = u^T (matrix transpose)
       //
       // downstream:
-      //   dL/du = dL * v^T (matrix mult: [N×P] * [P×M] = [N×M])
-      //   dL/dv = u^T * dL (matrix mult: [M×N] * [N×P] = [M×P])
-      mat_mult_A_and_B_transposed_acc(tape_node.input[0]->grad, dL, tape_node.input[1]->value);
-      mat_mult_A_transposed_and_B_acc(tape_node.input[1]->grad, tape_node.input[0]->value, dL);
+      //   dL/du = dL/dy * v^T (matrix mult: [N×M] * [M×P] = [N×P])
+      //   dL/dv = u^T * dL/dy (matrix mult: [P×N] * [N×M] = [P×M])
+      //
+      // standard convention:
+      //   u is [N×P], v is [P×M], dL/dy is [N×M]
+
+      // dL/du = dL/dy * v^T
+      mat_mult_A_and_B_transposed_acc(tape_node.input[0]->grad, dLdy, tape_node.input[1]->value);
+      // dL/dv = u^T * dL/dy
+      mat_mult_A_transposed_and_B_acc(tape_node.input[1]->grad, tape_node.input[0]->value, dLdy);
       break;
 
     case NODE_DIVIDE:
       // upstream:
-      //   dL/d(u⊘v) = dL
+      //   dL/d(u⊘v) = dL/dy
       //
       // local:
       //   d(u⊘v)/du = 1/v (element-wise)
       //   d(u⊘v)/dv = -u/v² (element-wise)
       //
       // downstream:
-      //   dL/du = (1/v) ⊙ dL (element-wise)
-      //   dL/dv = (-u/v²) ⊙ dL (element-wise)
-      // for (int i = 0; i < dL.rows*dL.cols; i++) {
-      //   float inv_v = 1.0f / v.value.elems[i];
-      //
-      //   u.grad.elems[i] += inv_v * dL.elems[i];
-      //   v.grad.elems[i] += -u.value.elems[i] * inv_v * inv_v * dL.elems[i];
-      // }
+      //   dL/du = (1/v) ⊙ dL/dy (element-wise)
+      //   dL/dv = (-u/v²) ⊙ dL/dy (element-wise)
+
+      for (int i = 0; i < dLdy.rows*dLdy.cols; i++) {
+        float inv_v = 1.0f / VEC_AT(tape_node.input[1]->value, i);
+
+        VEC_AT(tape_node.input[0]->grad, i) += inv_v * VEC_AT(dLdy, i);
+        VEC_AT(tape_node.input[1]->grad, i) -= VEC_AT(tape_node.input[0]->value, i) * inv_v * inv_v * VEC_AT(dLdy, i);
+      }
       break;
 
     case NODE_ADD:
       // upstream:
-      //   dL/d(u+v) = dL
+      //   dL/d(u+v) = dL/dy
       //
       // local:
       //   d(u+v)/du = I (identity, element-wise)
       //   d(u+v)/dv = I (identity, element-wise)
       //
       // downstream:
-      //   dL/du = I ⊙ dL = dL (element-wise)
-      //   dL/dv = I ⊙ dL = dL (element-wise)
-      mat_add(tape_node.input[0]->grad, tape_node.input[0]->grad, dL);
-      mat_add(tape_node.input[1]->grad, tape_node.input[1]->grad, dL);
+      //   dL/du = I ⊙ dL/dy = dL/dy (element-wise)
+      //   dL/dv = I ⊙ dL/dy = dL/dy (element-wise)
+
+      mat_add(tape_node.input[0]->grad, tape_node.input[0]->grad, dLdy);
+      mat_add(tape_node.input[1]->grad, tape_node.input[1]->grad, dLdy);
       break;
 
     case NODE_SUB:
       // upstream:
-      //   dL/d(u-v) = dL
+      //   dL/d(u-v) = dL/dy
       //
       // local:
       //   d(u-v)/du = I (identity, element-wise)
       //   d(u-v)/dv = -I (negative identity, element-wise)
       //
       // downstream:
-      //   dL/du = I ⊙ dL = dL (element-wise)
-      //   dL/dv = (-I) ⊙ dL = -dL (element-wise)
-      // for (int i = 0; i < dL.rows*dL.cols; i++) {
-      //   u.grad.elems[i] += +dL.elems[i];
-      //   v.grad.elems[i] += -dL.elems[i];
+      //   dL/du = I ⊙ dL/dy = dL/dy (element-wise)
+      //   dL/dv = (-I) ⊙ dL/dy = -dL/dy (element-wise)
+
+      mat_add(tape_node.input[0]->grad, tape_node.input[0]->grad, dLdy);
+      mat_sub(tape_node.input[1]->grad, tape_node.input[1]->grad, dLdy);
       // }
       break;
   }
@@ -1033,20 +996,7 @@ void update_grads_adam(Optimizer* optimizer, Tensor* emb, int32_t* tokens_in_bat
         float adapt_lr = optimizer->learning_rate / (sqrtf(v_hat) + eps);
 
         MAT_AT(tensor->value, i, j) -= adapt_lr * m_hat;
-
-        // MAT_AT(tensor->grad, i, j) = 0;
       }
-
-      // if (tensor == emb && i == 300 && (rand() % 500 == 1)) {
-      //   int precision = 10;
-      //   // printf("Tensor dim  : %dx%d\n", tensor->value.rows, tensor->value.cols);
-      //   printf("Token       : %d\n", i);
-      //   printf("Tensor Value: "); mat_println(mat_row(tensor->value, i), precision);
-      //   printf("Tensor Grad : "); mat_println(mat_row(tensor->grad, i), precision);
-      //   printf("1st Moment  : "); mat_println(mat_row(m, i), precision);
-      //   printf("2nd Moment  : "); mat_println(mat_row(v, i), precision);
-      //   // exit(0);
-      // }
 
       mat_zero(mat_row(tensor->grad, i));
     }
@@ -1074,25 +1024,12 @@ void update_grads_rms_prop(Optimizer* optimizer, size_t batch_size, Tensor* emb,
         continue;
       }
 
-      // if (tensor == emb && i == 12) {
-      //   printf("Tensor dim  : %dx%d\n", tensor->value.rows, tensor->value.cols);
-      //   printf("Token       : %d\n", i);
-      //   printf("Tensor Value: "); mat_println(mat_row(tensor->value, i), 5);
-      //   printf("Tensor Grad : "); mat_println(mat_row(tensor->grad, i), 5);
-      //   printf("History     : "); mat_println(mat_row(h, i), 5);
-      //   // exit(0);
-      // }
-
       for (int j = 0; j < tensor->value.cols; j++) {
         float g = MAT_AT(tensor->grad, i, j);
 
         MAT_AT(h, i, j) = (beta * MAT_AT(h, i, j)) + (one_minus_beta * g * g);
 
         float adapt_lr = optimizer->learning_rate / sqrtf(MAT_AT(h, i, j) + eps);
-
-        // if (adapt_lr >= 10) {
-        //   printf("lr = %f %f\n", adapt_lr, MAT_AT(h, i, j));
-        // }
 
         MAT_AT(tensor->value, i, j) -= adapt_lr * g;
 
@@ -1124,13 +1061,10 @@ void update_grads_ada_grad(Optimizer* optimizer, size_t batch_size) {
       if (ada_grad.elems[j] > 0) {
         float adapt_lr = optimizer->learning_rate / (sqrtf(ada_grad.elems[j]) + eps);
         tensor->value.elems[j] -= adapt_lr * g;
-
-        // printf("(%.3f %.3f) ", adapt_lr, ada_grad.elems[j]);
       }
 
       tensor->grad.elems[j] = 0;
     }
-    // printf("\n");
   }
 }
 

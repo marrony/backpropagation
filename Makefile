@@ -8,14 +8,14 @@ PROGS := $(addprefix $(BINDIR)/, $(SOURCES:.c=))
 raylib-5/libraylib.a:
 	make -C raylib-5 RAYLIB_SRC_PATH=.
 
-CFLAGS_DEBUG=-std=c17 -Werror -Wall -Wextra -Wno-initializer-overrides -pedantic \
-    -I ./raylib-5 \
+CFLAGS_COMMON=-std=c17 -Werror -Wall -Wextra -Wno-initializer-overrides -pedantic -I ./raylib-5
+
+CFLAGS_DEBUG=$(CFLAGS_COMMON) -g \
     -fsanitize=signed-integer-overflow \
     -fsanitize=unsigned-integer-overflow \
-    -fsanitize=address -fassociative-math \
-    -g
+    -fsanitize=address -fassociative-math
 
-CFLAGS_RELEASE=-std=c17 -Werror -Wall -Wextra -Wno-initializer-overrides -I./raylib-5 -O3 -ffast-math
+CFLAGS_RELEASE=$(CFLAGS_COMMON) -O3 -ffast-math
 
 CFLAGS=$(CFLAGS_RELEASE) -DPCRE2_CODE_UNIT_WIDTH=8 $(shell pkg-config --cflags libpcre2-8) 
 

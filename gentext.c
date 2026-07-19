@@ -42,10 +42,10 @@ const char *training_text[] = {
   "the heavy bull ate grass. that male rooster ate grass. the heavy cow ate grass. that female hen ate grass. the loud bull woke farmers. a fierce rooster woke farmers. the loud cow woke farmers. a fierce hen woke farmers.",
 };
 
-#define CONTEXT 32
+#define CONTEXT 16
 #define EMBED_DIM 16
 #define INPUT_DIM (CONTEXT * EMBED_DIM)
-#define MAX_GENERATE 500
+#define MAX_GENERATE 100
 
 #define TO_STR_HELPER(x) #x
 #define TO_STR(x) TO_STR_HELPER(x)
@@ -145,7 +145,7 @@ void init_model(void) {
     .tensors = ARRAY_CREATE(&mallocator.alloc),
     .history = ARRAY_CREATE(&mallocator.alloc),
     .second = ARRAY_CREATE(&mallocator.alloc),
-    .learning_rate = 0.005f,
+    .learning_rate = 0.01f,
     .updates = 0,
   };
 
@@ -153,7 +153,7 @@ void init_model(void) {
   // embed_dim = 8
   // vocab_size = 512
   // embeddings (64) -> linear (64x128) -> relu -> linear (128x512) -> softmax
-  int hidden_dim = 128;
+  int hidden_dim = 24*CONTEXT;
   embedding_node = create_embeddings(MAX_VOCAB, EMBED_DIM, CONTEXT);
   linear_node = create_linear(embedding_node, INPUT_DIM, hidden_dim);
   relu_node = create_relu(linear_node);
@@ -286,7 +286,10 @@ void train_model(Sample_Array samples) {
   // }
   // exit(0);
 
-  while (keep_running && epoch < 1000) {
+  float best_epoch_loss = 1000.0f;
+  int plateau_epochs = 0;
+
+  while (keep_running && epoch < 10000) {
     array_shuffle(&samples);
 
     int64_t start_us = get_system_micros();
@@ -295,9 +298,9 @@ void train_model(Sample_Array samples) {
     cost = 0;
 
     size_t batch_size = 64;
-    // int64_t time_forward = 0;
-    // int64_t time_backward = 0;
-    // int64_t upd_weights = 0;
+    int64_t time_forward = 0;
+    int64_t time_backward = 0;
+    int64_t upd_weights = 0;
 
     // Iterate through the sequence as a sliding window
     // Target is sequence[i], Context is sequence[i-CONTEXT] to sequence[i-1]
@@ -315,6 +318,7 @@ void train_model(Sample_Array samples) {
 
       tape.count = 0;
 
+      int64_t f_us = get_system_micros();
       for (size_t batch = 0; batch < current_batch_size; batch++) {
         Sample sample = samples.elems[i + batch];
 
@@ -341,77 +345,62 @@ void train_model(Sample_Array samples) {
         // smooth_target(target_node->value.value, 0.1);
 
         // Forward pass
-        // int64_t f_us = get_system_micros();
         softmax_cross_entropy_node->temperature = 1.0f;
-        Tensor* cross_out = node_forward(&arena.alloc, softmax_cross_entropy_node, &tape);
-        // time_forward += get_system_micros() - f_us;
+        Tensor* cross_out = node_forward(&arena, softmax_cross_entropy_node, &tape);
 
         VEC_AT(cross_out->grad, 0) += 1.0f / current_batch_size;
-
-        // mat_println(cross_out->value, 3);
-
-        // printf("tape size = %zu\n", tape.count);
-
-        // mat_clip(cross_out->value, 1e-15f, 1.0f);
-
-        // printf("cost = %f\n", VEC_AT(cross_out->value, 0));
         cost += VEC_AT(cross_out->value, 0);
-
-        // printf("cross out = "); mat_println(cross_out->value, 5);
-        // printf("tape_index = %zu\n", cross_out->tape_index);
-
-        // cost += cross_entropy_loss(dL, target_label, cross_out->value);
-
-        // mat_clip(dL, -5, +5);
       }
+      time_forward += get_system_micros() - f_us;
 
       // Backward pass and accumulate gradients
-      // int64_t b_us = get_system_micros();
+      int64_t b_us = get_system_micros();
       node_backward(&tape);
-      // time_backward += get_system_micros() - b_us;
-
-      // mat_println(mat_row(embedding_node->embeddings.value, 12), 5);
-      // mat_println(mat_row(embedding_node->embeddings.grad, 12), 5);
-
-      // printf("before ="); mat_println(mat_row(embedding_node->weight.value, 502), 5);
-
-      // NMatrix avg = mat_alloc2(&arena.alloc, 1, embedding_node->embeddings.grad.cols);
-      // mat_zero(avg);
-      // mat_avg_row(avg, embedding_node->embeddings.grad);
-      //
-      // for (int z = 0; z < softmax_node->weight.grad.rows; z++)
-      //   mat_println(mat_row(softmax_node->weight.grad, z), 5);
-      //
-      // mat_println(avg, 5);
-      //
-      // exit(0);
+      time_backward += get_system_micros() - b_us;
 
       // Update the parameters
-      // int64_t u_us = get_system_micros();
+      int64_t u_us = get_system_micros();
       update_grads_adam(&optimizer, &embedding_node->embeddings, tokens_in_batch);
-      // upd_weights += get_system_micros() - u_us;
-
-      // printf("after  ="); mat_println(mat_row(embedding_node->weight.value, 502), 5);
-
-      // printf("%f\n", cost / current_batch_size);
-
-      // exit(0);
-
-      // size_t actual = SAVE(&arena.alloc);
-      // size_t bytes_allocated = actual - saved;
-      // printf("%zu %zu = %zu kb\n", saved, actual, bytes_allocated / 1024);
+      upd_weights += get_system_micros() - u_us;
 
       RESTORE(&arena.alloc, saved);
-
-      // printf("\rtraining = %d cost = %f samples = %zu batch = %zu\r",
-      //     epoch, cost, samples.count, current_batch_size);
     }
 
-    int64_t end_us = get_system_micros();
-    int64_t time_ms = (end_us - start_us) / 1000;
-    //
-    printf("\rtraining = %d cost = %f samples = %zu time = %lld ms\r",
-        epoch, cost / samples.count, samples.count, time_ms);
+    int64_t time_us = get_system_micros() - start_us;
+
+    printf("\rtraining = %d cost = %f samples = %zu lr = %f fwd = %lld bwd = %lld upd = %lld total = %lld plateau = %d\r",
+        epoch, cost / samples.count, samples.count, optimizer.learning_rate,
+        time_forward/1000, time_backward/1000, upd_weights/1000, time_us/1000, plateau_epochs);
+
+    // optimize learning rate
+    int patience = 3;
+    float decay_factor = 0.75f;
+    float min_lr = 0.00001f;
+    float min_delta = 0.005f;
+    float loss = cost / samples.count;
+
+    if (loss < (best_epoch_loss - min_delta)) {
+      best_epoch_loss = loss;
+      plateau_epochs = 0;
+    } else {
+      plateau_epochs += 1;
+    }
+
+    if (plateau_epochs >= patience) {
+      float next_lr = optimizer.learning_rate * decay_factor;
+
+      if (next_lr >= min_lr) {
+        optimizer.learning_rate = next_lr;
+
+        printf("\n[Scheduler] Loss plateaued for %d epochs. Decaying LR to: %.6f\n",
+            patience, next_lr);
+      } else {
+        printf("\n[Scheduler] Reached minimum learning rate %.6f, aborting\n", next_lr);
+        break;
+      }
+
+      plateau_epochs = 0;
+    }
   }
 
   //Batch Gradient Descent (BGD)
@@ -610,8 +599,10 @@ int main(int argc, char* argv[]) {
 
     printf("Generated:\n");
 
+#if 1
     for (size_t i = 0; i < CONTEXT; i++)
       printf("[%s]", vocabulary[context[i]].token);
+#endif
 
     for (int step = 0; step < MAX_GENERATE; step++) {
       // Build input vector (concatenate embeddings)
@@ -623,13 +614,28 @@ int main(int argc, char* argv[]) {
       // t = 3.0 = nonsensical
       softmax_node->temperature = 1.0;
       tape.count = 0;
-      Tensor* output = node_forward(&arena.alloc, softmax_node, &tape);
+      Tensor* output = node_forward(&arena, softmax_node, &tape);
 
       // Sample next token
-      int next = mat_row_argmax(output->value); // deterministic greedy decoding
-      // int next = sample(output->value); // stochastic probabilistic sampling
+      TokenID next = mat_row_argmax(output->value); // deterministic greedy decoding
+      // TokenID next = sample(output->value); // stochastic probabilistic sampling
 
+#if 1
       printf("%s", vocabulary[next].token);
+#else
+      for (size_t i = 0; i < CONTEXT; i++) {
+        TokenID token = context[i];
+        if (token > 0 && token < 256 && !isprint(token))
+          printf("[0x%02x]", context[i]);
+        else
+          printf("[%s]", vocabulary[context[i]].token);
+      }
+
+      if (next > 0 && next < 256 && !isprint(next))
+        printf(" -> 0x%02x (%0.3f)\n", next, VEC_AT(output->value, next));
+      else
+        printf(" -> %s (%0.3f)\n", vocabulary[next].token, VEC_AT(output->value, next));
+#endif
 
       if (next == EOS_TOKEN)
         break;
