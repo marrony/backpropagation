@@ -54,8 +54,8 @@ const char *training_text[] = {
 // ------------------------------------------
 
 typedef struct {
-  TokenID context[CONTEXT];
-  TokenID target;
+  int32_t context[CONTEXT];
+  int32_t target;
 } Sample;
 
 DEFINE_ARRAY_SLICE(Sample);
@@ -269,35 +269,49 @@ void smooth_target(NMatrix target, float eps) {
     VEC_AT(target, t) = VEC_AT(target, t) * (1.0f - eps) + (eps / MAX_VOCAB);
 }
 
-void train_model(Sample_Array samples) {
-  float cost = 0;
+DEFINE_ARRAY_ALIAS(Index32, size_t);
+
+// Helper function to shuffle an array of indices (Fisher-Yates)
+void shuffle_indices(Index32_Array indices) {
+  for (size_t i = indices.count - 1; i > 0; i--) {
+    int j = rand_between(0, i);
+    size_t temp = indices.elems[i];
+    indices.elems[i] = indices.elems[j];
+    indices.elems[j] = temp;
+  }
+}
+
+void train_model(TokenID_Array sequence) {
+  size_t num_starts = sequence.count - CONTEXT;
 
   Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
-
   Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 2*1024*1024);
+  Index32_Array start_indices = ARRAY_CREATE(&mallocator.alloc);
+  array_ensure(&start_indices, num_starts);
 
   float best_epoch_loss = 1000.0f;
   int plateau_epochs = 0;
 
   while (keep_running && epochs < 10000) {
-    array_shuffle(&samples);
+    start_indices.count = 0;
+    for (size_t i = 0; i < num_starts; i++)
+      array_append(&start_indices, i);
+    shuffle_indices(start_indices);
 
     int64_t start_us = get_system_micros();
-
-    cost = 0;
 
     size_t batch_size = 64;
     int64_t time_forward = 0;
     int64_t time_backward = 0;
     int64_t upd_weights = 0;
 
-    float sampling_probability = powf(0.95f, epochs);
+    float cost = 0;
+    float sampling_probability = powf(0.98f, epochs);
 
     int32_t substituions = 0;
 
     // Iterate through the sequence as a sliding window
-    // Target is sequence[i], Context is sequence[i-CONTEXT] to sequence[i-1]
-    for (size_t i = 0; i < samples.count; i += batch_size) {
+    for (size_t start_i = 0; start_i < num_starts; start_i += batch_size) {
       size_t saved = SAVE(&arena.alloc);
 
       // for (int j = 0; j < CONTEXT; j++) {
@@ -307,13 +321,19 @@ void train_model(Sample_Array samples) {
 
       int32_t tokens_in_batch[MAX_VOCAB] = {0};
 
-      size_t current_batch_size = samples.count - i < batch_size ? samples.count - i : batch_size;
+      size_t current_batch_size = num_starts - start_i < batch_size ? num_starts - start_i : batch_size;
 
       tape.count = 0;
 
       int64_t f_us = get_system_micros();
       for (size_t batch = 0; batch < current_batch_size; batch++) {
-        Sample sample = samples.elems[i + batch];
+        size_t start_index = start_indices.elems[start_i + batch];
+
+        // Prepare training input vector from embeddings
+        int32_t target = sequence.elems[start_index + CONTEXT];
+        memcpy(embedding_node->context, sequence.elems+start_index, sizeof(int32_t)*CONTEXT);
+
+        assert(target != PAD_TOKEN);
 
         // Scheduled Sampling
         //
@@ -331,33 +351,16 @@ void train_model(Sample_Array samples) {
 
         if (r > sampling_probability) {
           substituions += 1;
-          TokenID old = sample.context[CONTEXT-1];
-          TokenID new = rand_between(0, MAX_VOCAB);
-          sample.context[CONTEXT-1] = new;
-
-          (void)old;
-          // if (rand_between(0, 1000) == 0)
-          //   printf("\n[Scheduled Sampling] %.5f: %d => %d\n", r, old, new);
+          int32_t new = rand_between(0, MAX_VOCAB-1);
+          embedding_node->context[CONTEXT-1] = new;
         }
 
-    // printf("[");
-    // for (size_t j = 0; j < CONTEXT; j++) {
-    //   TokenID token = sample.context[j];
-    //   printf("\"%s\" ", vocabulary[token].token);
-    // }
-    // printf("] -> \"%s\"\n", vocabulary[sample.target].token);
-
-        // Prepare training input vector from embeddings
-        memcpy(embedding_node->context, sample.context, sizeof(sample.context));
-
         for (int i = 0; i < CONTEXT; i++)
-          tokens_in_batch[sample.context[i]] += 1;
-
-        assert(sample.target != PAD_TOKEN);
+          tokens_in_batch[embedding_node->context[i]] += 1;
 
         // Labels for training: one-hot target
         mat_zero(target_logit);
-        VEC_AT(target_logit, sample.target) = 1.0f;
+        VEC_AT(target_logit, target) = 1.0f;
 
         // smoothed target
         // smooth_target(target_node->value.value, 0.1);
@@ -387,22 +390,24 @@ void train_model(Sample_Array samples) {
     int64_t time_us = get_system_micros() - start_us;
 
     printf("\rtraining = %d cost = %f samples = %zu lr = %f fwd = %lld bwd = %lld upd = %lld total = %lld plateau = %d subs = %.2f%% p = %.3f\r",
-        epochs, cost / samples.count, samples.count, optimizer.learning_rate,
+        epochs, cost / num_starts, num_starts, optimizer.learning_rate,
         time_forward/1000, time_backward/1000, upd_weights/1000, time_us/1000, plateau_epochs,
-        substituions*100 / (float)samples.count, sampling_probability);
+        substituions*100 / (float)num_starts, sampling_probability);
 
     (void)best_epoch_loss;
 #if 1
     // optimize learning rate
     int patience = 3;
-    float decay_factor = 0.75f;
+    float decay_factor = 0.9f;
     float min_lr = 0.000001f;
-    float min_delta = 0.005f;
-    float loss = cost / samples.count;
+    float min_delta = 0.05f;
+    float loss = cost / num_starts;
 
+    // todo: increase epoch only when we don't plateaued?
     if (loss < (best_epoch_loss - min_delta)) {
       best_epoch_loss = loss;
       plateau_epochs = 0;
+      epochs += 1;
     } else {
       plateau_epochs += 1;
     }
@@ -421,13 +426,10 @@ void train_model(Sample_Array samples) {
       }
 
       plateau_epochs = 0;
+      epochs += 1;
     }
 #endif
-
-    epochs += 1;
   }
-
-  epochs -= 1;
 
   //Batch Gradient Descent (BGD)
   //Mini-batch Gradient Descent (MBGD)
@@ -435,10 +437,11 @@ void train_model(Sample_Array samples) {
   //AdaGrad/RMSProp
   //Categorical Cross-Entropy Loss (CCE)
 
+  printf("\nsaving model\n");
   save_model();
+  printf("model saved\n");
   save_optimizer(&optimizer, epochs);
-
-  printf("\n");
+  printf("params saved\n");
 }
 
 int sample(NMatrix probs) {
@@ -461,27 +464,24 @@ float mat_cos(NMatrix a, NMatrix b) {
   return dot / (len1 * len2);
 }
 
-int32_t tokenize(
+size_t tokenize(
+    TokenID_Array* sequence,
     const char* text,
     size_t text_len,
-    int32_t** tokens_ptr,
     Token* vocabulary,
     Token_Sorted* vocabulary_by_size
 ) {
-  int32_t* tokens = malloc(text_len*sizeof(int32_t));
-  *tokens_ptr = tokens;
+  size_t tokens_count = 0;
 
   size_t i = 0;
-
-  size_t tokens_count = 0;
   while (i < text_len) {
     bool found = false;
-    for (int32_t ii = 0; ii < MAX_VOCAB; ii++) {
+    for (size_t ii = 0; ii < MAX_VOCAB; ii++) {
       int32_t token = vocabulary_by_size[ii].id;
       size_t size = vocabulary_by_size[ii].size;
 
       if (strncmp(text+i, vocabulary[token].token, size) == 0) {
-        tokens[tokens_count] = token;
+        array_append(sequence, token);
         tokens_count += 1;
         i += size;
         found = true;
@@ -491,82 +491,35 @@ int32_t tokenize(
     assert(found && "vocab not found");
   }
 
-  if (tokens_count < text_len) {
-    *tokens_ptr = realloc(*tokens_ptr, tokens_count*sizeof(int32_t));
-  }
-
   return tokens_count;
 }
 
-Sample_Array prepare_data(void) {
-  int32_t* sequence = NULL;
-  size_t seq_len = 0;
-
+void prepare_data(TokenID_Array* sequence) {
   for (size_t i = 0; i < sizeof(training_text)/sizeof(char*); i++) {
     const char* text = training_text[i];
 
-    int32_t* tokens = NULL;
-    size_t tokens_count = tokenize(
+    tokenize(
+        sequence,
         text,
         strlen(text),
-        &tokens,
         vocabulary,
         vocabulary_by_size
     );
 
-    size_t offset = seq_len;
-    seq_len += tokens_count + 1;
-    sequence = realloc(sequence, seq_len*sizeof(int32_t));
-    memcpy(sequence+offset, tokens, tokens_count*sizeof(int32_t));
-    sequence[seq_len-1] = EOS_TOKEN;
-
-    free(tokens);
+    array_append(sequence, EOS_TOKEN);
   }
 
-  Sample_Array samples = ARRAY_CREATE(&mallocator.alloc);
-  array_ensure(&samples, seq_len);
-
-  for (size_t i = 0; i < seq_len; i++) {
-    int32_t target = sequence[i];
+  for (size_t i = 0; i < sequence->count; i++) {
+    int32_t target = sequence->elems[i];
     printf("%s", vocabulary[target].token);
-
-    Sample sample = {
-      .target = target,
-    };
-
-    for (size_t c = 0; c < CONTEXT; c++) {
-      int32_t token_index = i - CONTEXT + c;
-      sample.context[c] = token_index < 0 ? PAD_TOKEN : sequence[token_index];
-    }
-
-    array_append(&samples, sample);
   }
 
   printf("\n");
-
-  // const char* prompt = "she pictured to herself";
-  // int32_t* tokens = NULL;
-  // size_t tokens_count = tokenize(
-  //     prompt,
-  //     strlen(prompt),
-  //     &tokens,
-  //     vocabulary,
-  //     vocabulary_by_size
-  // );
-  //
-  // printf("%s => %zu tokens\n", prompt, tokens_count);
-  // for (size_t i = 0; i < tokens_count; i++) {
-  //   int32_t token = tokens[i];
-  //   printf("%d = [%s]\n", token, vocabulary[token].token);
-  // }
-  // return 0;
-
-  return samples;
 }
 
-bool search_sample(Sample_Array samples, TokenID* context, Sample* sample) {
+bool search_sample(Sample_Array samples, int32_t* context, Sample* sample) {
   for (size_t i = 0; i < samples.count; i++) {
-    if (memcmp(samples.elems[i].context, context, CONTEXT*sizeof(TokenID)) == 0) {
+    if (memcmp(samples.elems[i].context, context, CONTEXT*sizeof(int32_t)) == 0) {
       *sample = samples.elems[i];
       return true;
     }
@@ -588,15 +541,20 @@ int main(int argc, char* argv[]) {
   //srand(time(NULL));
   srand(42);
 
-  Sample_Array samples = prepare_data();
+  TokenID_Array sequence = ARRAY_CREATE(&mallocator.alloc);
+
+  prepare_data(&sequence);
 
   init_model();
 
   bool train = argc > 1 && strncmp(argv[1], "--train", 7) == 0;
 
-  if (train) train_model(samples);
+  if (train) train_model(sequence);
+
+  printf("Infering\n");
 
   Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 10*1024*1024);
+  TokenID_Array tokens = ARRAY_CREATE(&mallocator.alloc);
 
   while (true) {
     size_t saved = SAVE(&arena.alloc);
@@ -612,34 +570,31 @@ int main(int argc, char* argv[]) {
     if (strncmp(prompt, ".exit", 5) == 0)
       break;
 
-    int32_t* tokens = NULL;
-    size_t tokens_count = tokenize(
+    tokens.count = 0;
+    tokenize(
+        &tokens,
         prompt,
         strlen(prompt),
-        &tokens,
         vocabulary,
         vocabulary_by_size
     );
 
-    TokenID context[CONTEXT] = {0};
+    int32_t context[CONTEXT] = {0};
     Tape_Node_Array tape = ARRAY_CREATE(&arena.alloc);
 
-    if (tokens_count > CONTEXT)
-      tokens_count = CONTEXT;
+    if (tokens.count > CONTEXT)
+      tokens.count = CONTEXT;
 
-    for (size_t i = 0; i < tokens_count; i++) {
-      context[CONTEXT - tokens_count + i] = tokens[i];
+    for (size_t i = 0; i < tokens.count; i++) {
+      context[CONTEXT - tokens.count + i] = tokens.elems[i];
     }
-
-    free(tokens);
 
     printf("Generated:\n");
 
     for (size_t i = 0; i < CONTEXT; i++) {
-      TokenID token = context[i];
+      int32_t token = context[i];
       printf("[%s]", vocabulary[token].token);
     }
-    fflush(stdout);
 
     for (int step = 0; step < MAX_GENERATE; step++) {
       // Build input vector (concatenate embeddings)
@@ -654,12 +609,12 @@ int main(int argc, char* argv[]) {
       Tensor* output = node_forward(&arena, softmax_node, &tape);
 
       // Sample next token
-      TokenID next = mat_row_argmax(output->value); // deterministic greedy decoding
-      // TokenID next = sample(output->value); // stochastic probabilistic sampling
+      int32_t next = mat_row_argmax(output->value); // deterministic greedy decoding
+      // int32_t next = sample(output->value); // stochastic probabilistic sampling
 
 #if 0
       for (size_t i = 0; i < CONTEXT; i++) {
-        TokenID token = context[i];
+        int32_t token = context[i];
         if (token > 0 && token < 256 && !isprint(token))
           printf("[0x%02x]", context[i]);
         else

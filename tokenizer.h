@@ -69,25 +69,23 @@ Byte_Buffer byte_buffer_set_int(Byte_Buffer buf, int32_t value) {
 #define TOK_SIZE 31
 #define MAX_TOKEN (TOK_SIZE+1)
 
-typedef int32_t TokenID;
-
 typedef struct {
-  TokenID id;
+  int32_t id;
   char token[MAX_TOKEN];
 } Token;
 
 typedef struct {
-  TokenID id;
+  int32_t id;
   size_t size;
 } Token_Sorted;
 
 typedef struct {
-  TokenID token0;
-  TokenID token1;
+  int32_t token0;
+  int32_t token1;
 } Token_Pair;
 
 DEFINE_ARRAY(Byte_Buffer);
-DEFINE_ARRAY(TokenID);
+DEFINE_ARRAY_ALIAS(TokenID, int32_t);
 DEFINE_ARRAY(TokenID_Array);
 
 Byte_Buffer alloc_pair(Allocator* alloc, Token_Pair pair) {
@@ -191,8 +189,8 @@ void calculate_histogram(TokenID_Array_Array ids_list, int32_t* histogram, int32
     TokenID_Array ids = ids_list.elems[i];
 
     for (size_t j = 0; j < ids.count-1; j++) {
-      TokenID token0 = ids.elems[j + 0];
-      TokenID token1 = ids.elems[j + 1];
+      int32_t token0 = ids.elems[j + 0];
+      int32_t token1 = ids.elems[j + 1];
 
       if (token0 > 0 && token0 < 256 && punctuation[token0]) continue;
       if (token1 > 0 && token1 < 256 && punctuation[token1]) continue;
@@ -216,15 +214,15 @@ void array_println(TokenID_Array array) {
   printf("]\n");
 }
 
-void merge_ids(TokenID_Array_Array* ids_list, Token_Pair pair, TokenID new_token) {
+void merge_ids(TokenID_Array_Array* ids_list, Token_Pair pair, int32_t new_token) {
   for (size_t i = 0; i < ids_list->count; i++) {
     TokenID_Array* ids = &ids_list->elems[i];
 
     if (ids->count <= 1) continue;
 
     for (size_t j = ids->count - 1; j > 0; j--) {
-      TokenID token0 = ids->elems[j-1];
-      TokenID token1 = ids->elems[j-0];
+      int32_t token0 = ids->elems[j-1];
+      int32_t token1 = ids->elems[j-0];
 
       if (token0 == pair.token0 && token1 == pair.token1) {
         array_remove_ith(ids, j);
@@ -311,8 +309,8 @@ int32_t gen_vocabulary(
     int32_t max_count = 0;
     Token_Pair max_pair = {0};
 
-    for (TokenID token0 = 0; token0 < vocabulary_count; token0++) {
-      for (TokenID token1 = 0; token1 < vocabulary_count; token1++) {
+    for (int32_t token0 = 0; token0 < vocabulary_count; token0++) {
+      for (int32_t token1 = 0; token1 < vocabulary_count; token1++) {
         int32_t index = token0*vocabulary_count + token1;
 
         if (histogram[index] > max_count) {
@@ -325,7 +323,7 @@ int32_t gen_vocabulary(
 
     if (max_count == 0) break;
 
-    TokenID new_token = i + 259;
+    int32_t new_token = i + 259;
     vocabulary[new_token].id = new_token;
     strncpy(vocabulary[new_token].token, vocabulary[max_pair.token0].token, MAX_TOKEN);
     strncat(vocabulary[new_token].token, vocabulary[max_pair.token1].token, MAX_TOKEN);

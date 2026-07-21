@@ -442,6 +442,7 @@ error:
     return NULL_BYTE_BUFFER;
 }
 
+// random number between [start, end] (inclusive)
 size_t rand_between(size_t start, size_t end) {
   return rand() % (end - start + 1) + start;
 }

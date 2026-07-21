@@ -12,10 +12,13 @@
   size_t capacity;       \
   Allocator* allocator
 
-#define DEFINE_ARRAY(type)          \
-typedef struct type##_Array {       \
-  ARRAY_BODY(type);                 \
-} type##_Array
+#define DEFINE_ARRAY_ALIAS(name, type) \
+typedef struct {                       \
+  ARRAY_BODY(type);                    \
+} name##_Array
+
+#define DEFINE_ARRAY(type) \
+  DEFINE_ARRAY_ALIAS(type, type)
 
 #define DEFINE_SLICE(type)          \
 typedef struct type##_Array_Slice { \

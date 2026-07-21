@@ -294,10 +294,7 @@ Node* create_sub(Node* input0, Node* input1) {
 }
 
 DEFINE_ARRAY(Tape_Node);
-
-typedef Tensor* Tensor_Ptr;
-DEFINE_ARRAY(Tensor_Ptr);
-
+DEFINE_ARRAY_ALIAS(Tensor_Ptr, Tensor*);
 DEFINE_ARRAY(NMatrix);
 
 typedef struct {
