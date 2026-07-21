@@ -159,14 +159,14 @@ Node* create_variable(int rows, int cols) {
   return node;
 }
 
-Node* create_embeddings(size_t max_vocab, size_t emb_dim, size_t context) {
+Node* create_embeddings(size_t max_vocab, size_t emb_dim, size_t context_size) {
   Node* node = create_node(NODE_EMBEDDING);
   node->input_size = 0;
   init_tensor(&node->embeddings, max_vocab, emb_dim);
 
-  node->context = malloc(sizeof(int32_t)*context);
-  node->context_size = context;
-  memset(node->context, 0, sizeof(int32_t)*context);
+  node->context = malloc(sizeof(int32_t)*context_size);
+  node->context_size = context_size;
+  memset(node->context, 0, sizeof(int32_t)*context_size);
 
   return node;
 }
@@ -640,7 +640,6 @@ void node_backward(Tape_Node_Array* tape) {
       int32_t* context = (int32_t*)tape_node.input[0];
 
       for (size_t t = 0; t < node->context_size; t++) {
-        // NMatrix value = mat_row(node->embeddings.value, context[t]);
         NMatrix grad = mat_row(node->embeddings.grad, context[t]);
         NMatrix ctx = mat_row_slice(dLdy, t*cols, cols);
         mat_add(grad, grad, ctx);

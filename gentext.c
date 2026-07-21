@@ -54,22 +54,23 @@ const char *training_text[] = {
 // ------------------------------------------
 
 typedef struct {
-  int32_t context[CONTEXT];
-  int32_t target;
+  TokenID context[CONTEXT];
+  TokenID target;
 } Sample;
 
 DEFINE_ARRAY_SLICE(Sample);
 
 Malloc_Allocator mallocator = MALLOC_CREATE();
 
-Node* embedding_node;
-Node* linear_node;
-Node* relu_node;
-Node* hidden1_node;
-Node* softmax_cross_entropy_node;
-Node* softmax_node;
-NMatrix target_logit;
-Optimizer optimizer;
+Node* embedding_node = NULL;
+Node* linear_node = NULL;
+Node* relu_node = NULL;
+Node* hidden1_node = NULL;
+Node* softmax_cross_entropy_node = NULL;
+Node* softmax_node = NULL;
+NMatrix target_logit = NULL_MATRIX;
+Optimizer optimizer = {0};
+int32_t epochs = 0;
 
 void mat_write(NMatrix mat, FILE* fp) {
   fwrite(&mat.rows, sizeof(int32_t), 1, fp);
@@ -97,14 +98,15 @@ void save_model(void) {
   fclose(fp);
 }
 
-void save_optimizer(void) {
+void save_optimizer(Optimizer* optimizer, int32_t epochs) {
   FILE* fp = fopen("models/gentext.opt", "wb");
-  fwrite(&optimizer.updates, sizeof(size_t), 1, fp);
-  fwrite(&optimizer.learning_rate, sizeof(float), 1, fp);
-  fwrite(&optimizer.tensors.count, sizeof(size_t), 1, fp);
-  for (size_t i = 0; i < optimizer.tensors.count; i++) {
-    mat_write(optimizer.history.elems[i], fp); // 1st moment
-    mat_write(optimizer.second.elems[i], fp); // 2nd moment
+  fwrite(&optimizer->updates, sizeof(size_t), 1, fp);
+  fwrite(&optimizer->learning_rate, sizeof(float), 1, fp);
+  fwrite(&epochs, sizeof(int32_t), 1, fp);
+  fwrite(&optimizer->tensors.count, sizeof(size_t), 1, fp);
+  for (size_t i = 0; i < optimizer->tensors.count; i++) {
+    mat_write(optimizer->history.elems[i], fp); // 1st moment
+    mat_write(optimizer->second.elems[i], fp); // 2nd moment
   }
   fclose(fp);
 }
@@ -122,19 +124,20 @@ void load_model(void) {
   }
 }
 
-void load_optimizer(void) {
+void load_optimizer(Optimizer* optimizer, int32_t* epochs) {
   FILE* fp = fopen("models/gentext.opt", "rb");
   if (fp != NULL) {
     printf("optimizer exists, reading\n");
-    fread(&optimizer.updates, sizeof(size_t), 1, fp);
-    fread(&optimizer.learning_rate, sizeof(float), 1, fp);
+    fread(&optimizer->updates, sizeof(size_t), 1, fp);
+    fread(&optimizer->learning_rate, sizeof(float), 1, fp);
+    fread(epochs, sizeof(int32_t), 1, fp);
     size_t tensors_count = 0;
     fread(&tensors_count, sizeof(size_t), 1, fp);
-    assert(tensors_count == optimizer.tensors.count);
+    assert(tensors_count == optimizer->tensors.count);
 
-    for (size_t i = 0; i < optimizer.tensors.count; i++) {
-      mat_read(optimizer.history.elems[i], fp); // 1st moment
-      mat_read(optimizer.second.elems[i], fp); // 2nd moment
+    for (size_t i = 0; i < optimizer->tensors.count; i++) {
+      mat_read(optimizer->history.elems[i], fp); // 1st moment
+      mat_read(optimizer->second.elems[i], fp); // 2nd moment
     }
     fclose(fp);
   }
@@ -195,7 +198,7 @@ void init_model(void) {
   // register_tensor(&optimizer, target_node->value);
 
   load_model();
-  load_optimizer();
+  load_optimizer(&optimizer, &epochs);
 }
 
 volatile sig_atomic_t keep_running = 1;
@@ -268,39 +271,29 @@ void smooth_target(NMatrix target, float eps) {
 
 void train_model(Sample_Array samples) {
   float cost = 0;
-  int epoch = 0;
 
   Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
 
   Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 2*1024*1024);
 
-  // for (size_t i = 4; i < 20; i++) {
-  //   Sample sample = samples.elems[i];
-  //
-  //   printf("[");
-  //   for (size_t j = 0; j < CONTEXT; j++) {
-  //     TokenID token = sample.context[j];
-  //     printf("\"%s\" ", vocabulary[token].token);
-  //   }
-  //   printf("] -> \"%s\"\n", vocabulary[sample.target].token);
-  // }
-  // exit(0);
-
   float best_epoch_loss = 1000.0f;
   int plateau_epochs = 0;
 
-  while (keep_running && epoch < 10000) {
+  while (keep_running && epochs < 10000) {
     array_shuffle(&samples);
 
     int64_t start_us = get_system_micros();
 
-    epoch += 1;
     cost = 0;
 
     size_t batch_size = 64;
     int64_t time_forward = 0;
     int64_t time_backward = 0;
     int64_t upd_weights = 0;
+
+    float sampling_probability = powf(0.95f, epochs);
+
+    int32_t substituions = 0;
 
     // Iterate through the sequence as a sliding window
     // Target is sequence[i], Context is sequence[i-CONTEXT] to sequence[i-1]
@@ -321,6 +314,31 @@ void train_model(Sample_Array samples) {
       int64_t f_us = get_system_micros();
       for (size_t batch = 0; batch < current_batch_size; batch++) {
         Sample sample = samples.elems[i + batch];
+
+        // Scheduled Sampling
+        //
+        // Common Decay Schedules
+        //
+        // Linear Decay:p = 1.0 - (current_epoch / total_epochs)
+        // Drops at a constant rate.
+        //
+        // Exponential Decay: p = k^current_epoch (where k < 1, e.g., 0.95)
+        // Drops quickly at first, then slows down.
+        //
+        // Inverse Sigmoid Decay: p = k / (k + exp(current_epoch / k)) (where k ≥ 1)
+        // Stays near 1.0 for a while, drops sharply, then flattens out near 0.0.
+        float r = rand_uniform();
+
+        if (r > sampling_probability) {
+          substituions += 1;
+          TokenID old = sample.context[CONTEXT-1];
+          TokenID new = rand_between(0, MAX_VOCAB);
+          sample.context[CONTEXT-1] = new;
+
+          (void)old;
+          // if (rand_between(0, 1000) == 0)
+          //   printf("\n[Scheduled Sampling] %.5f: %d => %d\n", r, old, new);
+        }
 
     // printf("[");
     // for (size_t j = 0; j < CONTEXT; j++) {
@@ -368,14 +386,17 @@ void train_model(Sample_Array samples) {
 
     int64_t time_us = get_system_micros() - start_us;
 
-    printf("\rtraining = %d cost = %f samples = %zu lr = %f fwd = %lld bwd = %lld upd = %lld total = %lld plateau = %d\r",
-        epoch, cost / samples.count, samples.count, optimizer.learning_rate,
-        time_forward/1000, time_backward/1000, upd_weights/1000, time_us/1000, plateau_epochs);
+    printf("\rtraining = %d cost = %f samples = %zu lr = %f fwd = %lld bwd = %lld upd = %lld total = %lld plateau = %d subs = %.2f%% p = %.3f\r",
+        epochs, cost / samples.count, samples.count, optimizer.learning_rate,
+        time_forward/1000, time_backward/1000, upd_weights/1000, time_us/1000, plateau_epochs,
+        substituions*100 / (float)samples.count, sampling_probability);
 
+    (void)best_epoch_loss;
+#if 1
     // optimize learning rate
     int patience = 3;
     float decay_factor = 0.75f;
-    float min_lr = 0.00001f;
+    float min_lr = 0.000001f;
     float min_delta = 0.005f;
     float loss = cost / samples.count;
 
@@ -401,7 +422,12 @@ void train_model(Sample_Array samples) {
 
       plateau_epochs = 0;
     }
+#endif
+
+    epochs += 1;
   }
+
+  epochs -= 1;
 
   //Batch Gradient Descent (BGD)
   //Mini-batch Gradient Descent (MBGD)
@@ -410,7 +436,7 @@ void train_model(Sample_Array samples) {
   //Categorical Cross-Entropy Loss (CCE)
 
   save_model();
-  save_optimizer();
+  save_optimizer(&optimizer, epochs);
 
   printf("\n");
 }
@@ -538,6 +564,16 @@ Sample_Array prepare_data(void) {
   return samples;
 }
 
+bool search_sample(Sample_Array samples, TokenID* context, Sample* sample) {
+  for (size_t i = 0; i < samples.count; i++) {
+    if (memcmp(samples.elems[i].context, context, CONTEXT*sizeof(TokenID)) == 0) {
+      *sample = samples.elems[i];
+      return true;
+    }
+  }
+  return false;
+}
+
 int main(int argc, char* argv[]) {
   struct sigaction act;
   act.sa_handler = handle_sigint;
@@ -585,7 +621,7 @@ int main(int argc, char* argv[]) {
         vocabulary_by_size
     );
 
-    int context[CONTEXT] = {0};
+    TokenID context[CONTEXT] = {0};
     Tape_Node_Array tape = ARRAY_CREATE(&arena.alloc);
 
     if (tokens_count > CONTEXT)
@@ -599,10 +635,11 @@ int main(int argc, char* argv[]) {
 
     printf("Generated:\n");
 
-#if 1
-    for (size_t i = 0; i < CONTEXT; i++)
-      printf("[%s]", vocabulary[context[i]].token);
-#endif
+    for (size_t i = 0; i < CONTEXT; i++) {
+      TokenID token = context[i];
+      printf("[%s]", vocabulary[token].token);
+    }
+    fflush(stdout);
 
     for (int step = 0; step < MAX_GENERATE; step++) {
       // Build input vector (concatenate embeddings)
@@ -620,9 +657,7 @@ int main(int argc, char* argv[]) {
       TokenID next = mat_row_argmax(output->value); // deterministic greedy decoding
       // TokenID next = sample(output->value); // stochastic probabilistic sampling
 
-#if 1
-      printf("%s", vocabulary[next].token);
-#else
+#if 0
       for (size_t i = 0; i < CONTEXT; i++) {
         TokenID token = context[i];
         if (token > 0 && token < 256 && !isprint(token))
@@ -635,6 +670,8 @@ int main(int argc, char* argv[]) {
         printf(" -> 0x%02x (%0.3f)\n", next, VEC_AT(output->value, next));
       else
         printf(" -> %s (%0.3f)\n", vocabulary[next].token, VEC_AT(output->value, next));
+#else
+      if (next != '\r') printf("%s", vocabulary[next].token);
 #endif
 
       if (next == EOS_TOKEN)
