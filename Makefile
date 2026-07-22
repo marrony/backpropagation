@@ -32,7 +32,7 @@ generated/alice.h: generated books/alice.txt
 generated/vocab.h: generated bin/genvocab
 	cp generated/vocab.h generated/vocab_old.h
 	./bin/genvocab > generated/vocab.h
-	diff generated/vocab_old.h generated/vocab.h
+	diff generated/vocab_old.h generated/vocab.h || true
 
 $(BINDIR)/genvocab: genvocab.c tokenizer.h generated/alice.h generated/vocab.h | $(BINDIR)
 	cc $(CFLAGS) $< -o $@ $(LDFLAGS)

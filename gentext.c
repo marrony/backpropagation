@@ -43,8 +43,8 @@ const char *training_text[] = {
 };
 
 #define CONTEXT 16
-#define EMBED_DIM 6
-#define HIDDEN_DIM 64
+#define EMBED_DIM 10
+#define HIDDEN_DIM 48
 #define INPUT_DIM (CONTEXT * EMBED_DIM)
 #define MAX_GENERATE 200
 
@@ -158,6 +158,12 @@ int32_t print_size(Node* linear) {
   return total;
 }
 
+void print_params(void) {
+  int32_t total = print_size(linear_node);
+  total += print_size(hidden1_node);
+  printf("Params = %d\n", total);
+}
+
 void init_model(void) {
   optimizer = (Optimizer) {
     .tensors = ARRAY_CREATE(&mallocator.alloc),
@@ -179,9 +185,7 @@ void init_model(void) {
   softmax_cross_entropy_node = create_softmax_cross_entropy(hidden1_node, target_logit);
   softmax_cross_entropy_node->temperature = 1.0;
 
-  int32_t total = print_size(linear_node);
-  total += print_size(hidden1_node);
-  printf("total = %d\n", total);
+  print_params();
 
   softmax_node = create_softmax(hidden1_node);
   softmax_node->temperature = 1.0;
@@ -401,127 +405,148 @@ void generate(
     printf("\n");
 }
 
-void train_step() {
+float train_sequence(
+    Arena_Allocator* arena,
+    Tape_Node_Array* tape,
+    TokenID_Array* sequence,
+    Index32_Array* start_indices,
+    float sampling_probability,
+    int32_t* substituions
+) {
+  size_t num_starts = sequence->count - CONTEXT;
+
+  start_indices->count = 0;
+  for (size_t i = 0; i < num_starts; i++)
+    array_append(start_indices, i);
+  shuffle_indices(*start_indices);
+
+  size_t batch_size = 64;
+
+  float cost = 0;
+
+  // Iterate through the sequence as a sliding window
+  for (size_t start_i = 0; start_i < num_starts; start_i += batch_size) {
+    size_t saved = SAVE(&arena->alloc);
+
+    // for (int j = 0; j < CONTEXT; j++) {
+    //     printf("[%s]", vocabulary[context[j]].token);
+    // }
+    // printf(" => [%s]\n", vocabulary[sequence[i]].token);
+
+    int32_t tokens_in_batch[MAX_VOCAB] = {0};
+
+    size_t current_batch_size = num_starts - start_i < batch_size ? num_starts - start_i : batch_size;
+
+    tape->count = 0;
+
+    for (size_t batch = 0; batch < current_batch_size; batch++) {
+      size_t start_index = start_indices->elems[start_i + batch];
+
+      // Prepare training input vector from embeddings
+      int32_t target = sequence->elems[start_index + CONTEXT];
+      memcpy(embedding_node->context, sequence->elems+start_index, sizeof(int32_t)*CONTEXT);
+
+      assert(target != PAD_TOKEN);
+
+      // Scheduled Sampling
+      //
+      // Common Decay Schedules
+      //
+      // Linear Decay:p = 1.0 - (current_epoch / total_epochs)
+      // Drops at a constant rate.
+      //
+      // Exponential Decay: p = k^current_epoch (where k < 1, e.g., 0.95)
+      // Drops quickly at first, then slows down.
+      //
+      // Inverse Sigmoid Decay: p = k / (k + exp(current_epoch / k)) (where k ≥ 1)
+      // Stays near 1.0 for a while, drops sharply, then flattens out near 0.0.
+      float r = rand_uniform();
+
+      if (r > sampling_probability) {
+        int32_t num_garbage = rand_between(1, 4);
+
+        for (int32_t g = 0; g < num_garbage; g++) {
+          int32_t new = rand_between(0, MAX_VOCAB-1);
+          embedding_node->context[CONTEXT-1-g] = new;
+          *substituions += 1;
+        }
+      }
+
+      for (int i = 0; i < CONTEXT; i++)
+        tokens_in_batch[embedding_node->context[i]] += 1;
+
+      // Labels for training: one-hot target
+      mat_zero(target_logit);
+      VEC_AT(target_logit, target) = 1.0f;
+
+      // smoothed target
+      // smooth_target(target_node->value.value, 0.1);
+
+      // Forward pass
+      softmax_cross_entropy_node->temperature = 1.0f;
+      Tensor* cross_out = node_forward(arena, softmax_cross_entropy_node, tape);
+
+      VEC_AT(cross_out->grad, 0) += 1.0f / current_batch_size;
+      cost += VEC_AT(cross_out->value, 0);
+    }
+
+    // Backward pass and accumulate gradients
+    node_backward(tape);
+
+    // Update the parameters
+    update_grads_adam(&optimizer, &embedding_node->embeddings, tokens_in_batch);
+
+    RESTORE(&arena->alloc, saved);
+  }
+
+  return cost;
 }
 
-void train_model(TokenID_Array sequence) {
-  size_t num_starts = sequence.count - CONTEXT;
-
+void train_model(Dataset_Array dataset) {
   Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
-  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 2*1024*1024);
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 20*1024*1024);
   TokenID_Array tokens = ARRAY_CREATE(&mallocator.alloc);
   Index32_Array start_indices = ARRAY_CREATE(&mallocator.alloc);
-  array_ensure(&start_indices, num_starts);
 
   float best_epoch_loss = 1000.0f;
   int plateau_epochs = 0;
 
   keep_running = true;
   while (keep_running && epochs < 10000) {
-    start_indices.count = 0;
-    for (size_t i = 0; i < num_starts; i++)
-      array_append(&start_indices, i);
-    shuffle_indices(start_indices);
-
-    int64_t start_us = get_system_micros();
-
-    size_t batch_size = 64;
-    int64_t time_forward = 0;
-    int64_t time_backward = 0;
-    int64_t upd_weights = 0;
+    int32_t substituions = 0;
+    float sampling_probability = powf(0.85f, epochs);
 
     float cost = 0;
-    float sampling_probability = powf(0.98f, epochs);
+    size_t samples = 0;
 
-    int32_t substituions = 0;
+    int64_t start_us = get_system_micros();
+    for (size_t i = 0; i < dataset.count; i++) {
+      TokenID_Array sequence = dataset.elems[i];
 
-    // Iterate through the sequence as a sliding window
-    for (size_t start_i = 0; start_i < num_starts; start_i += batch_size) {
-      size_t saved = SAVE(&arena.alloc);
+      samples += sequence.count;
 
-      // for (int j = 0; j < CONTEXT; j++) {
-      //     printf("[%s]", vocabulary[context[j]].token);
-      // }
-      // printf(" => [%s]\n", vocabulary[sequence[i]].token);
+      size_t num_starts = sequence.count - CONTEXT;
+      array_ensure(&start_indices, num_starts);
 
-      int32_t tokens_in_batch[MAX_VOCAB] = {0};
-
-      size_t current_batch_size = num_starts - start_i < batch_size ? num_starts - start_i : batch_size;
-
-      tape.count = 0;
-
-      int64_t f_us = get_system_micros();
-      for (size_t batch = 0; batch < current_batch_size; batch++) {
-        size_t start_index = start_indices.elems[start_i + batch];
-
-        // Prepare training input vector from embeddings
-        int32_t target = sequence.elems[start_index + CONTEXT];
-        memcpy(embedding_node->context, sequence.elems+start_index, sizeof(int32_t)*CONTEXT);
-
-        assert(target != PAD_TOKEN);
-
-        // Scheduled Sampling
-        //
-        // Common Decay Schedules
-        //
-        // Linear Decay:p = 1.0 - (current_epoch / total_epochs)
-        // Drops at a constant rate.
-        //
-        // Exponential Decay: p = k^current_epoch (where k < 1, e.g., 0.95)
-        // Drops quickly at first, then slows down.
-        //
-        // Inverse Sigmoid Decay: p = k / (k + exp(current_epoch / k)) (where k ≥ 1)
-        // Stays near 1.0 for a while, drops sharply, then flattens out near 0.0.
-        float r = rand_uniform();
-
-        if (r > sampling_probability) {
-          int32_t num_garbage = rand_between(1, 1);
-
-          for (int32_t g = 0; g < num_garbage; g++) {
-            int32_t new = rand_between(0, MAX_VOCAB-1);
-            embedding_node->context[CONTEXT-1-g] = new;
-            substituions += 1;
-          }
-        }
-
-        for (int i = 0; i < CONTEXT; i++)
-          tokens_in_batch[embedding_node->context[i]] += 1;
-
-        // Labels for training: one-hot target
-        mat_zero(target_logit);
-        VEC_AT(target_logit, target) = 1.0f;
-
-        // smoothed target
-        // smooth_target(target_node->value.value, 0.1);
-
-        // Forward pass
-        softmax_cross_entropy_node->temperature = 1.0f;
-        Tensor* cross_out = node_forward(&arena, softmax_cross_entropy_node, &tape);
-
-        VEC_AT(cross_out->grad, 0) += 1.0f / current_batch_size;
-        cost += VEC_AT(cross_out->value, 0);
-      }
-      time_forward += get_system_micros() - f_us;
-
-      // Backward pass and accumulate gradients
-      int64_t b_us = get_system_micros();
-      node_backward(&tape);
-      time_backward += get_system_micros() - b_us;
-
-      // Update the parameters
-      int64_t u_us = get_system_micros();
-      update_grads_adam(&optimizer, &embedding_node->embeddings, tokens_in_batch);
-      upd_weights += get_system_micros() - u_us;
-
-      RESTORE(&arena.alloc, saved);
+      cost += train_sequence(
+          &arena,
+          &tape,
+          &sequence,
+          &start_indices,
+          sampling_probability,
+          &substituions
+      );
     }
-
     int64_t time_us = get_system_micros() - start_us;
 
-    printf("\rtraining = %d cost = %f samples = %zu lr = %f fwd = %lld bwd = %lld upd = %lld total = %lld plateau = %d subs = %.2f%% p = %.3f\r",
-        epochs, cost / num_starts, num_starts, optimizer.learning_rate,
-        time_forward/1000, time_backward/1000, upd_weights/1000, time_us/1000, plateau_epochs,
-        substituions*100 / (float)num_starts, sampling_probability);
+    float loss = cost / samples;
+
+    printf("\rtraining = %d loss = %f samples = %zu lr = %f total = %lld plateau = %d subs = %d p = %.3f\r",
+        epochs, loss, samples, optimizer.learning_rate,
+        time_us/1000, plateau_epochs, substituions, sampling_probability);
+
+    if (loss <= 0.05)
+      break;
 
     (void)best_epoch_loss;
 #if 1
@@ -530,7 +555,6 @@ void train_model(TokenID_Array sequence) {
     float decay_factor = 0.9f;
     float min_lr = 0.000001f;
     float min_delta = 0.05f;
-    float loss = cost / num_starts;
 
     // todo: increase epoch only when we don't plateaued?
     if (loss < (best_epoch_loss - min_delta)) {
@@ -609,27 +633,33 @@ float mat_cos(NMatrix a, NMatrix b) {
   return dot / (len1 * len2);
 }
 
-void prepare_data(TokenID_Array* sequence) {
+void prepare_data(Dataset_Array* dataset) {
   for (size_t i = 0; i < sizeof(training_text)/sizeof(char*); i++) {
     const char* text = training_text[i];
 
+    TokenID_Array sequence = ARRAY_CREATE(dataset->allocator);
+
+    for (size_t c = 0; c < CONTEXT; c++)
+      array_append(&sequence, PAD_TOKEN);
+
     tokenize(
-        sequence,
+        &sequence,
         text,
         strlen(text),
         vocabulary,
         vocabulary_by_size
     );
 
-    array_append(sequence, EOS_TOKEN);
+    array_append(&sequence, EOS_TOKEN);
+    array_append(dataset, sequence);
   }
 
-  for (size_t i = 0; i < sequence->count; i++) {
-    int32_t target = sequence->elems[i];
-    printf("%s", vocabulary[target].token);
-  }
-
-  printf("\n");
+  // for (size_t i = 0; i < sequence->count; i++) {
+  //   int32_t target = sequence->elems[i];
+  //   printf("%s", vocabulary[target].token);
+  // }
+  //
+  // printf("\n");
 }
 
 bool search_sample(Sample_Array samples, int32_t* context, Sample* sample) {
@@ -656,19 +686,17 @@ int main(int argc, char* argv[]) {
   //srand(time(NULL));
   srand(42);
 
-  TokenID_Array sequence = ARRAY_CREATE(&mallocator.alloc);
+  Dataset_Array dataset = ARRAY_CREATE(&mallocator.alloc);
 
-  prepare_data(&sequence);
-
-  printf("Dataset = %zu\n", sequence.count);
+  prepare_data(&dataset);
 
   init_model();
 
   bool train = argc > 1 && strncmp(argv[1], "--train", 7) == 0;
 
-  if (train) train_model(sequence);
+  if (train) train_model(dataset);
 
-  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 10*1024*1024);
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 20*1024*1024);
   TokenID_Array tokens = ARRAY_CREATE(&mallocator.alloc);
 
   while (true) {
@@ -684,11 +712,12 @@ int main(int argc, char* argv[]) {
 
     if (strncmp(prompt, ".print", 6) == 0) {
       printf("lr = %f\nepochs = %d\n", optimizer.learning_rate, epochs);
+      print_params();
       continue;
     }
 
     if (strncmp(prompt, ".train", 6) == 0) {
-      train_model(sequence);
+      train_model(dataset);
       continue;
     }
 

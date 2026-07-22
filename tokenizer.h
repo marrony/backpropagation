@@ -86,7 +86,7 @@ typedef struct {
 
 DEFINE_ARRAY(Byte_Buffer);
 DEFINE_ARRAY_ALIAS(TokenID, int32_t);
-DEFINE_ARRAY(TokenID_Array);
+DEFINE_ARRAY_ALIAS(Dataset, TokenID_Array);
 
 Byte_Buffer alloc_pair(Allocator* alloc, Token_Pair pair) {
   Byte_Buffer buf = byte_buffer_filled(alloc, sizeof(Token_Pair), 0);
@@ -102,8 +102,7 @@ bool contains_space(Token* token) {
 }
 
 #define PAD_TOKEN 0
-#define EOS_TOKEN 1
-#define BOS_TOKEN 2
+#define EOS_TOKEN 256
 
 bool pre_split(const char* text, Byte_Buffer_Array* array) {
   pcre2_code *re;
@@ -169,7 +168,7 @@ bool pre_split(const char* text, Byte_Buffer_Array* array) {
   return true;
 }
 
-void calculate_histogram(TokenID_Array_Array ids_list, int32_t* histogram, int32_t vocab_size) {
+void calculate_histogram(Dataset_Array ids_list, int32_t* histogram, int32_t vocab_size) {
   bool punctuation[256] = {0};
   punctuation['.'] = true;
   punctuation[','] = true;
@@ -214,7 +213,7 @@ void array_println(TokenID_Array array) {
   printf("]\n");
 }
 
-void merge_ids(TokenID_Array_Array* ids_list, Token_Pair pair, int32_t new_token) {
+void merge_ids(Dataset_Array* ids_list, Token_Pair pair, int32_t new_token) {
   for (size_t i = 0; i < ids_list->count; i++) {
     TokenID_Array* ids = &ids_list->elems[i];
 
@@ -246,12 +245,6 @@ int32_t gen_vocabulary(
 
   int32_t vocabulary_count = 0;
 
-  for (int i = 0; i < 256; i++) {
-    vocabulary[vocabulary_count].id = vocabulary_count;
-    vocabulary[vocabulary_count].token[0] = i;
-    vocabulary_count += 1;
-  }
-
   Token token = {0};
 
   token.id = PAD_TOKEN;
@@ -260,19 +253,19 @@ int32_t gen_vocabulary(
   vocabulary[vocabulary_count] = token;
   vocabulary_count += 1;
 
+  for (int i = 1; i < 256; i++) {
+    vocabulary[vocabulary_count].id = vocabulary_count;
+    vocabulary[vocabulary_count].token[0] = i;
+    vocabulary_count += 1;
+  }
+
   token.id = EOS_TOKEN;
-  memset(token.token, 0, MAX_TOKEN );
+  memset(token.token, 0, MAX_TOKEN);
   strcpy(token.token, "<EOS>");
   vocabulary[vocabulary_count] = token;
   vocabulary_count += 1;
 
-  token.id = BOS_TOKEN;
-  memset(token.token, 0, MAX_TOKEN );
-  strcpy(token.token, "<BOS>");
-  vocabulary[vocabulary_count] = token;
-  vocabulary_count += 1;
-
-  TokenID_Array_Array ids_list = ARRAY_CREATE(global);
+  Dataset_Array ids_list = ARRAY_CREATE(global);
   Byte_Buffer_Array words_array = ARRAY_CREATE(global);
 
   for (size_t text_idx = 0; text_idx < text_len; text_idx++) {
@@ -295,7 +288,8 @@ int32_t gen_vocabulary(
     }
   }
 
-  size_t num_merges = max_vocab - 259;
+  size_t x = 256 + 1;
+  size_t num_merges = max_vocab - x;
 
   for (size_t i = 0; i < num_merges; i++) {
     size_t saved = SAVE(alloc);
@@ -323,7 +317,7 @@ int32_t gen_vocabulary(
 
     if (max_count == 0) break;
 
-    int32_t new_token = i + 259;
+    int32_t new_token = i + x;
     vocabulary[new_token].id = new_token;
     strncpy(vocabulary[new_token].token, vocabulary[max_pair.token0].token, MAX_TOKEN);
     strncat(vocabulary[new_token].token, vocabulary[max_pair.token1].token, MAX_TOKEN);
