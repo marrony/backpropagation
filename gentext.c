@@ -26,7 +26,7 @@
 #include "generated/vocab.h"
 
 const char *training_text[] = {
-  (const char*)alice_txt,
+  // (const char*)alice_txt,
   "the desert was silent except for the low, rhythmic hum of the wind sweeping across the dunes. for miles in every direction, nothing broke the horizon line but shifting sand and the occasional skeletal remains of ancient shrubs. evelyn checked her gps device, frowning at the uncoordinated coordinates flashing across the screen. the signal was dead. she had exactly two liters of water left, a compass that could not find true north, and six hours of daylight remaining before the temperature dropped below freezing.",
   "the desert is a landscape of surprising contrasts and quiet resilience. during the day, the sun beats down relentlessly, turning the sand into a glowing sea of gold. cacti and deep-rooted shrubs stand as silent sentinels, conserving every drop of precious moisture in their thick stems. yet, as twilight approaches, the extreme heat yields to a crisp, cooling breeze. the sky shifts into a canvas of violet and deep indigo. nocturnal creatures, such as the kit fox and the rattlesnake, emerge from their underground burrows to hunt and forage, breathing vibrant life into the quiet night.",
   "artificial intelligence has rapidly transformed from a theoretical concept into an everyday reality. machine learning algorithms now power everything from basic email filters to complex autonomous vehicles. by processing massive amounts of historical data, these systems can identify hidden patterns, make accurate predictions, and automate tedious tasks. however, this technological leap brings significant ethical challenges, including data privacy concerns and algorithmic bias. as these neural networks become increasingly sophisticated, developers face the crucial responsibility of ensuring transparency and fairness, so that these powerful digital tools ultimately benefit society as a whole.",
@@ -43,9 +43,10 @@ const char *training_text[] = {
 };
 
 #define CONTEXT 16
-#define EMBED_DIM 16
+#define EMBED_DIM 6
+#define HIDDEN_DIM 64
 #define INPUT_DIM (CONTEXT * EMBED_DIM)
-#define MAX_GENERATE 100
+#define MAX_GENERATE 200
 
 #define TO_STR_HELPER(x) #x
 #define TO_STR(x) TO_STR_HELPER(x)
@@ -71,6 +72,7 @@ Node* softmax_node = NULL;
 NMatrix target_logit = NULL_MATRIX;
 Optimizer optimizer = {0};
 int32_t epochs = 0;
+float temperature = 1.0;
 
 void mat_write(NMatrix mat, FILE* fp) {
   fwrite(&mat.rows, sizeof(int32_t), 1, fp);
@@ -143,6 +145,19 @@ void load_optimizer(Optimizer* optimizer, int32_t* epochs) {
   }
 }
 
+int32_t print_size(Node* linear) {
+  int32_t total = linear->weight.value.rows*linear->weight.value.cols + linear->bias.value.cols;
+
+  printf("%dx%d + %d = %d\n",
+      linear->weight.value.rows,
+      linear->weight.value.cols,
+      linear->bias.value.cols,
+      total
+  );
+
+  return total;
+}
+
 void init_model(void) {
   optimizer = (Optimizer) {
     .tensors = ARRAY_CREATE(&mallocator.alloc),
@@ -156,14 +171,17 @@ void init_model(void) {
   // embed_dim = 8
   // vocab_size = 512
   // embeddings (64) -> linear (64x128) -> relu -> linear (128x512) -> softmax
-  int hidden_dim = 24*CONTEXT;
   embedding_node = create_embeddings(MAX_VOCAB, EMBED_DIM, CONTEXT);
-  linear_node = create_linear(embedding_node, INPUT_DIM, hidden_dim);
+  linear_node = create_linear(embedding_node, INPUT_DIM, HIDDEN_DIM);
   relu_node = create_relu(linear_node);
-  hidden1_node = create_linear(relu_node, hidden_dim, MAX_VOCAB);
+  hidden1_node = create_linear(relu_node, HIDDEN_DIM, MAX_VOCAB);
   target_logit = mat_alloc(1, MAX_VOCAB);
   softmax_cross_entropy_node = create_softmax_cross_entropy(hidden1_node, target_logit);
   softmax_cross_entropy_node->temperature = 1.0;
+
+  int32_t total = print_size(linear_node);
+  total += print_size(hidden1_node);
+  printf("total = %d\n", total);
 
   softmax_node = create_softmax(hidden1_node);
   softmax_node->temperature = 1.0;
@@ -175,8 +193,8 @@ void init_model(void) {
   // Used For: Layers followed by ReLU or LeakyReLU.
 
   float std_embeddings = sqrtf(6.0f / (MAX_VOCAB+EMBED_DIM)) * 1;
-  float std_linear = sqrtf(6.0f / (EMBED_DIM+hidden_dim)) * 1;
-  float std_hidden = sqrtf(6.0f / (hidden_dim+MAX_VOCAB)) * 1;
+  float std_linear = sqrtf(6.0f / (EMBED_DIM+HIDDEN_DIM)) * 1;
+  float std_hidden = sqrtf(6.0f / (HIDDEN_DIM+MAX_VOCAB)) * 1;
 
   printf("inits = %f %f %f\n", std_embeddings, std_linear, std_hidden);
 
@@ -195,7 +213,6 @@ void init_model(void) {
   register_tensor(&optimizer, &linear_node->bias);
   register_tensor(&optimizer, &hidden1_node->weight);
   register_tensor(&optimizer, &hidden1_node->bias);
-  // register_tensor(&optimizer, target_node->value);
 
   load_model();
   load_optimizer(&optimizer, &epochs);
@@ -281,17 +298,125 @@ void shuffle_indices(Index32_Array indices) {
   }
 }
 
+size_t tokenize(
+    TokenID_Array* sequence,
+    const char* text,
+    size_t text_len,
+    Token* vocabulary,
+    Token_Sorted* vocabulary_by_size
+) {
+  size_t tokens_count = 0;
+
+  size_t i = 0;
+  while (i < text_len) {
+    bool found = false;
+    for (size_t ii = 0; ii < MAX_VOCAB; ii++) {
+      int32_t token = vocabulary_by_size[ii].id;
+      size_t size = vocabulary_by_size[ii].size;
+
+      if (strncmp(text+i, vocabulary[token].token, size) == 0) {
+        array_append(sequence, token);
+        tokens_count += 1;
+        i += size;
+        found = true;
+        break;
+      }
+    }
+    assert(found && "vocab not found");
+  }
+
+  return tokens_count;
+}
+
+void generate(
+    Arena_Allocator* arena,
+    TokenID_Array* tokens,
+    float temperature,
+    size_t max_tokens) {
+    int32_t context[CONTEXT] = {0};
+    if (tokens->count > CONTEXT)
+      tokens->count = CONTEXT;
+
+    for (size_t i = 0; i < tokens->count; i++) {
+      context[CONTEXT - tokens->count + i] = tokens->elems[i];
+    }
+
+    printf("Generated:\n");
+
+    for (size_t i = 0; i < CONTEXT; i++) {
+      int32_t token = context[i];
+      printf("%s", vocabulary[token].token);
+    }
+
+    for (size_t step = 0; step < max_tokens; step++) {
+      size_t saved = SAVE(&arena->alloc);
+
+      Tape_Node_Array tape = ARRAY_CREATE(&arena->alloc);
+
+      // Build input vector (concatenate embeddings)
+      memcpy(embedding_node->context, context, sizeof(context));
+
+      // t = 0.5 = deterministic
+      // t = 1.0 = normal
+      // t = 1.5 = creative
+      // t = 3.0 = nonsensical
+      softmax_node->temperature = temperature;
+      tape.count = 0;
+      Tensor* output = node_forward(arena, softmax_node, &tape);
+
+      // Sample next token
+      int32_t next = mat_row_argmax(output->value); // deterministic greedy decoding
+      // int32_t next = sample(output->value); // stochastic probabilistic sampling
+
+#if 0
+      for (size_t i = 0; i < CONTEXT; i++) {
+        int32_t token = context[i];
+        if (token > 0 && token < 256 && !isprint(token))
+          printf("[0x%02x]", context[i]);
+        else
+          printf("[%s]", vocabulary[context[i]].token);
+      }
+
+      if (next > 0 && next < 256 && !isprint(next))
+        printf(" -> 0x%02x (%0.3f)\n", next, VEC_AT(output->value, next));
+      else
+        printf(" -> %s (%0.3f)\n", vocabulary[next].token, VEC_AT(output->value, next));
+#else
+      if (next == '\r') next = '\n';
+      printf("%s", vocabulary[next].token);
+#endif
+
+      if (next == EOS_TOKEN)
+        break;
+
+      // Slide context window
+      for (int i = 0; i < CONTEXT - 1; i++)
+        context[i] = context[i+1];
+
+      context[CONTEXT - 1] = next;
+
+      RESTORE(&arena->alloc, saved);
+    }
+
+    printf("\n");
+}
+
+void train_step() {
+}
+
 void train_model(TokenID_Array sequence) {
   size_t num_starts = sequence.count - CONTEXT;
 
   Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
   Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 2*1024*1024);
+  TokenID_Array tokens = ARRAY_CREATE(&mallocator.alloc);
   Index32_Array start_indices = ARRAY_CREATE(&mallocator.alloc);
   array_ensure(&start_indices, num_starts);
 
   float best_epoch_loss = 1000.0f;
   int plateau_epochs = 0;
 
+  keep_running = true;
   while (keep_running && epochs < 10000) {
     start_indices.count = 0;
     for (size_t i = 0; i < num_starts; i++)
@@ -350,9 +475,13 @@ void train_model(TokenID_Array sequence) {
         float r = rand_uniform();
 
         if (r > sampling_probability) {
-          substituions += 1;
-          int32_t new = rand_between(0, MAX_VOCAB-1);
-          embedding_node->context[CONTEXT-1] = new;
+          int32_t num_garbage = rand_between(1, 1);
+
+          for (int32_t g = 0; g < num_garbage; g++) {
+            int32_t new = rand_between(0, MAX_VOCAB-1);
+            embedding_node->context[CONTEXT-1-g] = new;
+            substituions += 1;
+          }
         }
 
         for (int i = 0; i < CONTEXT; i++)
@@ -429,6 +558,24 @@ void train_model(TokenID_Array sequence) {
       epochs += 1;
     }
 #endif
+
+    for (size_t i = 0; i < sizeof(training_text)/sizeof(char*); i++) {
+      size_t saved = SAVE(&arena.alloc);
+
+      const char* prompt = training_text[i];
+      tokens.count = 0;
+      tokenize(
+          &tokens,
+          prompt,
+          100,
+          vocabulary,
+          vocabulary_by_size
+      );
+      printf("\nExpected:\n%s\n", prompt);
+      generate(&arena, &tokens, temperature, 500);
+
+      RESTORE(&arena.alloc, saved);
+    }
   }
 
   //Batch Gradient Descent (BGD)
@@ -439,9 +586,7 @@ void train_model(TokenID_Array sequence) {
 
   printf("\nsaving model\n");
   save_model();
-  printf("model saved\n");
   save_optimizer(&optimizer, epochs);
-  printf("params saved\n");
 }
 
 int sample(NMatrix probs) {
@@ -462,36 +607,6 @@ float mat_cos(NMatrix a, NMatrix b) {
   float len1 = sqrtf(mat_dot(a, a));
   float len2 = sqrtf(mat_dot(b, b));
   return dot / (len1 * len2);
-}
-
-size_t tokenize(
-    TokenID_Array* sequence,
-    const char* text,
-    size_t text_len,
-    Token* vocabulary,
-    Token_Sorted* vocabulary_by_size
-) {
-  size_t tokens_count = 0;
-
-  size_t i = 0;
-  while (i < text_len) {
-    bool found = false;
-    for (size_t ii = 0; ii < MAX_VOCAB; ii++) {
-      int32_t token = vocabulary_by_size[ii].id;
-      size_t size = vocabulary_by_size[ii].size;
-
-      if (strncmp(text+i, vocabulary[token].token, size) == 0) {
-        array_append(sequence, token);
-        tokens_count += 1;
-        i += size;
-        found = true;
-        break;
-      }
-    }
-    assert(found && "vocab not found");
-  }
-
-  return tokens_count;
 }
 
 void prepare_data(TokenID_Array* sequence) {
@@ -545,13 +660,13 @@ int main(int argc, char* argv[]) {
 
   prepare_data(&sequence);
 
+  printf("Dataset = %zu\n", sequence.count);
+
   init_model();
 
   bool train = argc > 1 && strncmp(argv[1], "--train", 7) == 0;
 
   if (train) train_model(sequence);
-
-  printf("Infering\n");
 
   Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 10*1024*1024);
   TokenID_Array tokens = ARRAY_CREATE(&mallocator.alloc);
@@ -567,6 +682,33 @@ int main(int argc, char* argv[]) {
 
     prompt[strlen(prompt)-1] = 0;
 
+    if (strncmp(prompt, ".print", 6) == 0) {
+      printf("lr = %f\nepochs = %d\n", optimizer.learning_rate, epochs);
+      continue;
+    }
+
+    if (strncmp(prompt, ".train", 6) == 0) {
+      train_model(sequence);
+      continue;
+    }
+
+    if (strncmp(prompt, ".lr", 3) == 0) {
+      float lr;
+      if (sscanf(prompt, ".lr %f", &lr) == 1) {
+        printf("setting learning rate from %f to %f\n", optimizer.learning_rate, lr);
+        optimizer.learning_rate = lr;
+      }
+      continue;
+    }
+
+    if (strncmp(prompt, ".temp", 5) == 0) {
+      float temp;
+      if (sscanf(prompt, ".temp %f", &temp) == 1) {
+        temperature = temp;
+      }
+      continue;
+    }
+
     if (strncmp(prompt, ".exit", 5) == 0)
       break;
 
@@ -578,68 +720,7 @@ int main(int argc, char* argv[]) {
         vocabulary,
         vocabulary_by_size
     );
-
-    int32_t context[CONTEXT] = {0};
-    Tape_Node_Array tape = ARRAY_CREATE(&arena.alloc);
-
-    if (tokens.count > CONTEXT)
-      tokens.count = CONTEXT;
-
-    for (size_t i = 0; i < tokens.count; i++) {
-      context[CONTEXT - tokens.count + i] = tokens.elems[i];
-    }
-
-    printf("Generated:\n");
-
-    for (size_t i = 0; i < CONTEXT; i++) {
-      int32_t token = context[i];
-      printf("[%s]", vocabulary[token].token);
-    }
-
-    for (int step = 0; step < MAX_GENERATE; step++) {
-      // Build input vector (concatenate embeddings)
-      memcpy(embedding_node->context, context, sizeof(context));
-
-      // t = 0.5 = deterministic
-      // t = 1.0 = normal
-      // t = 1.5 = creative
-      // t = 3.0 = nonsensical
-      softmax_node->temperature = 1.0;
-      tape.count = 0;
-      Tensor* output = node_forward(&arena, softmax_node, &tape);
-
-      // Sample next token
-      int32_t next = mat_row_argmax(output->value); // deterministic greedy decoding
-      // int32_t next = sample(output->value); // stochastic probabilistic sampling
-
-#if 0
-      for (size_t i = 0; i < CONTEXT; i++) {
-        int32_t token = context[i];
-        if (token > 0 && token < 256 && !isprint(token))
-          printf("[0x%02x]", context[i]);
-        else
-          printf("[%s]", vocabulary[context[i]].token);
-      }
-
-      if (next > 0 && next < 256 && !isprint(next))
-        printf(" -> 0x%02x (%0.3f)\n", next, VEC_AT(output->value, next));
-      else
-        printf(" -> %s (%0.3f)\n", vocabulary[next].token, VEC_AT(output->value, next));
-#else
-      if (next != '\r') printf("%s", vocabulary[next].token);
-#endif
-
-      if (next == EOS_TOKEN)
-        break;
-
-      // Slide context window
-      for (int i = 0; i < CONTEXT - 1; i++)
-        context[i] = context[i+1];
-
-      context[CONTEXT - 1] = next;
-    }
-
-    printf("\n");
+    generate(&arena, &tokens, temperature, MAX_GENERATE);
 
     RESTORE(&arena.alloc, saved);
   }
