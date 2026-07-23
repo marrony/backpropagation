@@ -44,7 +44,7 @@ const char *training_text[] = {
 
 #define CONTEXT 16
 #define EMBED_DIM 10
-#define HIDDEN_DIM 48
+#define HIDDEN_DIM 16
 #define FILTER_COUNT 48
 #define INPUT_DIM (CONTEXT * EMBED_DIM)
 #define MAX_GENERATE 200
@@ -225,7 +225,7 @@ void init_model(void) {
 #else
   embedding_node = create_embeddings(MAX_VOCAB, EMBED_DIM, CONTEXT);
   linear_node = create_linear(embedding_node, INPUT_DIM, HIDDEN_DIM);
-  relu_node = create_relu(linear_node);
+  relu_node = create_relu(linear_node, 0.01);
   hidden1_node = create_linear(relu_node, HIDDEN_DIM, MAX_VOCAB);
   target_logit = mat_alloc(1, MAX_VOCAB);
   softmax_cross_entropy_node = create_softmax_cross_entropy(hidden1_node, target_logit);

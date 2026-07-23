@@ -623,14 +623,14 @@ void test_relu(int times) {
   Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
 
   Node* input =  create_variable(1, 3);
-  Node* relu = create_relu(input);
+  Node* relu = create_relu(input, 0);
 
   Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
 
   mat_copy(input->value.value, mat_init(1, 3, (float[]){0.4967, -0.1383, 0.6477}));
 
   for (int i = 0; i < times; i++) {
-    Tensor* out = node_forward(&arena.alloc, relu, &tape);
+    Tensor* out = node_forward(&arena, relu, &tape);
 
     ASSERT_VEC_EQ(out->value, ((float[]) {0.4967, 0.0000, 0.6477}));
 
@@ -659,7 +659,7 @@ void test_linear(int times) {
   mat_copy(linear->bias.value, mat_init(1, 2, (float[]){0.5426, -0.4634}));
 
   for (int i = 0; i < times; i++) {
-    Tensor* out = node_forward(&arena.alloc, linear, &tape);
+    Tensor* out = node_forward(&arena, linear, &tape);
 
     ASSERT_VEC_EQ(out->value, ((float[]) {1.8285, -1.1022}));
 
@@ -685,7 +685,7 @@ void test_softmax(int times) {
   mat_copy(input->value.value, mat_init(1, 3, (float[]){0.3, 0.5, 0.9}));
 
   for (int i = 0; i < times; i++) {
-    Tensor* out = node_forward(&arena.alloc, softmax, &tape);
+    Tensor* out = node_forward(&arena, softmax, &tape);
 
     ASSERT_VEC_EQ(out->value, ((float[]) {+0.24731, +0.30206, +0.45063}));
 
@@ -700,16 +700,16 @@ void test_softmax_cross_entropy(int times) {
   Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
 
   Node* input =  create_variable(1, 3);
-  Node* target =  create_variable(1, 3);
+  NMatrix target =  mat_alloc(1, 3);
   Node* softmax = create_softmax_cross_entropy(input, target);
 
   Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
 
   mat_copy(input->value.value, mat_init(1, 3, (float[]){0.3, 0.5, 0.9}));
-  mat_copy(target->value.value, mat_init(1, 3, (float[]){0, 0, 1}));
+  mat_copy(target, mat_init(1, 3, (float[]){0, 0, 1}));
 
   for (int i = 0; i < times; i++) {
-    Tensor* out = node_forward(&arena.alloc, softmax, &tape);
+    Tensor* out = node_forward(&arena, softmax, &tape);
 
     ASSERT_VEC_EQ(out->value, ((float[]) {0.7971}));
 
@@ -738,7 +738,7 @@ void test_embeddings(int times) {
   }));
 
   for (int i = 0; i < times; i++) {
-    Tensor* out = node_forward(&arena.alloc, embeddings, &tape);
+    Tensor* out = node_forward(&arena, embeddings, &tape);
 
     ASSERT_VEC_EQ(out->value, ((float[]) {
           0.4967, -0.1383, 0.6477, // 0
@@ -765,9 +765,9 @@ void test_composed(int times) {
   Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
 
   Node* input =  create_variable(1, 3);
-  Node* target =  create_variable(1, 2);
+  NMatrix target = mat_alloc(1, 2);
   Node* linear = create_linear(input, 3, 2);
-  Node* relu = create_relu(linear);
+  Node* relu = create_relu(linear, 0);
   Node* softmax = create_softmax_cross_entropy(relu, target);
 
   Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
@@ -779,10 +779,10 @@ void test_composed(int times) {
         0.7674, -0.4695
   }));
   mat_copy(linear->bias.value, mat_init(1, 2, (float[]){0.5426, -0.4634}));
-  mat_copy(target->value.value, mat_init(1, 2, (float[]){0, 1}));
+  mat_copy(target, mat_init(1, 2, (float[]){0, 1}));
 
   for (int i = 0; i < times; i++) {
-    Tensor* out = node_forward(&arena.alloc, softmax, &tape);
+    Tensor* out = node_forward(&arena, softmax, &tape);
 
     ASSERT_VEC_EQ(out->value, ((float[]) {1.9775}));
 
@@ -817,7 +817,7 @@ void test_multiply(int times) {
   }));
 
   for (int i = 0; i < times; i++) {
-    Tensor* out = node_forward(&arena.alloc, multiply, &tape);
+    Tensor* out = node_forward(&arena, multiply, &tape);
 
     ASSERT_VEC_EQ(mat_row(out->value, 0), ((float[]) {+0.71679997}));
     ASSERT_VEC_EQ(mat_row(out->value, 1), ((float[]) {+3.09820008}));
@@ -857,7 +857,7 @@ void test_multiply_add(int times) {
   }));
 
   for (int i = 0; i < times; i++) {
-    Tensor* out = node_forward(&arena.alloc, add, &tape);
+    Tensor* out = node_forward(&arena, add, &tape);
 
     ASSERT_VEC_EQ(mat_row(out->value, 0), ((float[]) {+0.71679997 + 2}));
     ASSERT_VEC_EQ(mat_row(out->value, 1), ((float[]) {+3.09820008 + 2}));

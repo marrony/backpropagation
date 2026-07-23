@@ -1002,27 +1002,27 @@ void dsigmoid(NMatrix dst, NMatrix h, NMatrix dL_dh) {
   }
 }
 
-static inline float reluf(float x) {
-  return x > 0 ? x : 0.01*x;
+static inline float reluf(float x, float a) {
+  return x > 0 ? x : a*x;
 }
 
-static inline float dreluf(float x) {
-  return x > 0 ? 1 : 0.01;
+static inline float dreluf(float x, float a) {
+  return x > 0 ? 1 : a;
 }
 
 // Relu function
 //
 // returns if x > 0  : x
 //         if x <= 0 : 0
-void relu(NMatrix dst, NMatrix x) {
+void relu(NMatrix dst, NMatrix x, float a) {
   for (int i = 0; i < dst.rows*dst.cols; i++) {
-    dst.elems[i] = reluf(x.elems[i]);
+    dst.elems[i] = reluf(x.elems[i], a);
   }
 }
 
-void drelu(NMatrix dst, NMatrix h, NMatrix dL_dh) {
+void drelu(NMatrix dst, NMatrix h, NMatrix dL_dh, float a) {
   for (int i = 0; i < dst.rows*dst.cols; i++) {
-    dst.elems[i] += dreluf(h.elems[i]) * dL_dh.elems[i];
+    dst.elems[i] += dreluf(h.elems[i], a) * dL_dh.elems[i];
   }
 }
 

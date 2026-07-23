@@ -244,8 +244,10 @@ Node* create_softmax_cross_entropy(Node* input, NMatrix target) {
   return node;
 }
 
-Node* create_relu(Node* input) {
-  return create_unary(NODE_RELU, input);
+Node* create_relu(Node* input, float a) {
+  Node* node = create_unary(NODE_RELU, input);
+  node->temperature = a;
+  return node;
 }
 
 Node* create_conv2d(Node* input, int img_size, int kern_size) {
@@ -565,7 +567,7 @@ Tensor* node_forward(Arena_Allocator* arena, Node* node, Tape_Node_Array* tape) 
       out->value = mat_alloc2(&arena->alloc, x_tensor->value.rows, x_tensor->value.cols);
       out->grad = mat_alloc2(&arena->alloc, x_tensor->value.rows, x_tensor->value.cols);
       mat_zero(out->grad);
-      relu(out->value, x_tensor->value);
+      relu(out->value, x_tensor->value, node->temperature);
       break;
     }
 
@@ -757,6 +759,7 @@ void node_backward(Tape_Node_Array* tape) {
       int32_t* context = (int32_t*)tape_node.input[0];
 
       for (size_t t = 0; t < node->context_size; t++) {
+        if (context[t] == 0) continue;
         NMatrix grad = mat_row(node->embeddings.grad, context[t]);
         NMatrix ctx = mat_row_slice(dLdy, t*cols, cols);
         mat_add(grad, grad, ctx);
@@ -857,7 +860,7 @@ void node_backward(Tape_Node_Array* tape) {
       //
       // downstream:
       //   dL/dx = I(relu'(x)) ⊙ dL/dy (element-wise)
-      drelu(tape_node.input[0]->grad, tape_node.input[0]->value, dLdy);
+      drelu(tape_node.input[0]->grad, tape_node.input[0]->value, dLdy, node->temperature);
       break;
 
     case NODE_FLATTEN:
