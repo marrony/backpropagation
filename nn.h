@@ -593,15 +593,6 @@ void mat_add(NMatrix dst, NMatrix a, NMatrix b) {
   int count = dst.rows * dst.cols;
   for (int i = 0; i < count; i++)
     dst.elems[i] = a.elems[i] + b.elems[i];
-
-  // for (int i = 0; i < dst.rows; i++) {
-  //   for (int j = 0; j < dst.cols; j++) {
-  //     assert(!isnan(MAT_AT(a, i, j)));
-  //     assert(!isnan(MAT_AT(b, i, j)));
-  //
-  //     MAT_AT(dst, i, j) = MAT_AT(a, i, j) + MAT_AT(b, i, j);
-  //   }
-  // }
 }
 
 /**

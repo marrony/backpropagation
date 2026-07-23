@@ -9,6 +9,7 @@ typedef enum {
   NODE_CONSTANT,
   NODE_VARIABLE,
   NODE_EMBEDDING,
+  NODE_EMBEDDING_CONV,
   NODE_LINEAR,
   NODE_SIGMOID,
   NODE_SOFTMAX,
@@ -36,6 +37,7 @@ static const char* Node_Type_Str[__MAX_NODES+1] = {
   STR(NODE_CONSTANT),
   STR(NODE_VARIABLE),
   STR(NODE_EMBEDDING),
+  STR(NODE_EMBEDDING_CONV),
   STR(NODE_LINEAR),
   STR(NODE_SIGMOID),
   STR(NODE_SOFTMAX),
@@ -100,6 +102,9 @@ struct Node {
   Tensor value;
   float temperature;
   NMatrix target;
+  size_t filter_count;
+  Tensor* filters0;
+  Tensor* filters1;
 
   //
   int32_t* context;
@@ -167,6 +172,29 @@ Node* create_embeddings(size_t max_vocab, size_t emb_dim, size_t context_size) {
   node->context = malloc(sizeof(int32_t)*context_size);
   node->context_size = context_size;
   memset(node->context, 0, sizeof(int32_t)*context_size);
+
+  return node;
+}
+
+Node* create_embeddings_conv(size_t max_vocab, size_t emb_dim, size_t context_size, size_t filter_count) {
+  Node* node = create_node(NODE_EMBEDDING_CONV);
+  node->input_size = 0;
+  init_tensor(&node->embeddings, max_vocab, emb_dim);
+
+  node->context = malloc(sizeof(int32_t)*context_size);
+  node->context_size = context_size;
+  memset(node->context, 0, sizeof(int32_t)*context_size);
+
+  size_t kern_size = 3;
+  node->filter_count = filter_count;
+  node->filters0 = malloc(sizeof(Tensor)*filter_count);
+  node->filters1 = malloc(sizeof(Tensor)*filter_count);
+  memset(node->filters0, 0, sizeof(Tensor)*filter_count);
+  memset(node->filters1, 0, sizeof(Tensor)*filter_count);
+  for (size_t i = 0; i < filter_count; i++) {
+    init_tensor(&node->filters0[i], kern_size, emb_dim);
+    init_tensor(&node->filters1[i], kern_size, 48);
+  }
 
   return node;
 }
@@ -316,10 +344,75 @@ void register_tensor(Optimizer* opt, Tensor* tensor) {
   array_append(&opt->second, second);
 }
 
+void node_conv1d(
+  Tensor* out,
+  Tensor* embeddings,
+  Tensor* filters,
+  int32_t* context,
+  int32_t row_start,
+  int32_t rows_out,
+  int32_t filter_count) {
+  for (int i = 0; i < rows_out; i++) {   // 0..ctx_size-kern_size+1
+    int current_row = row_start + i;
+
+    for (int j = 0; j < filter_count; j++) {      // 0..filter_count
+      NMatrix w = filters[j].value;
+
+      float sum = 0;
+      for (int ki = 0; ki < w.rows; ki++) {     // 0..kern_size
+        int32_t token = context != NULL ? context[current_row+ki] : current_row+ki;
+        NMatrix x = mat_row(embeddings->value, token);
+
+        for(int kj = 0; kj < w.cols; kj++)      // 0..emb_size
+          sum += MAT_AT(x, 0, kj) * MAT_AT(w, ki, kj);
+      }
+
+      int row = rows_out == 1 ? 0 : current_row;
+      MAT_AT(out->value, row, j) = sum;
+    }
+  }
+}
+
+void node_dconv1d(
+  Tensor* embeddings,
+  Tensor* filters,
+  NMatrix dLdy,
+  int32_t* context,
+  int32_t row_start,
+  int32_t rows_out,
+  int32_t filter_count) {
+  for (int i = 0; i < rows_out; i++) {    // 0..ctx_size-kern_size+1
+    int current_row = row_start + i;
+
+    for (int j = 0; j < filter_count; j++) {       // 0..filter_count
+      int row = rows_out == 1 ? 0 : current_row;
+      float delta = MAT_AT(dLdy, row, j);
+      // Bias gradient
+      // grad_b[f] += delta;
+
+      Tensor w = filters[j];
+
+      for(int ki = 0; ki < w.grad.rows; ki++) {     // 0..kern_size
+        int32_t token = context != NULL ? context[current_row+ki] : current_row+ki;
+        NMatrix x = mat_row(embeddings->value, token);
+        NMatrix dLdx = mat_row(embeddings->grad, token);
+
+        for(int kj = 0; kj < w.grad.cols; kj++) {   // 0..emb_size
+          // Weight gradient
+          MAT_AT(w.grad, ki, kj) += delta * MAT_AT(x, 0, kj);
+
+          // Input gradient
+          MAT_AT(dLdx, 0, kj) += delta * MAT_AT(w.value, ki, kj);
+        }
+      }
+    }
+  }
+}
+
 Tensor* node_forward(Arena_Allocator* arena, Node* node, Tape_Node_Array* tape) {
   size_t saved = SAVE(&arena->alloc);
 
-  Tensor* out = (Tensor*)ALLOC(&arena->alloc, sizeof(Tensor)).ptr;
+  Tensor* out = ALLOC(&arena->alloc, sizeof(Tensor)).void_ptr;
   memset(out, 0, sizeof(Tensor));
   out->value = NULL_MATRIX;
   out->grad = NULL_MATRIX;
@@ -354,7 +447,34 @@ Tensor* node_forward(Arena_Allocator* arena, Node* node, Tape_Node_Array* tape) 
             mat_row(node->embeddings.value, context[t])
         );
       }
+      break;
+    }
 
+    case NODE_EMBEDDING_CONV: {
+      int kern_size = 3;
+      int filter_count = node->filter_count;
+      int rows_out_1 = node->context_size - kern_size + 1;
+      int rows_out_2 = rows_out_1 - kern_size + 1;
+
+      Tensor* layer1_out = ALLOC(&arena->alloc, sizeof(Tensor)).void_ptr;
+      layer1_out->value = mat_alloc2(&arena->alloc, rows_out_1, filter_count);
+      layer1_out->grad = mat_alloc2(&arena->alloc, rows_out_1, filter_count);
+      mat_zero(layer1_out->value);
+      mat_zero(layer1_out->grad);
+
+      out->value = mat_alloc2(&arena->alloc, 1, filter_count);
+      out->grad = mat_alloc2(&arena->alloc, 1, filter_count);
+      mat_zero(out->value);
+      mat_zero(out->grad);
+
+      int32_t* context = (int32_t*)ALLOC(&arena->alloc, sizeof(int32_t)*node->context_size).ptr;
+      memcpy(context, node->context, sizeof(int32_t)*node->context_size);
+
+      tape_node.input[0] = (Tensor*)context;
+      tape_node.input[1] = layer1_out;
+
+      node_conv1d(layer1_out, &node->embeddings, node->filters0, context, 0, rows_out_1, filter_count);
+      node_conv1d(out, layer1_out, node->filters1, NULL, rows_out_2-1, 1, filter_count);
       break;
     }
 
@@ -641,6 +761,20 @@ void node_backward(Tape_Node_Array* tape) {
         NMatrix ctx = mat_row_slice(dLdy, t*cols, cols);
         mat_add(grad, grad, ctx);
       }
+      break;
+    }
+
+    case NODE_EMBEDDING_CONV: {
+      int kern_size = 3;
+      int filter_count = node->filter_count;
+      int rows_out_1 = node->context_size - kern_size + 1;
+      int rows_out_2 = rows_out_1 - kern_size + 1;
+
+      int32_t* context = (int32_t*)tape_node.input[0];
+      Tensor* layer1_out = tape_node.input[1];
+
+      node_dconv1d(layer1_out, node->filters1, dLdy, NULL, rows_out_2-1, 1, filter_count);
+      node_dconv1d(&node->embeddings, node->filters0, layer1_out->grad, context, 0, rows_out_1, filter_count);
       break;
     }
 

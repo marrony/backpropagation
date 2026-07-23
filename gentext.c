@@ -45,6 +45,7 @@ const char *training_text[] = {
 #define CONTEXT 16
 #define EMBED_DIM 10
 #define HIDDEN_DIM 48
+#define FILTER_COUNT 48
 #define INPUT_DIM (CONTEXT * EMBED_DIM)
 #define MAX_GENERATE 200
 
@@ -93,10 +94,14 @@ void mat_read(NMatrix mat, FILE* fp) {
 void save_model(void) {
   FILE* fp = fopen("models/gentext.bin", "wb");
   mat_write(embedding_node->embeddings.value, fp);
-  mat_write(linear_node->weight.value, fp);
-  mat_write(linear_node->bias.value, fp);
-  mat_write(hidden1_node->weight.value, fp);
-  mat_write(hidden1_node->bias.value, fp);
+  if (linear_node) {
+    mat_write(linear_node->weight.value, fp);
+    mat_write(linear_node->bias.value, fp);
+  }
+  if (hidden1_node) {
+    mat_write(hidden1_node->weight.value, fp);
+    mat_write(hidden1_node->bias.value, fp);
+  }
   fclose(fp);
 }
 
@@ -118,10 +123,14 @@ void load_model(void) {
   if (fp != NULL) {
     printf("model exists, continue training\n");
     mat_read(embedding_node->embeddings.value, fp);
-    mat_read(linear_node->weight.value, fp);
-    mat_read(linear_node->bias.value, fp);
-    mat_read(hidden1_node->weight.value, fp);
-    mat_read(hidden1_node->bias.value, fp);
+    if (linear_node) {
+      mat_read(linear_node->weight.value, fp);
+      mat_read(linear_node->bias.value, fp);
+    }
+    if (hidden1_node) {
+      mat_read(hidden1_node->weight.value, fp);
+      mat_read(hidden1_node->bias.value, fp);
+    }
     fclose(fp);
   }
 }
@@ -145,22 +154,53 @@ void load_optimizer(Optimizer* optimizer, int32_t* epochs) {
   }
 }
 
-int32_t print_size(Node* linear) {
-  int32_t total = linear->weight.value.rows*linear->weight.value.cols + linear->bias.value.cols;
+int32_t print_size(Node* node) {
+  int32_t total = 0;
 
-  printf("%dx%d + %d = %d\n",
-      linear->weight.value.rows,
-      linear->weight.value.cols,
-      linear->bias.value.cols,
-      total
-  );
+  if (node->type == NODE_EMBEDDING) {
+    total = node->embeddings.value.rows*node->embeddings.value.cols;
+
+    printf("%dx%d = %d\n",
+        node->embeddings.value.rows,
+        node->embeddings.value.cols,
+        total
+    );
+  }
+
+  if (node->type == NODE_EMBEDDING_CONV) {
+    total = node->embeddings.value.rows*node->embeddings.value.cols;
+
+    for (size_t i = 0; i < node->filter_count; i++) {
+      total += node->filters0[i].value.rows*node->filters0[i].value.cols;
+      total += node->filters1[i].value.rows*node->filters1[i].value.cols;
+    }
+    printf("%dx%d = %d\n",
+        node->embeddings.value.rows,
+        node->embeddings.value.cols,
+        node->embeddings.value.rows*node->embeddings.value.cols
+    );
+    printf("%zux%dx%d = %zu\n", node->filter_count, node->filters0[0].value.rows, node->filters0[0].value.cols, node->filter_count * node->filters0[0].value.rows * node->filters0[0].value.cols);
+    printf("%zux%dx%d = %zu\n", node->filter_count, node->filters1[0].value.rows, node->filters1[0].value.cols, node->filter_count * node->filters1[0].value.rows * node->filters1[0].value.cols);
+  }
+
+  if (node->type == NODE_LINEAR) {
+    total = node->weight.value.rows*node->weight.value.cols + node->bias.value.cols;
+
+    printf("%dx%d + %d = %d\n",
+        node->weight.value.rows,
+        node->weight.value.cols,
+        node->bias.value.cols,
+        total
+    );
+  }
 
   return total;
 }
 
 void print_params(void) {
-  int32_t total = print_size(linear_node);
-  total += print_size(hidden1_node);
+  int32_t total = print_size(embedding_node);
+  total += linear_node == NULL ? 0 : print_size(linear_node);
+  total += hidden1_node == NULL ? 0 : print_size(hidden1_node);
   printf("Params = %d\n", total);
 }
 
@@ -173,10 +213,16 @@ void init_model(void) {
     .updates = 0,
   };
 
-  // context = 8
-  // embed_dim = 8
-  // vocab_size = 512
-  // embeddings (64) -> linear (64x128) -> relu -> linear (128x512) -> softmax
+#if 0
+  embedding_node = create_embeddings_conv(MAX_VOCAB, EMBED_DIM, CONTEXT, FILTER_COUNT);
+  linear_node = create_linear(embedding_node, FILTER_COUNT, MAX_VOCAB);
+  target_logit = mat_alloc(1, MAX_VOCAB);
+  softmax_cross_entropy_node = create_softmax_cross_entropy(linear_node, target_logit);
+  softmax_cross_entropy_node->temperature = 1.0;
+
+  softmax_node = create_softmax(embedding_node);
+  softmax_node->temperature = 1.0;
+#else
   embedding_node = create_embeddings(MAX_VOCAB, EMBED_DIM, CONTEXT);
   linear_node = create_linear(embedding_node, INPUT_DIM, HIDDEN_DIM);
   relu_node = create_relu(linear_node);
@@ -185,10 +231,11 @@ void init_model(void) {
   softmax_cross_entropy_node = create_softmax_cross_entropy(hidden1_node, target_logit);
   softmax_cross_entropy_node->temperature = 1.0;
 
-  print_params();
-
   softmax_node = create_softmax(hidden1_node);
   softmax_node->temperature = 1.0;
+#endif
+
+  print_params();
 
   // Xavier (Glorot): sqrt(1.0 / x)
   // Used For: Linear layers, Tanh layers, or Softmax inputs.
@@ -204,19 +251,39 @@ void init_model(void) {
 
   // Initialize embeddings and weights with small random values
   mat_rand_uniform(embedding_node->embeddings.value, -std_embeddings, +std_embeddings);
-  mat_rand_uniform(linear_node->weight.value, -std_linear, +std_linear);
-  mat_zero(linear_node->bias.value);
-  mat_rand_uniform(hidden1_node->weight.value, -std_hidden, +std_hidden);
-  mat_zero(hidden1_node->bias.value);
+  for (size_t i = 0; i < embedding_node->filter_count; i++) {
+    mat_rand_uniform(embedding_node->filters0[i].value, -std_embeddings, +std_embeddings);
+    mat_rand_uniform(embedding_node->filters1[i].value, -std_embeddings, +std_embeddings);
+  }
+
+  if (linear_node) {
+    mat_rand_uniform(linear_node->weight.value, -std_linear, +std_linear);
+    mat_zero(linear_node->bias.value);
+  }
+
+  if (hidden1_node) {
+    mat_rand_uniform(hidden1_node->weight.value, -std_hidden, +std_hidden);
+    mat_zero(hidden1_node->bias.value);
+  }
 
   mat_zero(mat_row(embedding_node->embeddings.value, PAD_TOKEN));
 
   // todo: move these calls to create_* functions
   register_tensor(&optimizer, &embedding_node->embeddings);
-  register_tensor(&optimizer, &linear_node->weight);
-  register_tensor(&optimizer, &linear_node->bias);
-  register_tensor(&optimizer, &hidden1_node->weight);
-  register_tensor(&optimizer, &hidden1_node->bias);
+  for (size_t i = 0; i < embedding_node->filter_count; i++) {
+    register_tensor(&optimizer, &embedding_node->filters0[i]);
+    register_tensor(&optimizer, &embedding_node->filters1[i]);
+  }
+
+  if (linear_node) {
+    register_tensor(&optimizer, &linear_node->weight);
+    register_tensor(&optimizer, &linear_node->bias);
+  }
+
+  if (hidden1_node) {
+    register_tensor(&optimizer, &hidden1_node->weight);
+    register_tensor(&optimizer, &hidden1_node->bias);
+  }
 
   load_model();
   load_optimizer(&optimizer, &epochs);
@@ -463,7 +530,7 @@ float train_sequence(
       float r = rand_uniform();
 
       if (r > sampling_probability) {
-        int32_t num_garbage = rand_between(1, 4);
+        int32_t num_garbage = rand_between(0, 4);
 
         for (int32_t g = 0; g < num_garbage; g++) {
           int32_t new = rand_between(0, MAX_VOCAB-1);
@@ -554,7 +621,7 @@ void train_model(Dataset_Array dataset) {
     int patience = 3;
     float decay_factor = 0.9f;
     float min_lr = 0.000001f;
-    float min_delta = 0.05f;
+    float min_delta = 0.0005f;
 
     // todo: increase epoch only when we don't plateaued?
     if (loss < (best_epoch_loss - min_delta)) {
@@ -583,7 +650,9 @@ void train_model(Dataset_Array dataset) {
     }
 #endif
 
-    for (size_t i = 0; i < sizeof(training_text)/sizeof(char*); i++) {
+    size_t c = sizeof(training_text)/sizeof(char*);
+    size_t i = c - 1;
+    // for (size_t i = 0; i < sizeof(training_text)/sizeof(char*); i++) {
       size_t saved = SAVE(&arena.alloc);
 
       const char* prompt = training_text[i];
@@ -591,7 +660,7 @@ void train_model(Dataset_Array dataset) {
       tokenize(
           &tokens,
           prompt,
-          100,
+          50,
           vocabulary,
           vocabulary_by_size
       );
@@ -599,7 +668,7 @@ void train_model(Dataset_Array dataset) {
       generate(&arena, &tokens, temperature, 500);
 
       RESTORE(&arena.alloc, saved);
-    }
+    // }
   }
 
   //Batch Gradient Descent (BGD)
