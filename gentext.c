@@ -44,7 +44,7 @@ const char *training_text[] = {
 
 #define CONTEXT 16
 #define EMBED_DIM 10
-#define HIDDEN_DIM 16
+#define HIDDEN_DIM 32
 #define FILTER_COUNT 48
 #define INPUT_DIM (CONTEXT * EMBED_DIM)
 #define MAX_GENERATE 200
@@ -93,14 +93,14 @@ void mat_read(NMatrix mat, FILE* fp) {
 
 void save_model(void) {
   FILE* fp = fopen("models/gentext.bin", "wb");
-  mat_write(embedding_node->embeddings.value, fp);
+  mat_write(embedding_node->as_embedding.embeddings.value, fp);
   if (linear_node) {
-    mat_write(linear_node->weight.value, fp);
-    mat_write(linear_node->bias.value, fp);
+    mat_write(linear_node->as_linear.weight.value, fp);
+    mat_write(linear_node->as_linear.bias.value, fp);
   }
   if (hidden1_node) {
-    mat_write(hidden1_node->weight.value, fp);
-    mat_write(hidden1_node->bias.value, fp);
+    mat_write(hidden1_node->as_linear.weight.value, fp);
+    mat_write(hidden1_node->as_linear.bias.value, fp);
   }
   fclose(fp);
 }
@@ -122,14 +122,14 @@ void load_model(void) {
   FILE* fp = fopen("models/gentext.bin", "rb");
   if (fp != NULL) {
     printf("model exists, continue training\n");
-    mat_read(embedding_node->embeddings.value, fp);
+    mat_read(embedding_node->as_embedding.embeddings.value, fp);
     if (linear_node) {
-      mat_read(linear_node->weight.value, fp);
-      mat_read(linear_node->bias.value, fp);
+      mat_read(linear_node->as_linear.weight.value, fp);
+      mat_read(linear_node->as_linear.bias.value, fp);
     }
     if (hidden1_node) {
-      mat_read(hidden1_node->weight.value, fp);
-      mat_read(hidden1_node->bias.value, fp);
+      mat_read(hidden1_node->as_linear.weight.value, fp);
+      mat_read(hidden1_node->as_linear.bias.value, fp);
     }
     fclose(fp);
   }
@@ -158,38 +158,38 @@ int32_t print_size(Node* node) {
   int32_t total = 0;
 
   if (node->type == NODE_EMBEDDING) {
-    total = node->embeddings.value.rows*node->embeddings.value.cols;
+    total = node->as_embedding.embeddings.value.rows*node->as_embedding.embeddings.value.cols;
 
     printf("%dx%d = %d\n",
-        node->embeddings.value.rows,
-        node->embeddings.value.cols,
+        node->as_embedding.embeddings.value.rows,
+        node->as_embedding.embeddings.value.cols,
         total
     );
   }
 
   if (node->type == NODE_EMBEDDING_CONV) {
-    total = node->embeddings.value.rows*node->embeddings.value.cols;
+    total = node->as_embedding.embeddings.value.rows*node->as_embedding.embeddings.value.cols;
 
-    for (size_t i = 0; i < node->filter_count; i++) {
-      total += node->filters0[i].value.rows*node->filters0[i].value.cols;
-      total += node->filters1[i].value.rows*node->filters1[i].value.cols;
+    for (size_t i = 0; i < node->as_embedding.filter_count; i++) {
+      total += node->as_embedding.filters0[i].value.rows*node->as_embedding.filters0[i].value.cols;
+      total += node->as_embedding.filters1[i].value.rows*node->as_embedding.filters1[i].value.cols;
     }
     printf("%dx%d = %d\n",
-        node->embeddings.value.rows,
-        node->embeddings.value.cols,
-        node->embeddings.value.rows*node->embeddings.value.cols
+        node->as_embedding.embeddings.value.rows,
+        node->as_embedding.embeddings.value.cols,
+        node->as_embedding.embeddings.value.rows*node->as_embedding.embeddings.value.cols
     );
-    printf("%zux%dx%d = %zu\n", node->filter_count, node->filters0[0].value.rows, node->filters0[0].value.cols, node->filter_count * node->filters0[0].value.rows * node->filters0[0].value.cols);
-    printf("%zux%dx%d = %zu\n", node->filter_count, node->filters1[0].value.rows, node->filters1[0].value.cols, node->filter_count * node->filters1[0].value.rows * node->filters1[0].value.cols);
+    printf("%zux%dx%d = %zu\n", node->as_embedding.filter_count, node->as_embedding.filters0[0].value.rows, node->as_embedding.filters0[0].value.cols, node->as_embedding.filter_count * node->as_embedding.filters0[0].value.rows * node->as_embedding.filters0[0].value.cols);
+    printf("%zux%dx%d = %zu\n", node->as_embedding.filter_count, node->as_embedding.filters1[0].value.rows, node->as_embedding.filters1[0].value.cols, node->as_embedding.filter_count * node->as_embedding.filters1[0].value.rows * node->as_embedding.filters1[0].value.cols);
   }
 
   if (node->type == NODE_LINEAR) {
-    total = node->weight.value.rows*node->weight.value.cols + node->bias.value.cols;
+    total = node->as_linear.weight.value.rows*node->as_linear.weight.value.cols + node->as_linear.bias.value.cols;
 
     printf("%dx%d + %d = %d\n",
-        node->weight.value.rows,
-        node->weight.value.cols,
-        node->bias.value.cols,
+        node->as_linear.weight.value.rows,
+        node->as_linear.weight.value.cols,
+        node->as_linear.bias.value.cols,
         total
     );
   }
@@ -223,16 +223,16 @@ void init_model(void) {
   softmax_node = create_softmax(embedding_node);
   softmax_node->temperature = 1.0;
 #else
-  embedding_node = create_embeddings(MAX_VOCAB, EMBED_DIM, CONTEXT);
-  linear_node = create_linear(embedding_node, INPUT_DIM, HIDDEN_DIM);
+  embedding_node = create_embeddings(&optimizer, MAX_VOCAB, EMBED_DIM, CONTEXT);
+  linear_node = create_linear(&optimizer, embedding_node, INPUT_DIM, HIDDEN_DIM);
   relu_node = create_relu(linear_node, 0.01);
-  hidden1_node = create_linear(relu_node, HIDDEN_DIM, MAX_VOCAB);
+  hidden1_node = create_linear(&optimizer, relu_node, HIDDEN_DIM, MAX_VOCAB);
   target_logit = mat_alloc(1, MAX_VOCAB);
   softmax_cross_entropy_node = create_softmax_cross_entropy(hidden1_node, target_logit);
-  softmax_cross_entropy_node->temperature = 1.0;
+  softmax_cross_entropy_node->as_softmax.temperature = 1.0;
 
   softmax_node = create_softmax(hidden1_node);
-  softmax_node->temperature = 1.0;
+  softmax_node->as_softmax.temperature = 1.0;
 #endif
 
   print_params();
@@ -250,40 +250,27 @@ void init_model(void) {
   printf("inits = %f %f %f\n", std_embeddings, std_linear, std_hidden);
 
   // Initialize embeddings and weights with small random values
-  mat_rand_uniform(embedding_node->embeddings.value, -std_embeddings, +std_embeddings);
-  for (size_t i = 0; i < embedding_node->filter_count; i++) {
-    mat_rand_uniform(embedding_node->filters0[i].value, -std_embeddings, +std_embeddings);
-    mat_rand_uniform(embedding_node->filters1[i].value, -std_embeddings, +std_embeddings);
+  if (embedding_node->type == NODE_EMBEDDING) {
+    mat_rand_uniform(embedding_node->as_embedding.embeddings.value, -std_embeddings, +std_embeddings);
+  } else {
+    mat_rand_uniform(embedding_node->as_embedding.embeddings.value, -std_embeddings, +std_embeddings);
+    for (size_t i = 0; i < embedding_node->as_embedding.filter_count; i++) {
+      mat_rand_uniform(embedding_node->as_embedding.filters0[i].value, -std_embeddings, +std_embeddings);
+      mat_rand_uniform(embedding_node->as_embedding.filters1[i].value, -std_embeddings, +std_embeddings);
+    }
   }
 
   if (linear_node) {
-    mat_rand_uniform(linear_node->weight.value, -std_linear, +std_linear);
-    mat_zero(linear_node->bias.value);
+    mat_rand_uniform(linear_node->as_linear.weight.value, -std_linear, +std_linear);
+    mat_zero(linear_node->as_linear.bias.value);
   }
 
   if (hidden1_node) {
-    mat_rand_uniform(hidden1_node->weight.value, -std_hidden, +std_hidden);
-    mat_zero(hidden1_node->bias.value);
+    mat_rand_uniform(hidden1_node->as_linear.weight.value, -std_hidden, +std_hidden);
+    mat_zero(hidden1_node->as_linear.bias.value);
   }
 
-  mat_zero(mat_row(embedding_node->embeddings.value, PAD_TOKEN));
-
-  // todo: move these calls to create_* functions
-  register_tensor(&optimizer, &embedding_node->embeddings);
-  for (size_t i = 0; i < embedding_node->filter_count; i++) {
-    register_tensor(&optimizer, &embedding_node->filters0[i]);
-    register_tensor(&optimizer, &embedding_node->filters1[i]);
-  }
-
-  if (linear_node) {
-    register_tensor(&optimizer, &linear_node->weight);
-    register_tensor(&optimizer, &linear_node->bias);
-  }
-
-  if (hidden1_node) {
-    register_tensor(&optimizer, &hidden1_node->weight);
-    register_tensor(&optimizer, &hidden1_node->bias);
-  }
+  mat_zero(mat_row(embedding_node->as_embedding.embeddings.value, PAD_TOKEN));
 
   load_model();
   load_optimizer(&optimizer, &epochs);
@@ -425,13 +412,13 @@ void generate(
       Tape_Node_Array tape = ARRAY_CREATE(&arena->alloc);
 
       // Build input vector (concatenate embeddings)
-      memcpy(embedding_node->context, context, sizeof(context));
+      memcpy(embedding_node->as_embedding.context, context, sizeof(context));
 
       // t = 0.5 = deterministic
       // t = 1.0 = normal
       // t = 1.5 = creative
       // t = 3.0 = nonsensical
-      softmax_node->temperature = temperature;
+      softmax_node->as_softmax.temperature = temperature;
       tape.count = 0;
       Tensor* output = node_forward(arena, softmax_node, &tape);
 
@@ -511,7 +498,7 @@ float train_sequence(
 
       // Prepare training input vector from embeddings
       int32_t target = sequence->elems[start_index + CONTEXT];
-      memcpy(embedding_node->context, sequence->elems+start_index, sizeof(int32_t)*CONTEXT);
+      memcpy(embedding_node->as_embedding.context, sequence->elems+start_index, sizeof(int32_t)*CONTEXT);
 
       assert(target != PAD_TOKEN);
 
@@ -534,13 +521,13 @@ float train_sequence(
 
         for (int32_t g = 0; g < num_garbage; g++) {
           int32_t new = rand_between(0, MAX_VOCAB-1);
-          embedding_node->context[CONTEXT-1-g] = new;
+          embedding_node->as_embedding.context[CONTEXT-1-g] = new;
           *substituions += 1;
         }
       }
 
       for (int i = 0; i < CONTEXT; i++)
-        tokens_in_batch[embedding_node->context[i]] += 1;
+        tokens_in_batch[embedding_node->as_embedding.context[i]] += 1;
 
       // Labels for training: one-hot target
       mat_zero(target_logit);
@@ -550,7 +537,7 @@ float train_sequence(
       // smooth_target(target_node->value.value, 0.1);
 
       // Forward pass
-      softmax_cross_entropy_node->temperature = 1.0f;
+      softmax_cross_entropy_node->as_softmax.temperature = 1.0f;
       Tensor* cross_out = node_forward(arena, softmax_cross_entropy_node, tape);
 
       VEC_AT(cross_out->grad, 0) += 1.0f / current_batch_size;
@@ -561,7 +548,7 @@ float train_sequence(
     node_backward(tape);
 
     // Update the parameters
-    update_grads_adam(&optimizer, &embedding_node->embeddings, tokens_in_batch);
+    update_grads_adam(&optimizer, &embedding_node->as_embedding.embeddings, tokens_in_batch);
 
     RESTORE(&arena->alloc, saved);
   }

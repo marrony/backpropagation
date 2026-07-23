@@ -627,7 +627,7 @@ void test_relu(int times) {
 
   Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
 
-  mat_copy(input->value.value, mat_init(1, 3, (float[]){0.4967, -0.1383, 0.6477}));
+  mat_copy(input->as_variable.value.value, mat_init(1, 3, (float[]){0.4967, -0.1383, 0.6477}));
 
   for (int i = 0; i < times; i++) {
     Tensor* out = node_forward(&arena, relu, &tape);
@@ -639,7 +639,7 @@ void test_relu(int times) {
 
   node_backward(&tape);
 
-  ASSERT_VEC_EQ(input->value.grad, ((float[]){-0.2509*times, 0.0000*times, 0.4640*times}));
+  ASSERT_VEC_EQ(input->as_variable.value.grad, ((float[]){-0.2509*times, 0.0000*times, 0.4640*times}));
 }
 
 void test_linear(int times) {
@@ -650,13 +650,13 @@ void test_linear(int times) {
 
   Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
 
-  mat_copy(input->value.value, mat_init(1, 3, (float[]){0.4967, -0.1383, 0.6477}));
-  mat_copy(linear->weight.value, mat_init(3, 2, (float[]){
+  mat_copy(input->as_variable.value.value, mat_init(1, 3, (float[]){0.4967, -0.1383, 0.6477}));
+  mat_copy(linear->as_linear.weight.value, mat_init(3, 2, (float[]){
         1.5230, -0.2342,
         -0.2341, 1.5792,
         0.7674, -0.4695
   }));
-  mat_copy(linear->bias.value, mat_init(1, 2, (float[]){0.5426, -0.4634}));
+  mat_copy(linear->as_linear.bias.value, mat_init(1, 2, (float[]){0.5426, -0.4634}));
 
   for (int i = 0; i < times; i++) {
     Tensor* out = node_forward(&arena, linear, &tape);
@@ -667,11 +667,11 @@ void test_linear(int times) {
   }
   node_backward(&tape);
 
-  ASSERT_VEC_EQ(input->value.grad, ((float[]) {-0.7659377289*times, 0.4911870575*times, -0.4709969330*times}));
-  ASSERT_VEC_EQ(mat_row(linear->weight.grad, 0), ((float[]) {-0.2313132095*times, 0.1202013493*times}));
-  ASSERT_VEC_EQ(mat_row(linear->weight.grad, 1), ((float[]) {0.0644063616*times, -0.0334685545*times}));
-  ASSERT_VEC_EQ(mat_row(linear->weight.grad, 2), ((float[]) {-0.3016338539*times, 0.1567432785*times}));
-  ASSERT_VEC_EQ(linear->bias.grad, ((float[]) {-0.4657*times, 0.2420*times}));
+  ASSERT_VEC_EQ(input->as_variable.value.grad, ((float[]) {-0.7659377289*times, 0.4911870575*times, -0.4709969330*times}));
+  ASSERT_VEC_EQ(mat_row(linear->as_linear.weight.grad, 0), ((float[]) {-0.2313132095*times, 0.1202013493*times}));
+  ASSERT_VEC_EQ(mat_row(linear->as_linear.weight.grad, 1), ((float[]) {0.0644063616*times, -0.0334685545*times}));
+  ASSERT_VEC_EQ(mat_row(linear->as_linear.weight.grad, 2), ((float[]) {-0.3016338539*times, 0.1567432785*times}));
+  ASSERT_VEC_EQ(linear->as_linear.bias.grad, ((float[]) {-0.4657*times, 0.2420*times}));
 }
 
 void test_softmax(int times) {
@@ -682,7 +682,7 @@ void test_softmax(int times) {
 
   Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
 
-  mat_copy(input->value.value, mat_init(1, 3, (float[]){0.3, 0.5, 0.9}));
+  mat_copy(input->as_variable.value.value, mat_init(1, 3, (float[]){0.3, 0.5, 0.9}));
 
   for (int i = 0; i < times; i++) {
     Tensor* out = node_forward(&arena, softmax, &tape);
@@ -693,7 +693,7 @@ void test_softmax(int times) {
   }
   node_backward(&tape);
 
-  ASSERT_VEC_EQ(input->value.grad, ((float[]){-0.11144412*times, -0.13611814*times, 0.24756226*times}));
+  ASSERT_VEC_EQ(input->as_variable.value.grad, ((float[]){-0.11144412*times, -0.13611814*times, 0.24756226*times}));
 }
 
 void test_softmax_cross_entropy(int times) {
@@ -705,7 +705,7 @@ void test_softmax_cross_entropy(int times) {
 
   Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
 
-  mat_copy(input->value.value, mat_init(1, 3, (float[]){0.3, 0.5, 0.9}));
+  mat_copy(input->as_variable.value.value, mat_init(1, 3, (float[]){0.3, 0.5, 0.9}));
   mat_copy(target, mat_init(1, 3, (float[]){0, 0, 1}));
 
   for (int i = 0; i < times; i++) {
@@ -718,7 +718,7 @@ void test_softmax_cross_entropy(int times) {
 
   node_backward(&tape);
 
-  ASSERT_VEC_EQ(input->value.grad, ((float[]){0.247309184*times, 0.302064109*times, -0.549373198*times}));
+  ASSERT_VEC_EQ(input->as_variable.value.grad, ((float[]){0.247309184*times, 0.302064109*times, -0.549373198*times}));
 }
 
 void test_embeddings(int times) {
@@ -727,11 +727,11 @@ void test_embeddings(int times) {
 
   // [2x3]
   Node* embeddings = create_embeddings(3, 3, 4);
-  embeddings->context[0] = 0;
-  embeddings->context[1] = 2;
-  embeddings->context[2] = 1;
-  embeddings->context[3] = 2;
-  mat_copy(embeddings->embeddings.value, mat_init(3, 3, (float[]){
+  embeddings->as_embedding.context[0] = 0;
+  embeddings->as_embedding.context[1] = 2;
+  embeddings->as_embedding.context[2] = 1;
+  embeddings->as_embedding.context[3] = 2;
+  mat_copy(embeddings->as_embedding.embeddings.value, mat_init(3, 3, (float[]){
         0.4967, -0.1383, 0.6477,
         -0.2509, 0.9014, 0.4640,
         0.2472, 0.3021, -0.5494,
@@ -756,9 +756,9 @@ void test_embeddings(int times) {
   }
   node_backward(&tape);
 
-  ASSERT_VEC_EQ(mat_row(embeddings->embeddings.grad, 0), ((float[]) {0, 0, 0}));
-  ASSERT_VEC_EQ(mat_row(embeddings->embeddings.grad, 1), ((float[]) {7*times, 8*times, 9*times}));
-  ASSERT_VEC_EQ(mat_row(embeddings->embeddings.grad, 2), ((float[]) {(4+10)*times, (5+11)*times, (6+12)*times}));
+  ASSERT_VEC_EQ(mat_row(embeddings->as_embedding.embeddings.grad, 0), ((float[]) {0, 0, 0}));
+  ASSERT_VEC_EQ(mat_row(embeddings->as_embedding.embeddings.grad, 1), ((float[]) {7*times, 8*times, 9*times}));
+  ASSERT_VEC_EQ(mat_row(embeddings->as_embedding.embeddings.grad, 2), ((float[]) {(4+10)*times, (5+11)*times, (6+12)*times}));
 }
 
 void test_composed(int times) {
@@ -772,13 +772,13 @@ void test_composed(int times) {
 
   Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
 
-  mat_copy(input->value.value, mat_init(1, 3, (float[]){0.4967, -0.1383, 0.6477}));
-  mat_copy(linear->weight.value, mat_init(3, 2, (float[]){
+  mat_copy(input->as_variable.value.value, mat_init(1, 3, (float[]){0.4967, -0.1383, 0.6477}));
+  mat_copy(linear->as_linear.weight.value, mat_init(3, 2, (float[]){
         1.5230, -0.2342,
         -0.2341, 1.5792,
         0.7674, -0.4695
   }));
-  mat_copy(linear->bias.value, mat_init(1, 2, (float[]){0.5426, -0.4634}));
+  mat_copy(linear->as_linear.bias.value, mat_init(1, 2, (float[]){0.5426, -0.4634}));
   mat_copy(target, mat_init(1, 2, (float[]){0, 1}));
 
   for (int i = 0; i < times; i++) {
@@ -791,11 +791,11 @@ void test_composed(int times) {
 
   node_backward(&tape);
 
-  ASSERT_VEC_EQ(input->value.grad, ((float[]) {1.3121888733*times, -0.2016964149*times, 0.6611785126*times}));
-  ASSERT_VEC_EQ(mat_row(linear->weight.grad, 0), ((float[]) {+0.4279479599*times, 0.0000}));
-  ASSERT_VEC_EQ(mat_row(linear->weight.grad, 1), ((float[]) {-0.1191568375*times, 0.0000}));
-  ASSERT_VEC_EQ(mat_row(linear->weight.grad, 2), ((float[]) {+0.5580473709*times, 0.0000}));
-  ASSERT_VEC_EQ(linear->bias.grad, ((float[]) {+0.8615821838*times, 0.0000}));
+  ASSERT_VEC_EQ(input->as_variable.value.grad, ((float[]) {1.3121888733*times, -0.2016964149*times, 0.6611785126*times}));
+  ASSERT_VEC_EQ(mat_row(linear->as_linear.weight.grad, 0), ((float[]) {+0.4279479599*times, 0.0000}));
+  ASSERT_VEC_EQ(mat_row(linear->as_linear.weight.grad, 1), ((float[]) {-0.1191568375*times, 0.0000}));
+  ASSERT_VEC_EQ(mat_row(linear->as_linear.weight.grad, 2), ((float[]) {+0.5580473709*times, 0.0000}));
+  ASSERT_VEC_EQ(linear->as_linear.bias.grad, ((float[]) {+0.8615821838*times, 0.0000}));
 }
 
 void test_multiply(int times) {
@@ -807,11 +807,11 @@ void test_multiply(int times) {
 
   Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
 
-  mat_copy(u->value.value, mat_init(2, 2, (float[]){
+  mat_copy(u->as_variable.value.value, mat_init(2, 2, (float[]){
         0.4967, -0.1383,
         0.6477, +0.9014,
   }));
-  mat_copy(v->value.value, mat_init(2, 1, (float[]){
+  mat_copy(v->as_variable.value.value, mat_init(2, 1, (float[]){
         2,
         2,
   }));
@@ -830,11 +830,11 @@ void test_multiply(int times) {
 
   node_backward(&tape);
 
-  ASSERT_VEC_EQ(mat_row(u->value.grad, 0), ((float[]){-0.5018*times, -0.5018*times}));
-  ASSERT_VEC_EQ(mat_row(u->value.grad, 1), ((float[]){+0.9280*times, +0.9280*times}));
+  ASSERT_VEC_EQ(mat_row(u->as_variable.value.grad, 0), ((float[]){-0.5018*times, -0.5018*times}));
+  ASSERT_VEC_EQ(mat_row(u->as_variable.value.grad, 1), ((float[]){+0.9280*times, +0.9280*times}));
 
-  ASSERT_VEC_EQ(mat_row(v->value.grad, 0), ((float[]){0.1759108925*times}));
-  ASSERT_VEC_EQ(mat_row(v->value.grad, 1), ((float[]){0.4529494476*times}));
+  ASSERT_VEC_EQ(mat_row(v->as_variable.value.grad, 0), ((float[]){0.1759108925*times}));
+  ASSERT_VEC_EQ(mat_row(v->as_variable.value.grad, 1), ((float[]){0.4529494476*times}));
 }
 
 void test_multiply_add(int times) {
@@ -847,11 +847,11 @@ void test_multiply_add(int times) {
 
   Tape_Node_Array tape = ARRAY_CREATE(&mallocator.alloc);
 
-  mat_copy(u->value.value, mat_init(2, 2, (float[]){
+  mat_copy(u->as_variable.value.value, mat_init(2, 2, (float[]){
         0.4967, -0.1383,
         0.6477, +0.9014,
   }));
-  mat_copy(v->value.value, mat_init(2, 1, (float[]){
+  mat_copy(v->as_variable.value.value, mat_init(2, 1, (float[]){
         2,
         2,
   }));
@@ -870,11 +870,11 @@ void test_multiply_add(int times) {
 
   node_backward(&tape);
 
-  ASSERT_VEC_EQ(mat_row(u->value.grad, 0), ((float[]){-0.5018*times, -0.5018*times}));
-  ASSERT_VEC_EQ(mat_row(u->value.grad, 1), ((float[]){+0.9280*times, +0.9280*times}));
+  ASSERT_VEC_EQ(mat_row(u->as_variable.value.grad, 0), ((float[]){-0.5018*times, -0.5018*times}));
+  ASSERT_VEC_EQ(mat_row(u->as_variable.value.grad, 1), ((float[]){+0.9280*times, +0.9280*times}));
 
-  ASSERT_VEC_EQ(mat_row(v->value.grad, 0), ((float[]){(0.1759108925 - 0.2509)*times}));
-  ASSERT_VEC_EQ(mat_row(v->value.grad, 1), ((float[]){(0.4529494476 + 0.4640)*times}));
+  ASSERT_VEC_EQ(mat_row(v->as_variable.value.grad, 0), ((float[]){(0.1759108925 - 0.2509)*times}));
+  ASSERT_VEC_EQ(mat_row(v->as_variable.value.grad, 1), ((float[]){(0.4529494476 + 0.4640)*times}));
 }
 
 int main(void) {
