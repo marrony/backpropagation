@@ -58,18 +58,12 @@ static const char* Node_Type_Str[__MAX_NODES+1] = {
 #define MAX_INPUTS 4
 
 typedef struct Node Node;
-typedef struct Tensor Tensor;
 
 typedef struct {
   Node* node;
   Tensor* output;
   Tensor* input[MAX_INPUTS];
 } Tape_Node;
-
-struct Tensor {
-  NMatrix value;
-  NMatrix grad;
-};
 
 /*
  * Node Structure - Computation Graph Node for Automatic Differentiation
@@ -127,7 +121,6 @@ struct Node {
   };
 };
 
-#define NULL_MATRIX (NMatrix){NULL, 0, 0}
 #define NULL_PARAM (Param) {0}
 
 void init_tensor(Tensor* param, int rows, int cols) {
@@ -532,13 +525,7 @@ Tensor* node_forward(Arena_Allocator* arena, Node* node, Tape_Node_Array* tape) 
       out->value = mat_alloc2(&arena->alloc, logits_tensor->value.rows, logits_tensor->value.cols);
       out->grad = mat_alloc2(&arena->alloc, logits_tensor->value.rows, logits_tensor->value.cols);
 
-      for (int i = 0; i < out->value.rows; i++) {
-        softmax_temperature(
-            mat_row(out->value, i),
-            mat_row(logits_tensor->value, i),
-            node->as_softmax.temperature
-        );
-      }
+      softmax_by_row(out->value, logits_tensor->value, node->as_softmax.temperature);
       break;
     }
 

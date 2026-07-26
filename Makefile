@@ -34,6 +34,9 @@ generated/vocab.h: generated bin/genvocab
 	./bin/genvocab > generated/vocab.h
 	diff generated/vocab_old.h generated/vocab.h || true
 
+$(BINDIR)/node: node.c nn.h node.h transformer.h | $(BINDIR)
+	cc $(CFLAGS_DEBUG) $< -o $@ $(LDFLAGS)
+
 $(BINDIR)/genvocab: genvocab.c tokenizer.h generated/alice.h generated/vocab.h | $(BINDIR)
 	cc $(CFLAGS) $< -o $@ $(LDFLAGS)
 

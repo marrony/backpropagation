@@ -23,12 +23,26 @@
 
 typedef struct {
   float* elems;
-  int32_t rows;
-  int32_t cols;
+  int16_t rows;
+  int16_t cols;
+  int16_t stride;
 } NMatrix;
 
-#define NULL_MATRIX (NMatrix){NULL, 0, 0}
-#define MAT_AT(m, row, col) ((m).elems[((m).cols)*(row) + (col)])
+typedef struct {
+  NMatrix value;
+  NMatrix grad;
+} Tensor;
+
+Tensor tensor(NMatrix value, NMatrix grad) {
+  return (Tensor) {
+    .value = value,
+    .grad = grad,
+  };
+}
+
+#define NULL_MATRIX (NMatrix){NULL, 0, 0, 0}
+#define MAT_AT(m, row, col) ((m).elems[((m).stride)*(row) + (col)])
+
 #define VEC_AT(v, idx) MAT_AT((v), 0, (idx))
 
 // Uniform random in [0, 1)
@@ -82,6 +96,7 @@ NMatrix mat_alloc(int rows, int cols) {
     .elems = malloc(sizeof(float) * rows * cols),
     .rows = rows,
     .cols = cols,
+    .stride = cols,
   };
 }
 
@@ -90,6 +105,7 @@ NMatrix mat_init(int rows, int cols, float* data) {
     .elems = data,
     .rows = rows,
     .cols = cols,
+    .stride = cols,
   };
 }
 
@@ -167,14 +183,15 @@ void assert_vec_eq(const char* func, const char* file, int line, NMatrix va, con
 
   for (int i = 0; i < va.cols; i++) {
     float a = VEC_AT(va, i);
+    bool eq0 = isinf(a) && isinf(vb[i]) && signbit(a) == signbit(vb[i]);
     float b = vb[i];
     float x = a - b;
-    bool eq = (x*x) <= (0.001f*0.001f);
-    if (!eq) {
+    bool eq1 = (x*x) <= (0.0001f*0.0001f);
+    if (!eq0 && !eq1) {
       fprintf(stderr, "\nAssertion failed: (");
-      mat_fprint(stderr, va, 8);
+      mat_fprint(stderr, va, 10);
       fprintf(stderr, " != ");
-      mat_fprint(stderr, mat_init(va.rows, va.cols, (float*)vb), 8);
+      mat_fprint(stderr, mat_init(va.rows, va.cols, (float*)vb), 10);
       fprintf(stderr, "), function %s, file %s, line %d.\n", func, file, line);
       exit(1);
     }
@@ -189,7 +206,6 @@ void assert_vec_eq(const char* func, const char* file, int line, NMatrix va, con
   ASSERT_FMT(a_cols == b_rows,   "[%dx%d] * [%dx%d] = [%dx%d]", a_rows, a_cols, b_rows, b_cols, dst_rows, dst_cols); \
   ASSERT_FMT(dst_rows == a_rows, "[%dx%d] * [%dx%d] = [%dx%d]", a_rows, a_cols, b_rows, b_cols, dst_rows, dst_cols); \
   ASSERT_FMT(dst_cols == b_cols, "[%dx%d] * [%dx%d] = [%dx%d]", a_rows, a_cols, b_rows, b_cols, dst_rows, dst_cols);
-
 
 #define ASSERT_MATRIX_MULT_ADD(dst_rows, dst_cols, a_rows, a_cols, b_rows, b_cols, c_rows, c_cols) \
   ASSERT_FMT(a_cols == b_rows,   "[%dx%d] * [%dx%d] + [%dx%d] = [%dx%d]", a_rows, a_cols, b_rows, b_cols, c_rows, c_cols, dst_rows, dst_cols); \
@@ -223,6 +239,7 @@ NMatrix mat_reshape(NMatrix x, int rows, int cols) {
     .elems = x.elems,
     .rows = rows,
     .cols = cols,
+    .stride = x.stride,
   };
 }
 
@@ -525,25 +542,11 @@ void mat_mult_A_transposed_and_B_add_C(NMatrix dst, NMatrix a, NMatrix b, NMatri
 void mat_mult_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
   ASSERT_MATRIX_MULT_ADD(dst.rows, dst.cols, a.rows, a.cols, b.rows, b.cols, c.rows, c.cols);
 
-#if 1
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = mat_dot_row_col(a, b, i, j) + MAT_AT(c, i, j);
     }
   }
-#else
-  mat_copy(dst, c);
-
-  for (int i = 0; i < a.rows; i++) {
-    for (int j = 0; j < a.cols; j++) {
-      float v = MAT_AT(a, i, j);
-
-      for (int k = 0; k < b.cols; k++) {
-        MAT_AT(dst, i, k) +=  v * MAT_AT(b, j, k);
-      }
-    }
-  }
-#endif
 }
 
 /**
@@ -788,6 +791,7 @@ NMatrix mat_row_slice(NMatrix m, int start, int size) {
     .elems = &(VEC_AT(m, start)),
     .rows = 1,
     .cols = size,
+    .stride = m.stride,
   };
 }
 
@@ -806,6 +810,7 @@ NMatrix mat_slice(NMatrix m, int start, int size) {
     .elems = &(MAT_AT(m, start, 0)),
     .rows = size,
     .cols = m.cols,
+    .stride = m.stride,
   };
 }
 
@@ -819,7 +824,34 @@ NMatrix mat_slice(NMatrix m, int start, int size) {
  * @return        View as 1 × m.cols matrix
  */
 NMatrix mat_row(NMatrix m, int row) {
-  return mat_slice(m, row, 1);
+  return (NMatrix) {
+    .elems = &(MAT_AT(m, row, 0)),
+    .rows = 1,
+    .cols = m.cols,
+    .stride = m.cols,
+  };
+}
+
+NMatrix mat_row_as(NMatrix m, int row, int rows, int cols) {
+  return (NMatrix) {
+    .elems = &(MAT_AT(m, row, 0)),
+    .rows = rows,
+    .cols = cols,
+    .stride = cols,
+  };
+}
+
+NMatrix mat_sub_matrix(NMatrix m, int start_row, int start_col, int end_row, int end_col) {
+  return (NMatrix) {
+    .elems = &(MAT_AT(m, start_row, start_col)),
+    .rows = end_row - start_row,
+    .cols = end_col - start_col,
+    .stride = m.stride,
+  };
+}
+
+NMatrix mat_cols(NMatrix m, int start_col, int end_col) {
+  return mat_sub_matrix(m, 0, start_col, m.rows, end_col);
 }
 
 /**
@@ -1120,6 +1152,21 @@ void dsoftmax_temperature(NMatrix dLdz, NMatrix h, NMatrix dLdh, float t) {
   float inv_t = 1.0f / t;
   for (int i = 0; i < h.cols; i++)
     VEC_AT(dLdz, i) += inv_t * VEC_AT(h, i) * (VEC_AT(dLdh, i) - dot);
+}
+
+void softmax_by_row(NMatrix out, NMatrix logits, float temperature) {
+  assert(out.rows == logits.rows);
+  assert(out.cols == logits.cols);
+
+  for (int i = 0; i < out.rows; i++) {
+    softmax_temperature(mat_row(out, i), mat_row(logits, i), temperature);
+  }
+}
+
+void dsoftmax_by_row(NMatrix dLdz, NMatrix h, NMatrix dLdh, float t) {
+  for (int i = 0; i < dLdz.rows; i++) {
+    dsoftmax_temperature(mat_row(dLdz, i), mat_row(h, i), mat_row(dLdh, i), t);
+  }
 }
 
 void softmax(NMatrix dst, NMatrix x) {
