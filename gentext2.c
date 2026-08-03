@@ -1,5 +1,6 @@
 #include "array.h"
 #include "nn.h"
+#include <stdint.h>
 #define BYTEBUFFER_IMPLEMENTATION
 #define ALLOCATOR_IMPLEMENATION
 
@@ -16,17 +17,17 @@ const char *training_text[] = {
   // (const char*)alice_txt,
   "the desert was silent except for the low, rhythmic hum of the wind sweeping across the dunes. for miles in every direction, nothing broke the horizon line but shifting sand and the occasional skeletal remains of ancient shrubs. evelyn checked her gps device, frowning at the uncoordinated coordinates flashing across the screen. the signal was dead. she had exactly two liters of water left, a compass that could not find true north, and six hours of daylight remaining before the temperature dropped below freezing.",
   "the desert is a landscape of surprising contrasts and quiet resilience. during the day, the sun beats down relentlessly, turning the sand into a glowing sea of gold. cacti and deep-rooted shrubs stand as silent sentinels, conserving every drop of precious moisture in their thick stems. yet, as twilight approaches, the extreme heat yields to a crisp, cooling breeze. the sky shifts into a canvas of violet and deep indigo. nocturnal creatures, such as the kit fox and the rattlesnake, emerge from their underground burrows to hunt and forage, breathing vibrant life into the quiet night.",
-  "artificial intelligence has rapidly transformed from a theoretical concept into an everyday reality. machine learning algorithms now power everything from basic email filters to complex autonomous vehicles. by processing massive amounts of historical data, these systems can identify hidden patterns, make accurate predictions, and automate tedious tasks. however, this technological leap brings significant ethical challenges, including data privacy concerns and algorithmic bias. as these neural networks become increasingly sophisticated, developers face the crucial responsibility of ensuring transparency and fairness, so that these powerful digital tools ultimately benefit society as a whole.",
-  "the roman empire was one of the most powerful and enduring civilizations in human history, fundamentally shaping the trajectory of the western world. beginning as a modest republic on the italian peninsula, it expanded rapidly through strategic military conquests and advanced engineering. roman legions established dominance across the mediterranean, bringing law, architecture, and commerce to diverse cultures. at its peak, the empire spanned from the rainy hills of britannia to the arid deserts of egypt. even after its eventual collapse, the architectural marvels, legal systems, and cultural innovations of rome continued to influence modern societies for centuries.",
-  "baking the perfect loaf of artisan bread requires patience, precision, and a deep understanding of basic ingredients. the process begins with just four simple components: flour, water, salt, and yeast. when combined, these elements undergo a magical transformation. the yeast feeds on the natural sugars in the flour, releasing carbon dioxide that causes the dough to rise and develop a complex network of air pockets. kneading and resting the dough properly are essential steps that build gluten structure. finally, baking the dough in a scorching hot oven creates a beautiful, crispy crust while keeping the interior soft.",
-  "earth is a dynamic, ever-changing planet covered mostly by vast, interconnected oceans. beneath the water lies a complex topography of deep trenches, underwater mountain ranges, and expansive plains. these marine ecosystems are home to an astonishing variety of life, ranging from microscopic phytoplankton to massive whales. the oceans also play a critical role in regulating the global climate by absorbing massive amounts of carbon dioxide and distributing heat across the globe. despite their importance, these fragile aquatic environments are currently facing severe threats from pollution, overfishing, and rising water temperatures caused by climate change.",
-  "the powerful king ruled. this man wore gold. the wise queen ruled. this woman wore gold. the brave king led men. that man commanded troops. the brave queen led men. that woman commanded troops. the noble king signed laws. a man signed laws. the noble queen signed laws. a woman signed laws.",
-  "the young prince smiled. a happy boy smiled. the young princess smiled. a happy girl smiled. the small prince played. that young boy played. the small princess played. that young girl played. the royal prince learned. every smart boy learned. the royal princess learned. every smart girl learned.",
-  "the great lord feasted. his proud husband feasted. the great lady feasted. her proud wife feasted. the rich lord rested. this loyal husband rested. the rich lady rested. this loyal wife rested.",
-  "the loving father built homes. the young son built homes. the loving mother built homes. the young daughter built homes. the proud father worked hard. that brave son worked hard. the proud mother worked hard. that brave daughter worked hard. a kind father teaches youth. the elder son teaches youth. a kind mother teaches youth. the elder daughter teaches youth.",
-  "the strict chairman signed deals. that male executive signed deals. the strict chairwoman signed deals. that female executive signed deals. the smart chairman led teams. a top director led teams. the smart chairwoman led teams. a top director led teams.",
-  "the ancient god created life. this divine wizard created life. the ancient goddess created life. this divine witch created life. the powerful god cast spells. that cruel wizard cast spells. the powerful goddess cast spells. that cruel witch cast spells.",
-  "the heavy bull ate grass. that male rooster ate grass. the heavy cow ate grass. that female hen ate grass. the loud bull woke farmers. a fierce rooster woke farmers. the loud cow woke farmers. a fierce hen woke farmers.",
+  // "artificial intelligence has rapidly transformed from a theoretical concept into an everyday reality. machine learning algorithms now power everything from basic email filters to complex autonomous vehicles. by processing massive amounts of historical data, these systems can identify hidden patterns, make accurate predictions, and automate tedious tasks. however, this technological leap brings significant ethical challenges, including data privacy concerns and algorithmic bias. as these neural networks become increasingly sophisticated, developers face the crucial responsibility of ensuring transparency and fairness, so that these powerful digital tools ultimately benefit society as a whole.",
+  // "the roman empire was one of the most powerful and enduring civilizations in human history, fundamentally shaping the trajectory of the western world. beginning as a modest republic on the italian peninsula, it expanded rapidly through strategic military conquests and advanced engineering. roman legions established dominance across the mediterranean, bringing law, architecture, and commerce to diverse cultures. at its peak, the empire spanned from the rainy hills of britannia to the arid deserts of egypt. even after its eventual collapse, the architectural marvels, legal systems, and cultural innovations of rome continued to influence modern societies for centuries.",
+  // "baking the perfect loaf of artisan bread requires patience, precision, and a deep understanding of basic ingredients. the process begins with just four simple components: flour, water, salt, and yeast. when combined, these elements undergo a magical transformation. the yeast feeds on the natural sugars in the flour, releasing carbon dioxide that causes the dough to rise and develop a complex network of air pockets. kneading and resting the dough properly are essential steps that build gluten structure. finally, baking the dough in a scorching hot oven creates a beautiful, crispy crust while keeping the interior soft.",
+  // "earth is a dynamic, ever-changing planet covered mostly by vast, interconnected oceans. beneath the water lies a complex topography of deep trenches, underwater mountain ranges, and expansive plains. these marine ecosystems are home to an astonishing variety of life, ranging from microscopic phytoplankton to massive whales. the oceans also play a critical role in regulating the global climate by absorbing massive amounts of carbon dioxide and distributing heat across the globe. despite their importance, these fragile aquatic environments are currently facing severe threats from pollution, overfishing, and rising water temperatures caused by climate change.",
+  // "the powerful king ruled. this man wore gold. the wise queen ruled. this woman wore gold. the brave king led men. that man commanded troops. the brave queen led men. that woman commanded troops. the noble king signed laws. a man signed laws. the noble queen signed laws. a woman signed laws.",
+  // "the young prince smiled. a happy boy smiled. the young princess smiled. a happy girl smiled. the small prince played. that young boy played. the small princess played. that young girl played. the royal prince learned. every smart boy learned. the royal princess learned. every smart girl learned.",
+  // "the great lord feasted. his proud husband feasted. the great lady feasted. her proud wife feasted. the rich lord rested. this loyal husband rested. the rich lady rested. this loyal wife rested.",
+  // "the loving father built homes. the young son built homes. the loving mother built homes. the young daughter built homes. the proud father worked hard. that brave son worked hard. the proud mother worked hard. that brave daughter worked hard. a kind father teaches youth. the elder son teaches youth. a kind mother teaches youth. the elder daughter teaches youth.",
+  // "the strict chairman signed deals. that male executive signed deals. the strict chairwoman signed deals. that female executive signed deals. the smart chairman led teams. a top director led teams. the smart chairwoman led teams. a top director led teams.",
+  // "the ancient god created life. this divine wizard created life. the ancient goddess created life. this divine witch created life. the powerful god cast spells. that cruel wizard cast spells. the powerful goddess cast spells. that cruel witch cast spells.",
+  // "the heavy bull ate grass. that male rooster ate grass. the heavy cow ate grass. that female hen ate grass. the loud bull woke farmers. a fierce rooster woke farmers. the loud cow woke farmers. a fierce hen woke farmers.",
 };
 
 Malloc_Allocator mallocator = MALLOC_CREATE();
@@ -77,6 +78,17 @@ void prepare_data(TokenID_Array* sequence) {
   }
 }
 
+size_t count_parameters(Optimizer* optmizer) {
+  size_t count = 0;
+
+  for (size_t i = 0; i < optmizer->tensors.count; i++) {
+    NMatrix value = optmizer->tensors.elems[i].value;
+    count += value.rows*value.cols;
+  }
+
+  return count;
+}
+
 int main(void) {
   Optimizer optimizer = (Optimizer) {
     .tensors = ARRAY_CREATE(&mallocator.alloc),
@@ -92,7 +104,7 @@ int main(void) {
 
   prepare_data(&sequence);
 
-  size_t C = 8;
+  size_t C = 10;
   size_t D = 8;
   size_t H = 2;
   size_t F = 8;
@@ -140,20 +152,31 @@ int main(void) {
     register_tensor(&optimizer, trans_in.blocks[i].attn.O.bias);
   }
 
-  for (size_t epoch = 0; epoch < 50; epoch++) {
+  for (size_t epoch = 0; epoch < 250; epoch++) {
     float loss = 0;
     size_t count = 0;
 
-    for (size_t i = 0; i < sequence.count - C - 1; i++) {
+    for (size_t i = 0; i < sequence.count - C; i++) {
       size_t saved = SAVE(&arena.alloc);
 
       tokens.count = 0;
       targets.count = 0;
 
       for (size_t c = 0; c < C; c++) {
-        array_append(&tokens, sequence.elems[c]);
-        array_append(&targets, sequence.elems[c+1]);
+        array_append(&tokens, sequence.elems[i+c]);
+        array_append(&targets, sequence.elems[i+c+1]);
       }
+
+      // for (size_t c = 0; c < tokens.count; c++)
+      //   printf("%d = %s\n", tokens.elems[c], vocabulary[tokens.elems[c]].token);
+      // printf("======\n");
+      // for (size_t c = 0; c < targets.count; c++)
+      //   printf("%d = %s\n", targets.elems[c], vocabulary[targets.elems[c]].token);
+      //
+      // printf(" => %s\n", vocabulary[tokens.count-3].token);
+      // printf(" => %s\n", vocabulary[targets.count-1].token);
+      //
+      // exit(0);
 
       size_t N = tokens.count;
 
@@ -168,7 +191,16 @@ int main(void) {
           .heads_count = H,
       );
 
-      transformer_forward(tokens, &trans_out, &trans_in);
+      transformer_forward(tokens, &trans_out, &trans_in, 1.0f);
+
+      // int32_t next = mat_row_argmax(mat_row(trans_out.probs, N - 1));
+      // printf("next = %d\n", next);
+      //
+      // for (int16_t t = 0; t < trans_out.probs.rows; t++) {
+      //   int32_t id = targets.elems[t];
+      //   float x = MAT_AT(trans_out.probs, t, id);
+      //   printf("target = %d %f %f\n", id, x, -logf(x + 1e-10f));
+      // }
 
       loss += cross_entropy(trans_out.probs, targets);
       count += 1;
@@ -178,11 +210,70 @@ int main(void) {
       RESTORE(&arena.alloc, saved);
     }
 
-    if (epoch % 100 == 0)
+    if (epoch % 200 == 0)
       optimizer.learning_rate *= 0.8f;
 
-    printf("loss(%zu) = %f\n", epoch, loss/count);
+    printf("loss(%zu) = %f %zu\n", epoch, loss/count, count);
     update_grads_adam(&optimizer);
+
+    float cost = loss/count;
+    if (cost < 0.1) break;
+
+    // if (epoch == 10) exit(0);
+  }
+
+  printf("total parameters = %zu\n", count_parameters(&optimizer));
+
+  const char* prompt = "the desert";
+
+  tokens.count = 0;
+  tokenize(
+      &tokens,
+      prompt,
+      strlen(prompt),
+      vocabulary,
+      vocabulary_by_size
+  );
+
+  if (tokens.count > C) tokens.count = C;
+
+  for (size_t i = 0; i < tokens.count; i++)
+      printf("%s", vocabulary[tokens.elems[i]].token);
+
+  for (size_t i = 0; i < 500; i++) {
+    size_t saved = SAVE(&arena.alloc);
+
+    size_t N = tokens.count;
+    Transformer_Output trans_out = {0};
+    init_transformer_output(
+        .arena = &arena,
+        .trans_out = &trans_out,
+        .vocab_size = trans_in.vocab_size,
+        .emb_size = trans_in.emb_size,
+        .ff_size = trans_in.ff_size,
+        .sequence_size = N,
+        .heads_count = H,
+    );
+
+    transformer_forward(tokens, &trans_out, &trans_in, 1.0f);
+
+    int32_t next = mat_row_argmax(mat_row(trans_out.probs, N - 1));
+
+    if (next == '\r') next = '\n';
+    printf("%s", vocabulary[next].token);
+
+    if (tokens.count >= C) {
+      for (size_t c = 0; c < C - 1; c++)
+        tokens.elems[c] = tokens.elems[c+1];
+      tokens.count -= 1;
+    }
+
+    array_append(&tokens, next);
+
+    RESTORE(&arena.alloc, saved);
+
+    if (next == EOS_TOKEN)
+      break;
   }
 
   return 0;

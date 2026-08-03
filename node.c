@@ -1170,7 +1170,7 @@ void test_transformer_forward(void) {
       .heads_count = H,
   );
 
-  transformer_forward(tokens, &trans_out, &trans_in);
+  transformer_forward(tokens, &trans_out, &trans_in, 1.0f);
 
   TokenID_Array targets = ARRAY_CREATE(&arena.alloc);
   array_append(&targets, 2);

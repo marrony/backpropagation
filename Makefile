@@ -8,7 +8,9 @@ PROGS := $(addprefix $(BINDIR)/, $(SOURCES:.c=))
 raylib-5/libraylib.a:
 	make -C raylib-5 RAYLIB_SRC_PATH=.
 
-CFLAGS_COMMON=-std=c17 -Werror -Wall -Wextra -Wno-initializer-overrides -pedantic -I ./raylib-5
+CFLAGS_COMMON=-std=c17 -Werror -Wall -Wextra \
+		-Wno-initializer-overrides -pedantic -I ./raylib-5 \
+		-DPCRE2_CODE_UNIT_WIDTH=8 $(shell pkg-config --cflags libpcre2-8)
 
 CFLAGS_DEBUG=$(CFLAGS_COMMON) -g \
     -fsanitize=signed-integer-overflow \
@@ -17,7 +19,7 @@ CFLAGS_DEBUG=$(CFLAGS_COMMON) -g \
 
 CFLAGS_RELEASE=$(CFLAGS_COMMON) -O3
 
-CFLAGS=$(CFLAGS_RELEASE) -DPCRE2_CODE_UNIT_WIDTH=8 $(shell pkg-config --cflags libpcre2-8) 
+CFLAGS=$(CFLAGS_RELEASE)
 
 LDFLAGS=-L ./raylib-5 -lraylib -framework Foundation \
     -framework CoreServices -framework CoreGraphics \
@@ -43,7 +45,7 @@ $(BINDIR)/genvocab: genvocab.c tokenizer.h generated/alice.h generated/vocab.h |
 $(BINDIR)/cnn-node: cnn-node.c
 	echo "cnn-node.c is broken"
 
-$(BINDIR)/%: %.c nn.h node.h game.h tokenizer.h generated/alice.h generated/vocab.h | $(BINDIR) raylib-5/libraylib.a
+$(BINDIR)/%: %.c nn.h node.h game.h tokenizer.h transformer.h generated/alice.h generated/vocab.h | $(BINDIR) raylib-5/libraylib.a
 	cc $(CFLAGS) $< -o $@ $(LDFLAGS)
 
 generated:

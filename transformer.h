@@ -749,7 +749,8 @@ void init_transformer_output_opts(struct Init_Transformer_Output_Opts opts) {
 void transformer_forward(
   TokenID_Array tokens,
   Transformer_Output* out,
-  Transformer* in
+  Transformer* in,
+  float temperature
 ) {
   assert(tokens.count <= in->context_size);
   assert(tokens.count == out->sequence_size);
@@ -792,7 +793,7 @@ void transformer_forward(
   );
 
   // probs = softmax(logits)
-  softmax_by_row(out->probs, out->logits.value, 1.0);
+  softmax_by_row(out->probs, out->logits.value, temperature);
 
   // printf("x0     = "); mat_println(out->x0.value, 4);
   // // printf("x1     = "); mat_println(x1.value, 4);
@@ -808,14 +809,14 @@ void transformer_backward(
   Transformer_Output* out,
   Transformer* in
 ) {
-  float scale = 1.0f / (float)out->probs.rows;
+  float scale = 1.0f / (float)tokens.count;
 
   // dlogits = probs - target
   NMatrix dlogits = out->logits.grad;
   mat_copy(dlogits, out->probs);
   mat_scale(dlogits, dlogits, scale);
 
-  for (size_t i = 0; i < targets.count; i++)
+  for (size_t i = 0; i < tokens.count; i++)
     MAT_AT(dlogits, i, targets.elems[i]) -= scale;
 
   // logits = out_ln*hW + bW
