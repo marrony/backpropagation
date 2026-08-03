@@ -1,15 +1,13 @@
-#include "nn.h"
+#define BYTEBUFFER_IMPLEMENTATION
+#define ALLOCATOR_IMPLEMENATION
+
+#include "bytebuffer.h"
+#include "allocator.h"
 #include "node.h"
 #include "transformer.h"
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
-
-#define BYTEBUFFER_IMPLEMENTATION
-#define ALLOCATOR_IMPLEMENATION
-#include "bytebuffer.h"
-#include "allocator.h"
-#include "array.h"
 
 #define PRECISION 5
 
@@ -1138,7 +1136,6 @@ void test_transformer_forward(void) {
   Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 1024*1024);
 
   size_t C = 4;
-  size_t N = 4;
   size_t D = 4;
   size_t H = 2;
   size_t F = 2;
@@ -1150,26 +1147,27 @@ void test_transformer_forward(void) {
   init_transformer(
       .alloc = &arena.alloc,
       .trans = &trans_in,
-      .vocab_size = V,
       .context_size = C,
-      .emb_size = D,
-      .ff_size = F,
-  );
-  init_transformer_output(
-      .arena = &arena,
-      .trans_out = &trans_out,
       .vocab_size = V,
-      .sequence_size = N,
       .emb_size = D,
       .ff_size = F,
-      .heads_count = H,
   );
 
   TokenID_Array tokens = ARRAY_CREATE(&arena.alloc);
   array_append(&tokens, 1);
   array_append(&tokens, 2);
   array_append(&tokens, 3);
-  array_append(&tokens, 4);
+
+  size_t N = tokens.count;
+  init_transformer_output(
+      .arena = &arena,
+      .trans_out = &trans_out,
+      .vocab_size = trans_in.vocab_size,
+      .emb_size = trans_in.emb_size,
+      .ff_size = trans_in.ff_size,
+      .sequence_size = N,
+      .heads_count = H,
+  );
 
   transformer_forward(tokens, &trans_out, &trans_in);
 
@@ -1177,7 +1175,6 @@ void test_transformer_forward(void) {
   array_append(&targets, 2);
   array_append(&targets, 3);
   array_append(&targets, 4);
-  array_append(&targets, 5);
 
   printf("\n");
 
@@ -1186,17 +1183,17 @@ void test_transformer_forward(void) {
   printf("tok_emb = "); mat_println(trans_in.tok_emb.grad, 4);
   printf("pos_emb = "); mat_println(trans_in.pos_emb.grad, 4);
 
-  ASSERT_VEC_EQ(mat_row(trans_in.tok_emb.grad, 0), ((float[]){+0.0000, +0.0000, +0.0000, +0.0000}));
-  ASSERT_VEC_EQ(mat_row(trans_in.tok_emb.grad, 1), ((float[]){+0.0591, -0.0107, -0.0845, +0.0361}));
-  ASSERT_VEC_EQ(mat_row(trans_in.tok_emb.grad, 2), ((float[]){-0.1711, +0.0896, -0.0232, +0.1046}));
-  ASSERT_VEC_EQ(mat_row(trans_in.tok_emb.grad, 3), ((float[]){+0.0261, -0.0243, +0.0499, -0.0517}));
-  ASSERT_VEC_EQ(mat_row(trans_in.tok_emb.grad, 4), ((float[]){+0.0858, -0.0207, -0.0382, -0.0269}));
-  ASSERT_VEC_EQ(mat_row(trans_in.tok_emb.grad, 5), ((float[]){+0.0000, +0.0000, +0.0000, +0.0000}));
+  ASSERT_VEC_EQ(mat_row(trans_in.tok_emb.grad, 0), ((float[]){+0.0000000000, +0.0000000000, +0.0000000000, +0.0000000000}));
+  ASSERT_VEC_EQ(mat_row(trans_in.tok_emb.grad, 1), ((float[]){+0.0818862766, -0.0046921317, -0.1202818751, +0.0430877060}));
+  ASSERT_VEC_EQ(mat_row(trans_in.tok_emb.grad, 2), ((float[]){-0.2411776930, +0.1224838421, -0.0354717784, +0.1541656554}));
+  ASSERT_VEC_EQ(mat_row(trans_in.tok_emb.grad, 3), ((float[]){+0.0191762932, -0.0155209899, +0.0288937502, -0.0325490534}));
+  ASSERT_VEC_EQ(mat_row(trans_in.tok_emb.grad, 4), ((float[]){+0.0000000000, +0.0000000000, +0.0000000000, +0.0000000000}));
+  ASSERT_VEC_EQ(mat_row(trans_in.tok_emb.grad, 5), ((float[]){+0.0000000000, +0.0000000000, +0.0000000000, +0.0000000000}));
 
-  ASSERT_VEC_EQ(mat_row(trans_in.pos_emb.grad, 0), ((float[]){+0.0591, -0.0107, -0.0845, +0.0361}));
-  ASSERT_VEC_EQ(mat_row(trans_in.pos_emb.grad, 1), ((float[]){-0.1711, +0.0896, -0.0232, +0.1046}));
-  ASSERT_VEC_EQ(mat_row(trans_in.pos_emb.grad, 2), ((float[]){+0.0261, -0.0243, +0.0499, -0.0517}));
-  ASSERT_VEC_EQ(mat_row(trans_in.pos_emb.grad, 3), ((float[]){+0.0858, -0.0207, -0.0382, -0.0269}));
+  ASSERT_VEC_EQ(mat_row(trans_in.pos_emb.grad, 0), ((float[]){+0.0818862766, -0.0046921317, -0.1202818751, +0.0430877060}));
+  ASSERT_VEC_EQ(mat_row(trans_in.pos_emb.grad, 1), ((float[]){-0.2411776930, +0.1224838421, -0.0354717784, +0.1541656554}));
+  ASSERT_VEC_EQ(mat_row(trans_in.pos_emb.grad, 2), ((float[]){+0.0191762932, -0.0155209899, +0.0288937502, -0.0325490534}));
+  ASSERT_VEC_EQ(mat_row(trans_in.pos_emb.grad, 3), ((float[]){+0.0000000000, +0.0000000000, +0.0000000000, +0.0000000000}));
 }
 
 int main(void) {

@@ -622,12 +622,20 @@ void block_backward_opts(struct Block_Backward_Opts opts) {
 
 #define NUM_BLOCKS 2
 
+DEFINE_ARRAY_ALIAS(TokenID, int32_t);
+
 typedef struct {
   Tensor tok_emb;
   Tensor pos_emb;
   Block blocks[NUM_BLOCKS];
   Layer_Norm ln;
   Linear_Layer H;
+
+  // configs
+  size_t vocab_size;
+  size_t context_size;
+  size_t emb_size;
+  size_t ff_size;
 } Transformer;
 
 typedef struct {
@@ -637,6 +645,10 @@ typedef struct {
   Tensor logits;
   NMatrix probs;
   NMatrix scores;
+
+  // configs
+  size_t sequence_size;
+  size_t heads_count;
 } Transformer_Output;
 
 struct Init_Transformer_Opts {
@@ -670,6 +682,11 @@ void init_transformer_opts(struct Init_Transformer_Opts opts) {
   size_t D = opts.emb_size;
   size_t F = opts.ff_size;
 
+  trans->vocab_size = opts.vocab_size;
+  trans->context_size = opts.context_size;
+  trans->emb_size = opts.emb_size;
+  trans->ff_size = opts.ff_size;
+
   alloc_tensor(alloc, &trans->tok_emb, V, D);
   init_xavier_glorot(trans->tok_emb.value, V, D);
 
@@ -693,6 +710,9 @@ void init_transformer_output_opts(struct Init_Transformer_Output_Opts opts) {
   size_t H = opts.heads_count;
   size_t F = opts.ff_size;
 
+  trans_out->sequence_size = opts.sequence_size;
+  trans_out->heads_count = opts.heads_count;
+
   alloc_tensor(&arena->alloc, &trans_out->x0, N, D);
 
   for (size_t i = 0; i < NUM_BLOCKS; i++) {
@@ -709,13 +729,14 @@ void init_transformer_output_opts(struct Init_Transformer_Output_Opts opts) {
   trans_out->scores = mat_alloc2(&arena->alloc, N, N);
 }
 
-DEFINE_ARRAY_ALIAS(TokenID, int32_t);
-
 void transformer_forward(
   TokenID_Array tokens,
   Transformer_Output* out,
   Transformer* in
 ) {
+  assert(tokens.count <= in->context_size);
+  assert(tokens.count == out->sequence_size);
+
   // x0 = tok_embs + pos_embs
   for (size_t i = 0; i < tokens.count; i++) {
     mat_add(

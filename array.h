@@ -2,6 +2,7 @@
 #define ARRAY_H
 
 #include "bytebuffer.h"
+#include "allocator.h"
 
 #define SLICE_BODY(type) \
   type* elems;           \
@@ -28,6 +29,8 @@ typedef struct type##_Array_Slice { \
 #define DEFINE_ARRAY_SLICE(type) \
   DEFINE_ARRAY(type);            \
   DEFINE_SLICE(type)
+
+#define ARRAY_CREATE(alloc) { .allocator = (alloc) }
 
 typedef void* Generic_Ptr;
 
@@ -116,8 +119,6 @@ void _array_destroy(Generic_Ptr_Array* array, size_t elem_size) {
       }                                                  \
     }                                                    \
   } while (0)
-
-#define ARRAY_CREATE(alloc) { .allocator = (alloc) }
 
 #endif // ARRAY_H
 
