@@ -143,20 +143,20 @@ void destroy_node(Node** node) {
 }
 
 DEFINE_ARRAY(Tape_Node);
-DEFINE_ARRAY_ALIAS(Tensor_Ptr, Tensor*);
+DEFINE_ARRAY(Tensor);
 DEFINE_ARRAY(NMatrix);
 
 typedef struct {
-  Tensor_Ptr_Array tensors;
+  Tensor_Array tensors;
   NMatrix_Array history;
   NMatrix_Array second;
   float learning_rate;
   size_t updates;
 } Optimizer;
 
-void register_tensor(Optimizer* opt, Tensor* tensor) {
-  NMatrix history = mat_alloc(tensor->grad.rows, tensor->grad.cols);
-  NMatrix second = mat_alloc(tensor->grad.rows, tensor->grad.cols);
+void register_tensor(Optimizer* opt, Tensor tensor) {
+  NMatrix history = mat_alloc(tensor.grad.rows, tensor.grad.cols);
+  NMatrix second = mat_alloc(tensor.grad.rows, tensor.grad.cols);
   mat_zero(history);
   mat_zero(second);
 
@@ -201,7 +201,7 @@ Node* create_embeddings(Optimizer* optimizer, size_t max_vocab, size_t emb_dim, 
   node->as_embedding.context_size = context_size;
   memset(node->as_embedding.context, 0, sizeof(int32_t)*context_size);
 
-  register_tensor(optimizer, &node->as_embedding.embeddings);
+  register_tensor(optimizer, node->as_embedding.embeddings);
 
   return node;
 }
@@ -214,7 +214,7 @@ Node* create_embeddings_conv(Optimizer* optimizer, size_t max_vocab, size_t emb_
   node->as_embedding.context_size = context_size;
   memset(node->as_embedding.context, 0, sizeof(int32_t)*context_size);
 
-  register_tensor(optimizer, &node->as_embedding.embeddings);
+  register_tensor(optimizer, node->as_embedding.embeddings);
 
   size_t kern_size = 3;
   node->as_embedding.filter_count = filter_count;
@@ -226,8 +226,8 @@ Node* create_embeddings_conv(Optimizer* optimizer, size_t max_vocab, size_t emb_
     init_tensor(&node->as_embedding.filters0[i], kern_size, emb_dim);
     init_tensor(&node->as_embedding.filters1[i], kern_size, 48);
 
-    register_tensor(optimizer, &node->as_embedding.filters0[i]);
-    register_tensor(optimizer, &node->as_embedding.filters1[i]);
+    register_tensor(optimizer, node->as_embedding.filters0[i]);
+    register_tensor(optimizer, node->as_embedding.filters1[i]);
   }
 
   return node;
@@ -242,8 +242,8 @@ Node* create_linear(Optimizer* optimizer, Node* input, int in_size, int out_size
   init_tensor(&node->as_linear.weight, in_size, out_size);
   init_tensor(&node->as_linear.bias, 1, out_size);
 
-  register_tensor(optimizer, &node->as_linear.weight);
-  register_tensor(optimizer, &node->as_linear.bias);
+  register_tensor(optimizer, node->as_linear.weight);
+  register_tensor(optimizer, node->as_linear.bias);
 
   return node;
 }
@@ -1076,22 +1076,22 @@ void update_grads_sgd(Optimizer* optimizer, size_t batch_size) {
   (void)batch_size;
 
   for (size_t i = 0; i < optimizer->tensors.count; i++) {
-    Tensor* tensor = optimizer->tensors.elems[i];
+    Tensor tensor = optimizer->tensors.elems[i];
 
-    int elems = tensor->value.rows * tensor->value.cols;
+    int elems = tensor.value.rows * tensor.value.cols;
 
     for (int j = 0; j < elems; j++) {
-      float g = tensor->grad.elems[j]; // / batch_size;
+      float g = tensor.grad.elems[j]; // / batch_size;
 
       float adapt_lr = optimizer->learning_rate;
-      tensor->value.elems[j] -= adapt_lr * g;
+      tensor.value.elems[j] -= adapt_lr * g;
 
-      tensor->grad.elems[j] = 0;
+      tensor.grad.elems[j] = 0;
     }
   }
 }
 
-void update_grads_adam(Optimizer* optimizer, Tensor* emb, int32_t* tokens_in_batch) {
+void update_grads_adam(Optimizer* optimizer) {
   float eps = 1e-7f;
   float beta1 = 0.900f;
   float beta2 = 0.999f;
@@ -1102,22 +1102,13 @@ void update_grads_adam(Optimizer* optimizer, Tensor* emb, int32_t* tokens_in_bat
   float beta2_correct = 1.0f - powf(beta2, optimizer->updates);
 
   for (size_t t = 0; t < optimizer->tensors.count; t++) {
-    Tensor* tensor = optimizer->tensors.elems[t];
+    Tensor tensor = optimizer->tensors.elems[t];
     NMatrix m = optimizer->history.elems[t];
     NMatrix v = optimizer->second.elems[t];
 
-    for (int i = 0; i < tensor->value.rows; i++) {
-      if (tensor == emb && i == 0) {
-        mat_zero(mat_row(tensor->grad, i));
-        continue;
-      }
-      if (tensor == emb && tokens_in_batch[i] == 0) {
-        mat_zero(mat_row(tensor->grad, i));
-        continue;
-      }
-
-      for (int j = 0; j < tensor->value.cols; j++) {
-        float g = MAT_AT(tensor->grad, i, j);
+    for (int i = 0; i < tensor.value.rows; i++) {
+      for (int j = 0; j < tensor.value.cols; j++) {
+        float g = MAT_AT(tensor.grad, i, j);
 
         float m_value = beta1*MAT_AT(m, i, j) + (1.0f - beta1)*g;
         float v_value = beta2*MAT_AT(v, i, j) + (1.0f - beta2)*g*g;
@@ -1130,15 +1121,15 @@ void update_grads_adam(Optimizer* optimizer, Tensor* emb, int32_t* tokens_in_bat
 
         float adapt_lr = optimizer->learning_rate / (sqrtf(v_hat) + eps);
 
-        MAT_AT(tensor->value, i, j) -= adapt_lr * m_hat;
+        MAT_AT(tensor.value, i, j) -= adapt_lr * m_hat;
       }
 
-      mat_zero(mat_row(tensor->grad, i));
+      mat_zero(mat_row(tensor.grad, i));
     }
   }
 }
 
-void update_grads_rms_prop(Optimizer* optimizer, size_t batch_size, Tensor* emb, int32_t* tokens_in_batch) {
+void update_grads_rms_prop(Optimizer* optimizer, size_t batch_size) {
   (void)batch_size;
 
   float eps = 1e-8f;
@@ -1146,29 +1137,20 @@ void update_grads_rms_prop(Optimizer* optimizer, size_t batch_size, Tensor* emb,
   float one_minus_beta = 1.0f - beta;
 
   for (size_t t = 0; t < optimizer->tensors.count; t++) {
-    Tensor* tensor = optimizer->tensors.elems[t];
+    Tensor tensor = optimizer->tensors.elems[t];
     NMatrix h = optimizer->history.elems[t];
 
-    for (int i = 0; i < tensor->value.rows; i++) {
-      if (tensor == emb && i == 0) {
-        mat_zero(mat_row(tensor->grad, i));
-        continue;
-      }
-      if (tensor == emb && tokens_in_batch[i] == 0) {
-        mat_zero(mat_row(tensor->grad, i));
-        continue;
-      }
-
-      for (int j = 0; j < tensor->value.cols; j++) {
-        float g = MAT_AT(tensor->grad, i, j);
+    for (int i = 0; i < tensor.value.rows; i++) {
+      for (int j = 0; j < tensor.value.cols; j++) {
+        float g = MAT_AT(tensor.grad, i, j);
 
         MAT_AT(h, i, j) = (beta * MAT_AT(h, i, j)) + (one_minus_beta * g * g);
 
         float adapt_lr = optimizer->learning_rate / sqrtf(MAT_AT(h, i, j) + eps);
 
-        MAT_AT(tensor->value, i, j) -= adapt_lr * g;
+        MAT_AT(tensor.value, i, j) -= adapt_lr * g;
 
-        MAT_AT(tensor->grad, i, j) = 0;
+        MAT_AT(tensor.grad, i, j) = 0;
       }
     }
   }
@@ -1180,14 +1162,14 @@ void update_grads_ada_grad(Optimizer* optimizer, size_t batch_size) {
   float eps = 1e-8f;
 
   for (size_t i = 0; i < optimizer->tensors.count; i++) {
-    Tensor* tensor = optimizer->tensors.elems[i];
+    Tensor tensor = optimizer->tensors.elems[i];
     NMatrix ada_grad = optimizer->history.elems[i];
 
-    int elems = tensor->value.rows * tensor->value.cols;
+    int elems = tensor.value.rows * tensor.value.cols;
 
     for (int j = 0; j < elems; j++) {
       // average the gradient: ∇W = ∇W / B
-      float g = tensor->grad.elems[j]; // / batch_size;
+      float g = tensor.grad.elems[j]; // / batch_size;
 
       // update AdaGrad: Gnew = Gold + ∇W^2
       ada_grad.elems[j] += g * g;
@@ -1195,10 +1177,10 @@ void update_grads_ada_grad(Optimizer* optimizer, size_t batch_size) {
       // udpate the weight: Wnew = Wold - lr/sqrt(Gnew) * ∇W
       if (ada_grad.elems[j] > 0) {
         float adapt_lr = optimizer->learning_rate / (sqrtf(ada_grad.elems[j]) + eps);
-        tensor->value.elems[j] -= adapt_lr * g;
+        tensor.value.elems[j] -= adapt_lr * g;
       }
 
-      tensor->grad.elems[j] = 0;
+      tensor.grad.elems[j] = 0;
     }
   }
 }

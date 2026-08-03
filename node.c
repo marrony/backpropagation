@@ -597,7 +597,7 @@ void test_block_forward(void) {
   block_forward(
       .block_out = &block_out,
       .block_in  = &block,
-      .input     = tensor(in, NULL_MATRIX),
+      .in        = tensor(in, NULL_MATRIX),
       .scores    = scores,
   );
 
@@ -1056,7 +1056,7 @@ void test_block_backward(void) {
   NMatrix dscores = mat_alloc2(&arena.alloc, N, N);
 
   block_backward(
-      .input     = tensor(NULL_MATRIX, dLdx),
+      .in        = tensor(NULL_MATRIX, dLdx),
       .dout      = dL,
       .dscores   = dscores,
       .block_in  = &block,

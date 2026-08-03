@@ -49,7 +49,6 @@ typedef struct {
 } Block;
 
 typedef struct {
-  NMatrix input;         // [NxD]
   Layer_Norm_Output ln1; // [NxD]
   Attention_Output attn;
   NMatrix x1;            // [NxD]
@@ -261,11 +260,11 @@ struct Attention_Forward_Opts {
   Attention_Output* attn_out;
   NMatrix scores;
   Attention* attn_in;
-  Tensor input;
+  Tensor in;
 };
 
 struct Attention_Backward_Opts {
-  Tensor input;
+  Tensor in;
   Attention_Output* attn_out;
   Attention* attn_in;
   NMatrix dout;
@@ -279,17 +278,17 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
   Attention_Output* attn_out = opts.attn_out;
   NMatrix scores = opts.scores;
   Attention* attn_in = opts.attn_in;
-  Tensor input = opts.input;
+  Tensor in = opts.in;
 
-  int32_t N = input.value.rows;
-  int32_t D = input.value.cols;
+  int32_t N = in.value.rows;
+  int32_t D = in.value.cols;
   int32_t H = attn_out->weights.value.rows;
   int32_t head_dim = D / H;
 
   // Q = input*wQ + bQ
   project(
       .out = attn_out->Q.value,
-      .x   = input,
+      .x   = in,
       .W   = attn_in->Q.weight,
       .b   = attn_in->Q.bias,
   );
@@ -297,7 +296,7 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
   // K = input*wK + bK
   project(
       .out = attn_out->K.value,
-      .x   = input,
+      .x   = in,
       .W   = attn_in->K.weight,
       .b   = attn_in->K.bias
   );
@@ -305,7 +304,7 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
   // V = input*wV + bV
   project(
       .out = attn_out->V.value,
-      .x   = input,
+      .x   = in,
       .W   = attn_in->V.weight,
       .b   = attn_in->V.bias
   );
@@ -351,14 +350,14 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
 }
 
 void attention_backward_opts(struct Attention_Backward_Opts opts) {
-  Tensor input = opts.input;
+  Tensor in = opts.in;
   Attention_Output* attn_out = opts.attn_out;
   Attention* attn_in = opts.attn_in;
   NMatrix dout = opts.dout;
   NMatrix dscores = opts.dscores;
 
-  int32_t N = input.value.rows;
-  int32_t D = input.value.cols;
+  int32_t N = in.value.rows;
+  int32_t D = in.value.cols;
   int32_t H = attn_out->weights.value.rows;
   int32_t head_dim = D / H;
 
@@ -427,7 +426,7 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
 
   // V = input*wV + bV
   dproject(
-      .x    = input,
+      .x    = in,
       .W    = attn_in->V.weight,
       .b    = attn_in->V.bias,
       .dout = attn_out->V.grad,
@@ -435,7 +434,7 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
 
   // K = input*wK + bK
   dproject(
-      .x    = input,
+      .x    = in,
       .W    = attn_in->K.weight,
       .b    = attn_in->K.bias,
       .dout = attn_out->K.grad,
@@ -443,7 +442,7 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
 
   // Q = input*wQ + bQ
   dproject(
-      .x    = input,
+      .x    = in,
       .W    = attn_in->Q.weight,
       .b    = attn_in->Q.bias,
       .dout = attn_out->Q.grad,
@@ -453,12 +452,12 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
 struct Block_Forward_Opts {
   Block_Output* block_out;
   Block* block_in;
-  Tensor input;
+  Tensor in;
   NMatrix scores;
 };
 
 struct Block_Backward_Opts {
-  Tensor input;
+  Tensor in;
   NMatrix dout;
   NMatrix dscores;
   Block* block_in;
@@ -479,14 +478,14 @@ struct Block_Backward_Opts {
 void block_forward_opts(struct Block_Forward_Opts opts) {
   Block_Output* block_out = opts.block_out;
   Block* block_in = opts.block_in;
-  Tensor input = opts.input;
+  Tensor in = opts.in;
   NMatrix scores = opts.scores;
 
   // ln1_out = norm(input)
   layer_norm_forward(
       .ln_out = &block_out->ln1,
       .ln_in  = &block_in->ln1,
-      .in     = input,
+      .in     = in,
   );
 
   // attn_out = attention(ln1_out)
@@ -494,11 +493,11 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
       .attn_out = &block_out->attn,
       .attn_in  = &block_in->attn,
       .scores   = scores,
-      .input    = block_out->ln1.out,
+      .in       = block_out->ln1.out,
   );
 
   // x1 = input + attn_out
-  mat_add(block_out->x1, input.value, block_out->attn.out);
+  mat_add(block_out->x1, in.value, block_out->attn.out);
 
   // ln2_out = norm(x1)
   layer_norm_forward(
@@ -552,7 +551,7 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
 // din       = dx1                             |
 // din       += dnorm(input, dln1_out)         | din       += dnorm(input, dln1_out)
 void block_backward_opts(struct Block_Backward_Opts opts) {
-  Tensor in = opts.input;
+  Tensor in = opts.in;
   NMatrix dout = opts.dout;
   NMatrix dscores = opts.dscores;
   Block* block_in = opts.block_in;
@@ -603,7 +602,7 @@ void block_backward_opts(struct Block_Backward_Opts opts) {
   //
   // dln1_out = dattention(ln1_out, din)
   attention_backward(
-      .input    = block_out->ln1.out,
+      .in       = block_out->ln1.out,
       .attn_out = &block_out->attn,
       .attn_in  = &block_in->attn,
       .dscores  = dscores,
@@ -753,7 +752,7 @@ void transformer_forward(
     block_forward(
         .block_out = &out->blocks[i],
         .block_in  = &in->blocks[i],
-        .input     = x,
+        .in        = x,
         .scores    = out->scores,
     );
     x = out->blocks[i].out;
@@ -832,7 +831,7 @@ void transformer_backward(
     //
     // dx[i] = dblock(x[i], dx[i+1])
     block_backward(
-        .input     = x1,
+        .in        = x1,
         .dout      = x2.grad,
         .dscores   = out->scores,
         .block_in  = &in->blocks[i],
