@@ -27,8 +27,8 @@ int main(void) {
   // Note: Data is already normalized in read_idx calls (.normalize = true)
 
   Neuron_Layer layers[] = {
-    create_layer(.inputs = 28*28, .outputs = 20, .forward = relu, .backward = drelu),
-    create_layer(.inputs = 20, .outputs = 10, .forward = relu, .backward = drelu),
+    create_layer(.inputs = 28*28, .outputs = 20, .forward = relu_old, .backward = drelu_old),
+    create_layer(.inputs = 20, .outputs = 10, .forward = relu_old, .backward = drelu_old),
     create_layer(.inputs = 10, .outputs = 10, .forward = softmax, .backward = dsoftmax)
   };
 

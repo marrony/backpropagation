@@ -1058,6 +1058,14 @@ void drelu(NMatrix dst, NMatrix h, NMatrix dL_dh, float a) {
   }
 }
 
+void relu_old(NMatrix dst, NMatrix x) {
+  relu(dst, x, 0);
+}
+
+void drelu_old(NMatrix dst, NMatrix h, NMatrix dL_dh) {
+  drelu(dst, h, dL_dh, 0);
+}
+
 // Softmax function
 //
 //           exp(x[i]/t)

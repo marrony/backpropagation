@@ -4,6 +4,7 @@
 #include "array.h"
 #include "nn.h"
 #include "allocator.h"
+#include "tokenizer.h"
 #include <math.h>
 #include <stdint.h>
 
@@ -153,6 +154,9 @@ void init_xavier_glorot(NMatrix mat, size_t fan_in, size_t fan_out) {
 void alloc_tensor(Allocator* alloc, Tensor* tensor, size_t N, size_t D) {
   tensor->value = mat_alloc2(alloc, N, D);
   tensor->grad = mat_alloc2(alloc, N, D);
+
+  mat_zero(tensor->value);
+  mat_zero(tensor->grad);
 }
 
 void init_linear_layer(Allocator* alloc, Linear_Layer* linear_layer, size_t N, size_t D) {
@@ -185,6 +189,9 @@ void init_block_output(Arena_Allocator* arena, Block_Output* block_out, size_t N
   block_out->ln1.mean     = mat_alloc2(&arena->alloc, 1, N);
   block_out->ln1.var      = mat_alloc2(&arena->alloc, 1, N);
   block_out->ln1.xhat     = mat_alloc2(&arena->alloc, N, D);
+  mat_zero(block_out->ln1.mean);
+  mat_zero(block_out->ln1.var);
+  mat_zero(block_out->ln1.xhat);
   alloc_tensor(&arena->alloc, &block_out->attn.Q, N, D);
   alloc_tensor(&arena->alloc, &block_out->attn.K, N, D);
   alloc_tensor(&arena->alloc, &block_out->attn.V, N, D);
@@ -192,13 +199,19 @@ void init_block_output(Arena_Allocator* arena, Block_Output* block_out, size_t N
   alloc_tensor(&arena->alloc, &block_out->attn.vals, N, D);
   block_out->attn.out     = mat_alloc2(&arena->alloc, N, D);
   block_out->x1           = mat_alloc2(&arena->alloc, N, D);
+  mat_zero(block_out->attn.out);
+  mat_zero(block_out->x1);
   alloc_tensor(&arena->alloc, &block_out->ln2.out, N, D);
   block_out->ln2.mean     = mat_alloc2(&arena->alloc, 1, N);
   block_out->ln2.var      = mat_alloc2(&arena->alloc, 1, N);
   block_out->ln2.xhat     = mat_alloc2(&arena->alloc, N, D);
+  mat_zero(block_out->ln2.mean);
+  mat_zero(block_out->ln2.var);
+  mat_zero(block_out->ln2.xhat);
   alloc_tensor(&arena->alloc, &block_out->ff1_out, N, F);
   alloc_tensor(&arena->alloc, &block_out->relu_out, N, F);
   block_out->ff2_out      = mat_alloc2(&arena->alloc, N, D);
+  mat_zero(block_out->ff2_out);
   alloc_tensor(&arena->alloc, &block_out->out, N, D);
 }
 
@@ -621,7 +634,7 @@ void block_backward_opts(struct Block_Backward_Opts opts) {
 
 #define NUM_BLOCKS 2
 
-DEFINE_ARRAY_ALIAS(TokenID, int32_t);
+// DEFINE_ARRAY_ALIAS(TokenID, int32_t);
 
 typedef struct {
   Tensor tok_emb;
@@ -722,10 +735,15 @@ void init_transformer_output_opts(struct Init_Transformer_Output_Opts opts) {
   trans_out->ln.mean     = mat_alloc2(&arena->alloc, 1, N);
   trans_out->ln.var      = mat_alloc2(&arena->alloc, 1, N);
   trans_out->ln.xhat     = mat_alloc2(&arena->alloc, N, D);
+  mat_zero(trans_out->ln.mean);
+  mat_zero(trans_out->ln.var);
+  mat_zero(trans_out->ln.xhat);
 
   alloc_tensor(&arena->alloc, &trans_out->logits, N, V);
   trans_out->probs = mat_alloc2(&arena->alloc, N, V);
   trans_out->scores = mat_alloc2(&arena->alloc, N, N);
+  mat_zero(trans_out->probs);
+  mat_zero(trans_out->scores);
 }
 
 void transformer_forward(
@@ -776,12 +794,12 @@ void transformer_forward(
   // probs = softmax(logits)
   softmax_by_row(out->probs, out->logits.value, 1.0);
 
-  printf("x0     = "); mat_println(out->x0.value, 4);
-  // printf("x1     = "); mat_println(x1.value, 4);
-  // printf("x2     = "); mat_println(x2.value, 4);
-  printf("out_ln = "); mat_println(out->ln.out.value, 4);
-  printf("logits = "); mat_println(out->logits.value, 4);
-  printf("probs  = "); mat_println(out->probs, 4);
+  // printf("x0     = "); mat_println(out->x0.value, 4);
+  // // printf("x1     = "); mat_println(x1.value, 4);
+  // // printf("x2     = "); mat_println(x2.value, 4);
+  // printf("out_ln = "); mat_println(out->ln.out.value, 4);
+  // printf("logits = "); mat_println(out->logits.value, 4);
+  // printf("probs  = "); mat_println(out->probs, 4);
 }
 
 void transformer_backward(
@@ -858,6 +876,17 @@ void transformer_backward(
         mat_row(out->x0.grad, i)
     );
   }
+}
+
+float cross_entropy(NMatrix probs, TokenID_Array targets) {
+  size_t N = probs.rows;
+
+  float loss = 0;
+
+  for (size_t i = 0; i < N; i++)
+    loss -= logf(MAT_AT(probs, i, targets.elems[i]) + 1e-10f);
+
+  return loss / (float)N;
 }
 
 #endif // TRANSFORMER_H

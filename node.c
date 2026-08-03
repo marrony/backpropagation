@@ -4,6 +4,7 @@
 #include "bytebuffer.h"
 #include "allocator.h"
 #include "node.h"
+#include "tokenizer.h"
 #include "transformer.h"
 #include <math.h>
 #include <stdbool.h>

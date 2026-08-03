@@ -548,7 +548,7 @@ float train_sequence(
     node_backward(tape);
 
     // Update the parameters
-    update_grads_adam(&optimizer, &embedding_node->as_embedding.embeddings, tokens_in_batch);
+    update_grads_adam(&optimizer);
 
     RESTORE(&arena->alloc, saved);
   }

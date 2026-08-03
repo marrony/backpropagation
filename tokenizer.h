@@ -1,3 +1,6 @@
+#ifndef TOKENIZER_H
+#define TOKENIZER_H
+
 #include <pcre2.h>
 #include <ctype.h>
 #include <stdint.h>
@@ -334,3 +337,5 @@ int32_t gen_vocabulary(
 
   return 0;
 }
+
+#endif // TOKENIZER_H
