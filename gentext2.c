@@ -1,6 +1,5 @@
 #include "array.h"
 #include "nn.h"
-#include <stdint.h>
 #define BYTEBUFFER_IMPLEMENTATION
 #define ALLOCATOR_IMPLEMENATION
 
@@ -94,7 +93,7 @@ int main(void) {
     .tensors = ARRAY_CREATE(&mallocator.alloc),
     .history = ARRAY_CREATE(&mallocator.alloc),
     .second = ARRAY_CREATE(&mallocator.alloc),
-    .learning_rate = 0.05f,
+    .learning_rate = 0.075f,
     .updates = 0,
   };
   Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 2*1024*1024);
@@ -104,11 +103,17 @@ int main(void) {
 
   prepare_data(&sequence);
 
-  size_t C = 10;
+  size_t C = 16;
   size_t D = 8;
-  size_t H = 2;
+  size_t H = 4;
   size_t F = 8;
   size_t V = MAX_VOCAB;
+
+  // optimize learning rate
+  int patience = 3;
+  float decay_factor = 0.9f;
+  float min_lr = 0.00001f;
+  float min_delta = 0.0005f;
 
   array_ensure(&tokens, C);
   array_ensure(&targets, C);
@@ -152,7 +157,13 @@ int main(void) {
     register_tensor(&optimizer, trans_in.blocks[i].attn.O.bias);
   }
 
-  for (size_t epoch = 0; epoch < 250; epoch++) {
+  printf("dataset size = %zu\n", sequence.count);
+  printf("total parameters = %zu\n", count_parameters(&optimizer));
+
+  float best_epoch_loss = 1000.0f;
+  int plateau_epochs = 0;
+
+  for (size_t epoch = 0; epoch < 2000; epoch++) {
     float loss = 0;
     size_t count = 0;
 
@@ -166,17 +177,6 @@ int main(void) {
         array_append(&tokens, sequence.elems[i+c]);
         array_append(&targets, sequence.elems[i+c+1]);
       }
-
-      // for (size_t c = 0; c < tokens.count; c++)
-      //   printf("%d = %s\n", tokens.elems[c], vocabulary[tokens.elems[c]].token);
-      // printf("======\n");
-      // for (size_t c = 0; c < targets.count; c++)
-      //   printf("%d = %s\n", targets.elems[c], vocabulary[targets.elems[c]].token);
-      //
-      // printf(" => %s\n", vocabulary[tokens.count-3].token);
-      // printf(" => %s\n", vocabulary[targets.count-1].token);
-      //
-      // exit(0);
 
       size_t N = tokens.count;
 
@@ -193,15 +193,6 @@ int main(void) {
 
       transformer_forward(tokens, &trans_out, &trans_in, 1.0f);
 
-      // int32_t next = mat_row_argmax(mat_row(trans_out.probs, N - 1));
-      // printf("next = %d\n", next);
-      //
-      // for (int16_t t = 0; t < trans_out.probs.rows; t++) {
-      //   int32_t id = targets.elems[t];
-      //   float x = MAT_AT(trans_out.probs, t, id);
-      //   printf("target = %d %f %f\n", id, x, -logf(x + 1e-10f));
-      // }
-
       loss += cross_entropy(trans_out.probs, targets);
       count += 1;
 
@@ -210,18 +201,38 @@ int main(void) {
       RESTORE(&arena.alloc, saved);
     }
 
-    if (epoch % 200 == 0)
-      optimizer.learning_rate *= 0.8f;
+    loss /= count;
 
-    printf("loss(%zu) = %f %zu\n", epoch, loss/count, count);
+    // todo: increase epoch only when we don't plateaued?
+    if (loss < (best_epoch_loss - min_delta)) {
+      best_epoch_loss = loss;
+      plateau_epochs = 0;
+    } else {
+      plateau_epochs += 1;
+    }
+
+    if (plateau_epochs >= patience) {
+      float next_lr = optimizer.learning_rate * decay_factor;
+
+      if (next_lr >= min_lr) {
+        optimizer.learning_rate = next_lr;
+
+        printf("\n[Scheduler] Loss plateaued for %d epochs. Decaying LR to: %.6f\n",
+            patience, next_lr);
+      } else {
+        printf("\n[Scheduler] Reached minimum learning rate %.6f, aborting\n", next_lr);
+        break;
+      }
+
+      plateau_epochs = 0;
+    }
+
+    printf("\rloss(%zu) = %f %zu %f", epoch, loss, count, optimizer.learning_rate);
+    fflush(stdout);
     update_grads_adam(&optimizer);
-
-    float cost = loss/count;
-    if (cost < 0.1) break;
-
-    // if (epoch == 10) exit(0);
   }
 
+  printf("dataset size = %zu\n", sequence.count);
   printf("total parameters = %zu\n", count_parameters(&optimizer));
 
   const char* prompt = "the desert";

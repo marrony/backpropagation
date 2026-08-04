@@ -632,9 +632,7 @@ void block_backward_opts(struct Block_Backward_Opts opts) {
   );
 }
 
-#define NUM_BLOCKS 2
-
-// DEFINE_ARRAY_ALIAS(TokenID, int32_t);
+#define NUM_BLOCKS 4
 
 typedef struct {
   Tensor tok_emb;
