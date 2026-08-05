@@ -28,6 +28,8 @@ typedef struct {
   int16_t stride;
 } NMatrix;
 
+#include "gpu.h"
+
 typedef struct {
   NMatrix value;
   NMatrix grad;
@@ -66,15 +68,15 @@ void mat_rand_uniform(NMatrix mat, float min, float max) {
 // Generates two independent normal samples at once (Box-Muller style)
 // Uses rejection sampling: samples u,v ~ U[-1,1], accepts if u²+v² < 1
 float random_normal(float mean, float stddev) {
-  static int hasSpare = 0;
+  static int has_spare = 0;
   static float spare;
 
-  if (hasSpare) {
-    hasSpare = 0;
+  if (has_spare) {
+    has_spare = 0;
     return mean + stddev * spare;
   }
 
-  hasSpare = 1;
+  has_spare = 1;
 
   float u, v, s;
 
@@ -243,15 +245,16 @@ NMatrix mat_reshape(NMatrix x, int rows, int cols) {
   };
 }
 
-void mat_zero(NMatrix m) {
-  int count = m.rows * m.cols;
-  memset(m.elems, 0, count*sizeof(float));
+void mat_fill(NMatrix dst, float k) {
+  for (int i = 0; i < dst.rows; i++) {
+    for (int j = 0; j < dst.cols; j++) {
+      MAT_AT(dst, i, j) = k;
+    }
+  }
 }
 
-void mat_fill(NMatrix dst, float k) {
-  int count = dst.rows * dst.cols;
-  for (int i = 0; i < count; i++)
-    dst.elems[i] = k;
+void mat_zero(NMatrix m) {
+  mat_fill(m, 0);
 }
 
 void mat_copy(NMatrix dst, NMatrix src) {
@@ -378,8 +381,29 @@ void mat_sum_row(NMatrix dst, NMatrix src) {
  * @param a      First matrix (a.rows × a.cols)
  * @param b      Second matrix (b.rows × b.cols) where b.rows = a.cols
  */
+
+#define ACCELERATE_NEW_LAPACK
+#define ACCELERATE_LAPACK_ILP64
+#include <Accelerate/Accelerate.h>
+
 void mat_mult(NMatrix dst, NMatrix a, NMatrix b) {
   ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.rows, a.cols, b.rows, b.cols);
+
+  // mat_zero(dst);
+  // execute_kernel(
+  //     commands,
+  //     matrix_mul_stride_kernel,
+  //     a, b, dst,
+  //     false, false
+  // );
+
+  // int M = a.rows;
+  // int N = b.cols;
+  // int K = a.cols;
+  //
+  // // C = A * B
+  // cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, M, N, K,
+  //     1.0f, a.elems, a.stride, b.elems, b.stride, 0.0f, dst.elems, dst.stride);
 
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
@@ -388,8 +412,31 @@ void mat_mult(NMatrix dst, NMatrix a, NMatrix b) {
   }
 }
 
+// // For C = A^T * B
+// cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans, 
+//             M, N, K, 1.0f, A, M, B, N, 0.0f, C, N);
+//
+// // For C = A * B^T
+// cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, 
+//             M, N, K, 1.0f, A, K, B, K, 0.0f, C, N);
+
 void mat_mult_acc(NMatrix dst, NMatrix a, NMatrix b) {
   ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.rows, a.cols, b.rows, b.cols);
+
+  // execute_kernel(
+  //     commands,
+  //     matrix_mul_stride_kernel,
+  //     a, b, dst,
+  //     false, false
+  // );
+
+  // int M = a.rows;
+  // int N = b.cols;
+  // int K = a.cols;
+  //
+  // // C = (A * B)*alpha + C*beta
+  // cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, M, N, K,
+  //     1.0f, a.elems, a.stride, b.elems, b.stride, 1.0f, dst.elems, dst.stride);
 
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
@@ -416,6 +463,14 @@ void mat_mult_acc(NMatrix dst, NMatrix a, NMatrix b) {
 void mat_mult_A_and_B_transposed(NMatrix dst, NMatrix a, NMatrix b) {
   ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.rows, a.cols, b.cols, b.rows);
 
+  // mat_zero(dst);
+  // execute_kernel(
+  //     commands,
+  //     matrix_mul_Bt_stride_kernel,
+  //     a, b, dst,
+  //     false, true
+  // );
+
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = mat_dot_row_row(a, b, i, j);
@@ -425,6 +480,13 @@ void mat_mult_A_and_B_transposed(NMatrix dst, NMatrix a, NMatrix b) {
 
 void mat_mult_A_and_B_transposed_acc(NMatrix dst, NMatrix a, NMatrix b) {
   ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.rows, a.cols, b.cols, b.rows);
+
+  // execute_kernel(
+  //     commands,
+  //     matrix_mul_Bt_stride_kernel,
+  //     a, b, dst,
+  //     false, true
+  // );
 
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
@@ -478,6 +540,14 @@ void mat_mult_A_and_B_transposed_add_C(NMatrix dst, NMatrix a, NMatrix b, NMatri
 void mat_mult_A_transposed_and_B(NMatrix dst, NMatrix a, NMatrix b) {
   ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.cols, a.rows, b.rows, b.cols);
 
+  // mat_zero(dst);
+  // execute_kernel(
+  //     commands,
+  //     matrix_mul_At_stride_kernel,
+  //     a, b, dst,
+  //     true, false
+  // );
+
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = mat_dot_col_col(a, b, i, j);
@@ -487,6 +557,13 @@ void mat_mult_A_transposed_and_B(NMatrix dst, NMatrix a, NMatrix b) {
 
 void mat_mult_A_transposed_and_B_acc(NMatrix dst, NMatrix a, NMatrix b) {
   ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.cols, a.rows, b.rows, b.cols);
+
+  // execute_kernel(
+  //     commands,
+  //     matrix_mul_At_stride_kernel,
+  //     a, b, dst,
+  //     true, false
+  // );
 
   for (int i = 0; i < dst.rows; i++) {
     for (int j = 0; j < dst.cols; j++) {
@@ -593,9 +670,11 @@ void mat_add(NMatrix dst, NMatrix a, NMatrix b) {
   assert(dst.cols == b.cols);
   assert(dst.rows == b.rows);
 
-  int count = dst.rows * dst.cols;
-  for (int i = 0; i < count; i++)
-    dst.elems[i] = a.elems[i] + b.elems[i];
+  for (int i = 0; i < dst.rows; i++) {
+    for (int j = 0; j < dst.cols; j++) {
+      MAT_AT(dst, i, j) = MAT_AT(a, i, j) + MAT_AT(b, i, j);
+    }
+  }
 }
 
 /**
@@ -619,18 +698,11 @@ void mat_weighted_add(NMatrix dst, NMatrix a, NMatrix b, float k) {
   assert(dst.cols == b.cols);
   assert(dst.rows == b.rows);
 
-  int count = dst.rows * dst.cols;
-  for (int i = 0; i < count; i++)
-    dst.elems[i] = a.elems[i] + b.elems[i] * k;
-
-  // for (int i = 0; i < dst.rows; i++) {
-  //   for (int j = 0; j < dst.cols; j++) {
-  //     assert(!isnan(MAT_AT(a, i, j)));
-  //     assert(!isnan(MAT_AT(b, i, j)));
-  //
-  //     MAT_AT(dst, i, j) = MAT_AT(a, i, j) + MAT_AT(b, i, j) * k;
-  //   }
-  // }
+  for (int i = 0; i < dst.rows; i++) {
+    for (int j = 0; j < dst.cols; j++) {
+      MAT_AT(dst, i, j) = MAT_AT(a, i, j) + MAT_AT(b, i, j) * k;
+    }
+  }
 }
 
 /**
@@ -678,15 +750,11 @@ void mat_memberwise_mult(NMatrix dst, NMatrix a, NMatrix b) {
   assert(dst.cols == b.cols);
   assert(dst.rows == b.rows);
 
-  int count = dst.rows * dst.cols;
-  for (int i = 0; i < count; i++)
-    dst.elems[i] = a.elems[i] * b.elems[i];
-
-  // for (int i = 0; i < dst.rows; i++) {
-  //   for (int j = 0; j < dst.cols; j++) {
-  //     MAT_AT(dst, i, j) = MAT_AT(a, i, j) * MAT_AT(b, i, j);
-  //   }
-  // }
+  for (int i = 0; i < dst.rows; i++) {
+    for (int j = 0; j < dst.cols; j++) {
+      MAT_AT(dst, i, j) = MAT_AT(a, i, j) * MAT_AT(b, i, j);
+    }
+  }
 }
 
 /**
@@ -709,15 +777,11 @@ void mat_memberwise_div(NMatrix dst, NMatrix a, NMatrix b, float eps) {
   assert(dst.cols == b.cols);
   assert(dst.rows == b.rows);
 
-  int count = dst.rows * dst.cols;
-  for (int i = 0; i < count; i++)
-    dst.elems[i] = a.elems[i] / (b.elems[i] + eps);
-
-  // for (int i = 0; i < dst.rows; i++) {
-  //   for (int j = 0; j < dst.cols; j++) {
-  //     MAT_AT(dst, i, j) = MAT_AT(a, i, j) / (MAT_AT(b, i, j) + eps);
-  //   }
-  // }
+  for (int i = 0; i < dst.rows; i++) {
+    for (int j = 0; j < dst.cols; j++) {
+      MAT_AT(dst, i, j) = MAT_AT(a, i, j) / (MAT_AT(b, i, j) + eps);
+    }
+  }
 }
 
 /**
@@ -758,15 +822,11 @@ void mat_scale(NMatrix dst, NMatrix src, float k) {
   assert(dst.cols == src.cols);
   assert(dst.rows == src.rows);
 
-  int count = dst.rows * dst.cols;
-  for (int i = 0; i < count; i++)
-    dst.elems[i] = src.elems[i] * k;
-
-  // for (int i = 0; i < dst.rows; i++) {
-  //   for (int j = 0; j < dst.cols; j++) {
-  //     MAT_AT(dst, i, j) = MAT_AT(src, i, j) * k;
-  //   }
-  // }
+  for (int i = 0; i < dst.rows; i++) {
+    for (int j = 0; j < dst.cols; j++) {
+      MAT_AT(dst, i, j) = MAT_AT(src, i, j) * k;
+    }
+  }
 }
 
 /**
@@ -942,18 +1002,12 @@ void mat_rand_normal(NMatrix m, float mean, float stddev) {
 }
 
 void mat_clip(NMatrix m, float min, float max) {
-  int count = m.rows * m.cols;
-  for (int i = 0; i < count; i++) {
-    if (m.elems[i] < min) m.elems[i] = min;
-    if (m.elems[i] > max) m.elems[i] = max;
+  for (int i = 0; i < m.rows; i++) {
+    for (int j = 0; j < m.cols; j++) {
+      if (MAT_AT(m, i, j) < min) MAT_AT(m, i, j) = min;
+      if (MAT_AT(m, i, j) > max) MAT_AT(m, i, j) = max;
+    }
   }
-
-  // for (int i = 0; i < m.rows; i++) {
-  //   for (int j = 0; j < m.cols; j++) {
-  //     if (MAT_AT(m, i, j) < min) MAT_AT(m, i, j) = min;
-  //     if (MAT_AT(m, i, j) > max) MAT_AT(m, i, j) = max;
-  //   }
-  // }
 }
 
 /*
@@ -1047,14 +1101,18 @@ static inline float dreluf(float x, float a) {
 // returns if x > 0  : x
 //         if x <= 0 : 0
 void relu(NMatrix dst, NMatrix x, float a) {
-  for (int i = 0; i < dst.rows*dst.cols; i++) {
-    dst.elems[i] = reluf(x.elems[i], a);
+  for (int i = 0; i < dst.rows; i++) {
+    for (int j = 0; j < dst.cols; j++) {
+      MAT_AT(dst, i, j) = reluf(MAT_AT(x, i, j), a);
+    }
   }
 }
 
 void drelu(NMatrix dst, NMatrix h, NMatrix dL_dh, float a) {
-  for (int i = 0; i < dst.rows*dst.cols; i++) {
-    dst.elems[i] += dreluf(h.elems[i], a) * dL_dh.elems[i];
+  for (int i = 0; i < dst.rows; i++) {
+    for (int j = 0; j < dst.cols; j++) {
+      MAT_AT(dst, i, j) += dreluf(MAT_AT(h, i, j), a) * MAT_AT(dL_dh, i, j);
+    }
   }
 }
 
@@ -1620,6 +1678,22 @@ int64_t get_system_micros(void) {
   struct timespec ts = {0, 0};
   timespec_get(&ts, TIME_UTC);
   return (int64_t)(ts.tv_sec * SEC_TO_US) + (int64_t)(ts.tv_nsec / MICRO_TO_NS);
+}
+
+void mat_write(NMatrix mat, FILE* fp) {
+  fwrite(&mat.rows, sizeof(int16_t), 1, fp);
+  fwrite(&mat.cols, sizeof(int16_t), 1, fp);
+  fwrite(mat.elems, sizeof(float), mat.rows*mat.cols, fp);
+}
+
+void mat_read(NMatrix mat, FILE* fp) {
+  int16_t rows = 0;
+  int16_t cols = 0;
+  fread(&rows, sizeof(int16_t), 1, fp);
+  fread(&cols, sizeof(int16_t), 1, fp);
+  assert(rows == mat.rows);
+  assert(cols == mat.cols);
+  fread(mat.elems, sizeof(float), mat.rows*mat.cols, fp);
 }
 
 #endif //NN_H

@@ -13,8 +13,9 @@ const char *training_text[] = {
   (const char*)alice_txt,
   "the desert was silent except for the low, rhythmic hum of the wind sweeping across the dunes. for miles in every direction, nothing broke the horizon line but shifting sand and the occasional skeletal remains of ancient shrubs. evelyn checked her gps device, frowning at the uncoordinated coordinates flashing across the screen. the signal was dead. she had exactly two liters of water left, a compass that could not find true north, and six hours of daylight remaining before the temperature dropped below freezing.",
   "the desert is a landscape of surprising contrasts and quiet resilience. during the day, the sun beats down relentlessly, turning the sand into a glowing sea of gold. cacti and deep-rooted shrubs stand as silent sentinels, conserving every drop of precious moisture in their thick stems. yet, as twilight approaches, the extreme heat yields to a crisp, cooling breeze. the sky shifts into a canvas of violet and deep indigo. nocturnal creatures, such as the kit fox and the rattlesnake, emerge from their underground burrows to hunt and forage, breathing vibrant life into the quiet night.",
-  "artificial intelligence has rapidly transformed from a theoretical concept into an everyday reality. machine learning algorithms now power everything from basic email filters to complex autonomous vehicles. by processing massive amounts of historical data, these systems can identify hidden patterns, make accurate predictions, and automate tedious tasks. however, this technological leap brings significant ethical challenges, including data privacy concerns and algorithmic bias. as these neural networks become increasingly sophisticated, developers face the crucial responsibility of ensuring transparency and fairness, so that these powerful digital tools ultimately benefit society as a whole.",
+  "the desert was an oven of white heat that felt entirely unescapable. jackson tapped the cracked glass of his analog barometer, watching the needle fluctuate wildly against the glass. his satellite uplink to the desert research base had been dark for forty-eight hours, leaving him completely isolated. he rationed his final half-liter of water, scanning the shimmering horizon for any sign of shelter before the sub-zero desert night winds set in.",
   "the roman empire was one of the most powerful and enduring civilizations in human history, fundamentally shaping the trajectory of the western world. beginning as a modest republic on the italian peninsula, it expanded rapidly through strategic military conquests and advanced engineering. roman legions established dominance across the mediterranean, bringing law, architecture, and commerce to diverse cultures. at its peak, the empire spanned from the rainy hills of britannia to the arid deserts of egypt. even after its eventual collapse, the architectural marvels, legal systems, and cultural innovations of rome continued to influence modern societies for centuries.",
+  "artificial intelligence has rapidly transformed from a theoretical concept into an everyday reality. machine learning algorithms now power everything from basic email filters to complex autonomous vehicles. by processing massive amounts of historical data, these systems can identify hidden patterns, make accurate predictions, and automate tedious tasks. however, this technological leap brings significant ethical challenges, including data privacy concerns and algorithmic bias. as these neural networks become increasingly sophisticated, developers face the crucial responsibility of ensuring transparency and fairness, so that these powerful digital tools ultimately benefit society as a whole.",
   "baking the perfect loaf of artisan bread requires patience, precision, and a deep understanding of basic ingredients. the process begins with just four simple components: flour, water, salt, and yeast. when combined, these elements undergo a magical transformation. the yeast feeds on the natural sugars in the flour, releasing carbon dioxide that causes the dough to rise and develop a complex network of air pockets. kneading and resting the dough properly are essential steps that build gluten structure. finally, baking the dough in a scorching hot oven creates a beautiful, crispy crust while keeping the interior soft.",
   "earth is a dynamic, ever-changing planet covered mostly by vast, interconnected oceans. beneath the water lies a complex topography of deep trenches, underwater mountain ranges, and expansive plains. these marine ecosystems are home to an astonishing variety of life, ranging from microscopic phytoplankton to massive whales. the oceans also play a critical role in regulating the global climate by absorbing massive amounts of carbon dioxide and distributing heat across the globe. despite their importance, these fragile aquatic environments are currently facing severe threats from pollution, overfishing, and rising water temperatures caused by climate change.",
   "the powerful king ruled. this man wore gold. the wise queen ruled. this woman wore gold. the brave king led men. that man commanded troops. the brave queen led men. that woman commanded troops. the noble king signed laws. a man signed laws. the noble queen signed laws. a woman signed laws.",
@@ -40,23 +41,22 @@ int comp_token(const void* a, const void* b) {
 
 Malloc_Allocator mallocator = MALLOC_CREATE();
 
-#define MAX_VOCAB 512
+#define MAX_VOCAB (5*1024)
 
 int main(void) {
   Token vocabulary[MAX_VOCAB] = {0};
 
-  size_t token_count = gen_vocabulary(
+  int32_t token_count = gen_vocabulary(
       &mallocator.alloc,
       training_text,
       sizeof(training_text)/sizeof(char*),
       vocabulary,
       MAX_VOCAB
   );
-  (void)token_count;
 
-  printf("#define MAX_VOCAB %d\n", MAX_VOCAB);
+  printf("#define MAX_VOCAB %d\n", token_count);
   printf("Token vocabulary[MAX_VOCAB] = {\n");
-  for (int i = 0; i < MAX_VOCAB; i++) {
+  for (int i = 0; i < token_count; i++) {
     printf("  { .id = %d, .token = {", vocabulary[i].id);
     for (int j = 0; j < MAX_TOKEN; j++) {
       if (vocabulary[i].token[j] == '\'')
@@ -72,10 +72,10 @@ int main(void) {
   }
   printf("};\n");
 
-  qsort(vocabulary, MAX_VOCAB, sizeof(Token), comp_token);
+  qsort(vocabulary, token_count, sizeof(Token), comp_token);
 
   printf("Token_Sorted vocabulary_by_size[MAX_VOCAB] = {\n");
-  for (int i = 0; i < MAX_VOCAB; i++) {
+  for (int i = 0; i < token_count; i++) {
     printf("  { .id = %d, .size = %zu },\n", vocabulary[i].id, strlen(vocabulary[i].token));
   }
   printf("};\n");

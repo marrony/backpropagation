@@ -10,7 +10,8 @@ raylib-5/libraylib.a:
 
 CFLAGS_COMMON=-std=c17 -Werror -Wall -Wextra \
 		-Wno-initializer-overrides -pedantic -I ./raylib-5 \
-		-DPCRE2_CODE_UNIT_WIDTH=8 $(shell pkg-config --cflags libpcre2-8)
+		-DPCRE2_CODE_UNIT_WIDTH=8 $(shell pkg-config --cflags libpcre2-8) \
+		-march=armv8-a
 
 CFLAGS_DEBUG=$(CFLAGS_COMMON) -g \
     -fsanitize=signed-integer-overflow \
@@ -23,7 +24,7 @@ CFLAGS=$(CFLAGS_RELEASE)
 
 LDFLAGS=-L ./raylib-5 -lraylib -framework Foundation \
     -framework CoreServices -framework CoreGraphics \
-    -framework AppKit -framework IOKit \
+    -framework AppKit -framework IOKit -framework OpenCL \
 		$(shell pkg-config --libs libpcre2-8)
 
 all: $(PROGS)
@@ -45,7 +46,7 @@ $(BINDIR)/genvocab: genvocab.c tokenizer.h generated/alice.h generated/vocab.h |
 $(BINDIR)/cnn-node: cnn-node.c
 	echo "cnn-node.c is broken"
 
-$(BINDIR)/%: %.c nn.h node.h game.h tokenizer.h transformer.h generated/alice.h generated/vocab.h | $(BINDIR) raylib-5/libraylib.a
+$(BINDIR)/%: %.c nn.h node.h game.h tokenizer.h transformer.h gpu.h generated/alice.h generated/vocab.h | $(BINDIR) raylib-5/libraylib.a
 	cc $(CFLAGS) $< -o $@ $(LDFLAGS)
 
 generated:

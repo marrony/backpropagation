@@ -30,6 +30,7 @@ typedef struct {
   Linear_Layer K;       // [DxD]
   Linear_Layer V;       // [DxD]
   Linear_Layer O;       // [DxD]
+  float p;
 } Attention;
 
 typedef struct {
@@ -39,6 +40,7 @@ typedef struct {
   Tensor weights;        // [HxNxN]
   Tensor vals;           // [NxD]
   NMatrix out;           // [NxD]
+  NMatrix mask;          // [NxD]
 } Attention_Output;
 
 typedef struct {
@@ -182,6 +184,7 @@ void init_block(Allocator* alloc, Block* block, size_t D, size_t F) {
   init_gamma_beta(alloc, &block->ln2.gamma, &block->ln2.beta, D);
   init_linear_layer(alloc, &block->ff1, D, F);
   init_linear_layer(alloc, &block->ff2, F, D);
+  block->attn.p = 0.0f;
 }
 
 void init_block_output(Arena_Allocator* arena, Block_Output* block_out, size_t N, size_t D, size_t H, size_t F) {
@@ -198,6 +201,7 @@ void init_block_output(Arena_Allocator* arena, Block_Output* block_out, size_t N
   alloc_tensor(&arena->alloc, &block_out->attn.weights, H, N*N);
   alloc_tensor(&arena->alloc, &block_out->attn.vals, N, D);
   block_out->attn.out     = mat_alloc2(&arena->alloc, N, D);
+  block_out->attn.mask    = mat_alloc2(&arena->alloc, N, D);
   block_out->x1           = mat_alloc2(&arena->alloc, N, D);
   mat_zero(block_out->attn.out);
   mat_zero(block_out->x1);
@@ -267,6 +271,32 @@ void dproject_opts(struct Project_Backward_Opts opts) {
   NMatrix dx = opts.x.grad;
   NMatrix W = opts.W.value;
   mat_mult_A_and_B_transposed_acc(dx, dout, W);
+}
+
+// linear2(dropout(relu_out))
+// layer_norm(x + dropout(ff2_out))
+// layer_norm(x + dropout(attn_out))
+// attn_weights = dropout(softmax(Q @ K.T / sqrt(d)))
+// x0 = dropout(tok_emb + pos_emb)
+
+void dropout_forward(NMatrix x, NMatrix mask, float p) {
+  float m = 1 / (1 - p);
+
+  for (int i = 0; i < x.rows; i++) {
+    for (int j = 0; j < x.cols; j++) {
+      MAT_AT(mask, i, j) = rand_uniform() < p ? 0 : m;
+      MAT_AT(x, i, j) *= MAT_AT(mask, i, j);
+    }
+  }
+}
+
+void dropout_backward(NMatrix dx, NMatrix mask) {
+  for (int i = 0; i < dx.rows; i++) {
+    for (int j = 0; j < dx.cols; j++) {
+      float m = MAT_AT(mask, i, j);
+      MAT_AT(dx, i, j) *= m;
+    }
+  }
 }
 
 struct Attention_Forward_Opts {
@@ -341,9 +371,11 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
       }
     }
 
-    // attn_weitghs = softmax(scores)
+    // attn_weights = softmax(scores)
     NMatrix attn_weights = mat_row_as(attn_out->weights.value, h, N, N);
     softmax_by_row(attn_weights, scores, 1);
+
+    // dropout(attn_weights)
 
     // attn_vals = attn_weitghs * V
     mat_mult(
@@ -509,6 +541,9 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
       .in       = block_out->ln1.out,
   );
 
+  // dropout(attn_out)
+  dropout_forward(block_out->attn.out, block_out->attn.mask, block_in->attn.p);
+
   // x1 = input + attn_out
   mat_add(block_out->x1, in.value, block_out->attn.out);
 
@@ -530,6 +565,8 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
   // relu_out = relu(ff1_out)
   relu(block_out->relu_out.value, block_out->ff1_out.value, 0.0f);
 
+  // dropout(relu_out)
+
   // ff2_out = relu_out*ff2W + ff2b
   project(
       .out = block_out->ff2_out,
@@ -537,6 +574,8 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
       .W   = block_in->ff2.weight,
       .b   = block_in->ff2.bias,
   );
+
+  // dropout(ff2_out)
 
   // out = x1 + ff2_out
   mat_add(block_out->out.value, block_out->x1, block_out->ff2_out);
@@ -611,6 +650,11 @@ void block_backward_opts(struct Block_Backward_Opts opts) {
       .ln_out = &block_out->ln2,
   );
 
+  // dropout(attn_out)
+  //
+  // dattn_out = ddropout(attn_out)
+  dropout_backward(block_out->attn.out, block_out->attn.mask);
+
   // attn_out = attention(ln1_out)
   //
   // dln1_out = dattention(ln1_out, din)
@@ -632,7 +676,7 @@ void block_backward_opts(struct Block_Backward_Opts opts) {
   );
 }
 
-#define NUM_BLOCKS 4
+#define NUM_BLOCKS 2
 
 typedef struct {
   Tensor tok_emb;
@@ -641,15 +685,19 @@ typedef struct {
   Layer_Norm ln;
   Linear_Layer H;
 
+  float x0_p;
+
   // configs
   size_t vocab_size;
   size_t context_size;
+  size_t heads_count;
   size_t emb_size;
   size_t ff_size;
 } Transformer;
 
 typedef struct {
   Tensor x0;
+  NMatrix x0_mask;
   Block_Output blocks[NUM_BLOCKS];
   Layer_Norm_Output ln;
   Tensor logits;
@@ -658,7 +706,6 @@ typedef struct {
 
   // configs
   size_t sequence_size;
-  size_t heads_count;
 } Transformer_Output;
 
 struct Init_Transformer_Opts {
@@ -666,6 +713,7 @@ struct Init_Transformer_Opts {
   Transformer* trans;
   size_t vocab_size;
   size_t context_size;
+  size_t heads_count;
   size_t emb_size;
   size_t ff_size;
 };
@@ -694,8 +742,10 @@ void init_transformer_opts(struct Init_Transformer_Opts opts) {
 
   trans->vocab_size = opts.vocab_size;
   trans->context_size = opts.context_size;
+  trans->heads_count = opts.heads_count;
   trans->emb_size = opts.emb_size;
   trans->ff_size = opts.ff_size;
+  trans->x0_p = 0.0f;
 
   alloc_tensor(alloc, &trans->tok_emb, V, D);
   init_xavier_glorot(trans->tok_emb.value, V, D);
@@ -721,9 +771,9 @@ void init_transformer_output_opts(struct Init_Transformer_Output_Opts opts) {
   size_t F = opts.ff_size;
 
   trans_out->sequence_size = opts.sequence_size;
-  trans_out->heads_count = opts.heads_count;
 
   alloc_tensor(&arena->alloc, &trans_out->x0, N, D);
+  trans_out->x0_mask = mat_alloc2(&arena->alloc, N, V);
 
   for (size_t i = 0; i < NUM_BLOCKS; i++) {
     init_block_output(arena, &trans_out->blocks[i], N, D, H, F);
@@ -762,6 +812,9 @@ void transformer_forward(
     );
   }
 
+  // dropout(x0)
+  dropout_forward(out->x0.value, out->x0_mask, in->x0_p);
+
   Tensor x = out->x0;
 
   // x[i+1] = block(x[i])
@@ -792,13 +845,6 @@ void transformer_forward(
 
   // probs = softmax(logits)
   softmax_by_row(out->probs, out->logits.value, temperature);
-
-  // printf("x0     = "); mat_println(out->x0.value, 4);
-  // // printf("x1     = "); mat_println(x1.value, 4);
-  // // printf("x2     = "); mat_println(x2.value, 4);
-  // printf("out_ln = "); mat_println(out->ln.out.value, 4);
-  // printf("logits = "); mat_println(out->logits.value, 4);
-  // printf("probs  = "); mat_println(out->probs, 4);
 }
 
 void transformer_backward(
@@ -857,6 +903,11 @@ void transformer_backward(
 
     x2 = x1;
   }
+
+  // dropout(x0)
+  //
+  // dx0 = ddropout(x0)
+  dropout_backward(out->x0.grad, out->x0_mask);
 
   // x0 = tok_embs + pos_embs
   //

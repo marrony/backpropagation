@@ -75,22 +75,6 @@ Optimizer optimizer = {0};
 int32_t epochs = 0;
 float temperature = 1.0;
 
-void mat_write(NMatrix mat, FILE* fp) {
-  fwrite(&mat.rows, sizeof(int32_t), 1, fp);
-  fwrite(&mat.cols, sizeof(int32_t), 1, fp);
-  fwrite(mat.elems, sizeof(float), mat.rows*mat.cols, fp);
-}
-
-void mat_read(NMatrix mat, FILE* fp) {
-  int32_t rows = 0;
-  int32_t cols = 0;
-  fread(&rows, sizeof(int32_t), 1, fp);
-  fread(&cols, sizeof(int32_t), 1, fp);
-  assert(rows == mat.rows);
-  assert(cols == mat.cols);
-  fread(mat.elems, sizeof(float), mat.rows*mat.cols, fp);
-}
-
 void save_model(void) {
   FILE* fp = fopen("models/gentext.bin", "wb");
   mat_write(embedding_node->as_embedding.embeddings.value, fp);
@@ -101,19 +85,6 @@ void save_model(void) {
   if (hidden1_node) {
     mat_write(hidden1_node->as_linear.weight.value, fp);
     mat_write(hidden1_node->as_linear.bias.value, fp);
-  }
-  fclose(fp);
-}
-
-void save_optimizer(Optimizer* optimizer, int32_t epochs) {
-  FILE* fp = fopen("models/gentext.opt", "wb");
-  fwrite(&optimizer->updates, sizeof(size_t), 1, fp);
-  fwrite(&optimizer->learning_rate, sizeof(float), 1, fp);
-  fwrite(&epochs, sizeof(int32_t), 1, fp);
-  fwrite(&optimizer->tensors.count, sizeof(size_t), 1, fp);
-  for (size_t i = 0; i < optimizer->tensors.count; i++) {
-    mat_write(optimizer->history.elems[i], fp); // 1st moment
-    mat_write(optimizer->second.elems[i], fp); // 2nd moment
   }
   fclose(fp);
 }
@@ -130,25 +101,6 @@ void load_model(void) {
     if (hidden1_node) {
       mat_read(hidden1_node->as_linear.weight.value, fp);
       mat_read(hidden1_node->as_linear.bias.value, fp);
-    }
-    fclose(fp);
-  }
-}
-
-void load_optimizer(Optimizer* optimizer, int32_t* epochs) {
-  FILE* fp = fopen("models/gentext.opt", "rb");
-  if (fp != NULL) {
-    printf("optimizer exists, reading\n");
-    fread(&optimizer->updates, sizeof(size_t), 1, fp);
-    fread(&optimizer->learning_rate, sizeof(float), 1, fp);
-    fread(epochs, sizeof(int32_t), 1, fp);
-    size_t tensors_count = 0;
-    fread(&tensors_count, sizeof(size_t), 1, fp);
-    assert(tensors_count == optimizer->tensors.count);
-
-    for (size_t i = 0; i < optimizer->tensors.count; i++) {
-      mat_read(optimizer->history.elems[i], fp); // 1st moment
-      mat_read(optimizer->second.elems[i], fp); // 2nd moment
     }
     fclose(fp);
   }

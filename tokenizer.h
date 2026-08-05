@@ -239,11 +239,13 @@ int32_t gen_vocabulary(
     const char* text[],
     size_t text_len,
     Token* vocabulary,
-    int max_vocab
+    int32_t max_vocab
 ) {
   assert(max_vocab > 256);
 
-  Arena_Allocator arena = ARENA_CREATE(global, 5*1024*1024);
+  size_t arena_size = max_vocab*max_vocab*sizeof(int32_t);
+
+  Arena_Allocator arena = ARENA_CREATE(global, 1*1024*1024 + arena_size);
   Allocator* alloc = &arena.alloc;
 
   int32_t vocabulary_count = 0;
@@ -331,11 +333,11 @@ int32_t gen_vocabulary(
     RESTORE(alloc, saved);
   }
 
-  assert(vocabulary_count == max_vocab);
+  assert(vocabulary_count <= max_vocab);
 
   ARENA_DESTROY(global, &arena);
 
-  return 0;
+  return vocabulary_count;
 }
 
 #endif // TOKENIZER_H
