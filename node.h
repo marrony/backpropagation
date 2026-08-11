@@ -151,6 +151,7 @@ typedef struct {
   NMatrix_Array history;
   NMatrix_Array second;
   float learning_rate;
+  float decay_factor;
   size_t updates;
 } Optimizer;
 
@@ -1153,7 +1154,9 @@ void update_grads_adam(Optimizer* optimizer) {
 
         float adapt_lr = optimizer->learning_rate / (sqrtf(v_hat) + eps);
 
-        MAT_AT(tensor.value, i, j) -= adapt_lr * m_hat;
+        float old_weight = MAT_AT(tensor.value, i, j);
+
+        MAT_AT(tensor.value, i, j) = old_weight - (old_weight * adapt_lr * optimizer->decay_factor) - (adapt_lr * m_hat);
       }
 
       mat_zero(mat_row(tensor.grad, i));

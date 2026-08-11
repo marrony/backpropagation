@@ -945,12 +945,38 @@ int mat_row_argmax(NMatrix row) {
   return max_index;
 }
 
+int mat_row_argmin(NMatrix row) {
+  assert(row.rows == 1);
+  assert(row.cols >= 1);
+
+  int min_index = 0;
+  float min_value = VEC_AT(row, 0);
+
+  for (int i = 1; i < row.cols; i++) {
+    float v = VEC_AT(row, i);
+
+    if (v < min_value) {
+      min_value = v;
+      min_index = i;
+    }
+  }
+
+  return min_index;
+}
+
 void mat_avg_row(NMatrix avg, NMatrix m) {
   for (int z = 0; z < m.rows; z++) {
     mat_add(avg, avg, mat_row(m, z));
   }
 
   mat_scale(avg, avg, 1.0f / m.rows);
+}
+
+float mat_row_similarity(NMatrix a, NMatrix b) {
+  float dot0 = mat_dot(a, b);
+  float dot1 = mat_dot(a, a);
+  float dot2 = mat_dot(b, b);
+  return dot0 / (sqrtf(dot1) * sqrtf(dot2));
 }
 
 /**

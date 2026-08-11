@@ -179,16 +179,14 @@ int32_t sample_topp(Arena_Allocator* arena, NMatrix probs, float topp) {
 void save_model(Transformer* trans_in) {
   FILE* fp = fopen("models/gentext2.bin", "wb");
   mat_write(trans_in->tok_emb.value, fp);
-  mat_write(trans_in->pos_emb.value, fp);
   mat_write(trans_in->ln.gamma.value, fp);
   mat_write(trans_in->ln.beta.value, fp);
   mat_write(trans_in->H.weight.value, fp);
   mat_write(trans_in->H.bias.value, fp);
 
-  size_t num_blocks = NUM_BLOCKS;
-  fwrite(&num_blocks, sizeof(size_t), 1, fp);
+  fwrite(&trans_in->num_blocks, sizeof(size_t), 1, fp);
 
-  for (size_t i = 0; i < NUM_BLOCKS; i++) {
+  for (size_t i = 0; i < trans_in->num_blocks; i++) {
     mat_write(trans_in->blocks[i].ln1.gamma.value, fp);
     mat_write(trans_in->blocks[i].ln1.beta.value, fp);
     mat_write(trans_in->blocks[i].ln2.gamma.value, fp);
@@ -215,17 +213,14 @@ bool load_model(Transformer* trans_in) {
   if (fp == NULL) return false;
 
   mat_read(trans_in->tok_emb.value, fp);
-  mat_read(trans_in->pos_emb.value, fp);
   mat_read(trans_in->ln.gamma.value, fp);
   mat_read(trans_in->ln.beta.value, fp);
   mat_read(trans_in->H.weight.value, fp);
   mat_read(trans_in->H.bias.value, fp);
 
-  size_t num_blocks = 0;
-  fread(&num_blocks, sizeof(size_t), 1, fp);
-  assert(num_blocks == NUM_BLOCKS);
+  fread(&trans_in->num_blocks, sizeof(size_t), 1, fp);
 
-  for (size_t i = 0; i < NUM_BLOCKS; i++) {
+  for (size_t i = 0; i < trans_in->num_blocks; i++) {
     mat_read(trans_in->blocks[i].ln1.gamma.value, fp);
     mat_read(trans_in->blocks[i].ln1.beta.value, fp);
     mat_read(trans_in->blocks[i].ln2.gamma.value, fp);
@@ -251,7 +246,7 @@ bool load_model(Transformer* trans_in) {
 
 void set_dropout(Transformer* trans_in, float p) {
   trans_in->x0_p = p;
-  for (size_t i = 0; i < NUM_BLOCKS; i++) {
+  for (size_t i = 0; i < trans_in->num_blocks; i++) {
     trans_in->blocks[i].attn.p = p;
   }
 }
@@ -290,6 +285,7 @@ void generate_text(
     init_transformer_output(
         .arena = arena,
         .trans_out = &trans_out,
+        .num_blocks = trans_in->num_blocks,
         .vocab_size = trans_in->vocab_size,
         .heads_count = trans_in->heads_count,
         .emb_size = trans_in->emb_size,
@@ -297,7 +293,11 @@ void generate_text(
         .sequence_size = N,
     );
 
-    transformer_forward(*tokens, &trans_out, trans_in, 0.8f);
+    // 0.5 = deterministic
+    // 1.0 = normal
+    // 1.5 = creative
+    // 3.0 = nonsensical
+    transformer_forward(*tokens, &trans_out, trans_in, 1.5f, 0);
 
     // int32_t next = mat_row_argmax(mat_row(trans_out.probs, N - 1));
     // int32_t next = sample(mat_row(trans_out.probs, N - 1));
@@ -371,8 +371,57 @@ float cosine_learning_rate(size_t t, size_t t_warmup, size_t t_total, float lr_m
 
   float alpha = (float)(t  - t_warmup) / (float)(t_total - t_warmup);
   return lr_min + 0.5f*(lr_max - lr_min) * (1.0f + cosf(alpha * M_PI));
+}
 
-  return 0;
+void print_tokens(Transformer* trans_in) {
+  (void)trans_in;
+  // printf("\033[38;5;130m");
+  // printf("desert  = %.5f\n",
+  //   mat_row_similarity(
+  //     mat_row(trans_in->tok_emb.value, find_token("desert")),
+  //     mat_row(trans_in->tok_emb.value, find_token(" desert"))
+  //   )
+  // );
+  // printf("\033[0m");
+}
+
+void hsl_to_rgb(float h, float s, float l, int *r, int *g, int *b) {
+  // Calculate Chroma
+  float c = (1.0f - fabsf(2.0f * l - 1.0f)) * s;
+
+  // Calculate intermediate value X
+  // fmodf(h / 60.0f, 2.0f) handles the modulo behavior for floating points
+  float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
+
+  // Match value m
+  float m = l - c / 2.0f;
+
+  float rp = 0, gp = 0, bp = 0;
+
+  if (h >= 0.0f && h < 60.0f) {
+    rp = c;
+    gp = x;
+  } else if (h >= 60.0f && h < 120.0f) {
+    rp = x;
+    gp = c;
+  } else if (h >= 120.0f && h < 180.0f) {
+    gp = c;
+    bp = x;
+  } else if (h >= 180.0f && h < 240.0f) {
+    gp = x;
+    bp = c;
+  } else if (h >= 240.0f && h < 300.0f) {
+    rp = x;
+    bp = c;
+  } else if (h >= 300.0f && h <= 360.0f) {
+    rp = c;
+    bp = x;
+  }
+
+  // Scale values to standard 8-bit integers [0, 255]
+  *r = (int)roundf((rp + m) * 255.0f);
+  *g = (int)roundf((gp + m) * 255.0f);
+  *b = (int)roundf((bp + m) * 255.0f);
 }
 
 int main(int argc, char* argv[]) {
@@ -383,10 +432,11 @@ int main(int argc, char* argv[]) {
     .history = ARRAY_CREATE(&mallocator.alloc),
     .second = ARRAY_CREATE(&mallocator.alloc),
     .learning_rate = 0.05f,
+    .decay_factor = 0.00001f,
     .updates = 0,
   };
   size_t arena_size = MAX_VOCAB*MAX_VOCAB*sizeof(float);
-  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, arena_size + 2*1024*1024);
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, arena_size + 1024*1024*1024);
   TokenID_Array sequence = ARRAY_CREATE(&mallocator.alloc);
   TokenID_Array tokens = ARRAY_CREATE(&mallocator.alloc);
   TokenID_Array targets = ARRAY_CREATE(&mallocator.alloc);
@@ -394,11 +444,18 @@ int main(int argc, char* argv[]) {
 
   prepare_data(&sequence);
 
-  size_t C = 20;
+  size_t C = 16;
   size_t D = 16;
   size_t H = 4; //headDim = D / H;
-  size_t F = 10;
+  size_t F = D*4;
   size_t V = MAX_VOCAB;
+
+  float peak_lr = 0.005f;
+  size_t total_epochs = 200;
+  size_t warmup_epochs = 10;
+  size_t batch_size = 128;
+  float dropout_pct = 0.25;
+  size_t num_blocks = 2;
 
   // optimize learning rate
   // int patience = 100;
@@ -416,6 +473,7 @@ int main(int argc, char* argv[]) {
   init_transformer(
       .alloc = &arena.alloc,
       .trans = &trans_in,
+      .num_blocks = num_blocks,
       .context_size = C,
       .heads_count = H,
       .vocab_size = V,
@@ -424,13 +482,12 @@ int main(int argc, char* argv[]) {
   );
 
   register_tensor(&optimizer, trans_in.tok_emb);
-  register_tensor(&optimizer, trans_in.pos_emb);
   register_tensor(&optimizer, trans_in.ln.gamma);
   register_tensor(&optimizer, trans_in.ln.beta);
   register_tensor(&optimizer, trans_in.H.weight);
   register_tensor(&optimizer, trans_in.H.bias);
 
-  for (size_t i = 0; i < NUM_BLOCKS; i++) {
+  for (size_t i = 0; i < num_blocks; i++) {
     register_tensor(&optimizer, trans_in.blocks[i].ln1.gamma);
     register_tensor(&optimizer, trans_in.blocks[i].ln1.beta);
     register_tensor(&optimizer, trans_in.blocks[i].ln2.gamma);
@@ -477,19 +534,21 @@ int main(int argc, char* argv[]) {
   init_opencl();
   ensure_buffer_size(sizeof(float)*MAX_VOCAB*MAX_VOCAB);
 
+  mat_zero(mat_row(trans_in.tok_emb.value, 0));
+  print_tokens(&trans_in);
+
   printf("\033[38;5;28m");
   print_timestamp();
   printf(" Start training\n");
   printf("\033[0m");
 
-  size_t total_epochs = 100;
-  size_t batch_size = 128;
   size_t batches_per_epoch = sequence.count / batch_size;
 
-  size_t warmup_steps = 5*batches_per_epoch;
+  size_t warmup_steps = warmup_epochs*batches_per_epoch;
   size_t total_steps = total_epochs*batches_per_epoch;
 
   size_t global_step = epoch * batches_per_epoch;
+  optimizer.learning_rate = cosine_learning_rate(global_step, warmup_steps, total_steps, peak_lr);
 
   while (epoch < total_epochs) {
     float loss = 0;
@@ -502,7 +561,7 @@ int main(int argc, char* argv[]) {
       array_append(&start_indices, i);
     shuffle_indices(start_indices);
 
-    set_dropout(&trans_in, 0.15f);
+    set_dropout(&trans_in, dropout_pct);
     mat_zero(mat_row(trans_in.tok_emb.value, 0));
 
     for (size_t start_i = 0; start_i < num_starts; start_i += batch_size) {
@@ -531,6 +590,7 @@ int main(int argc, char* argv[]) {
         init_transformer_output(
             .arena = &arena,
             .trans_out = &trans_out,
+            .num_blocks = trans_in.num_blocks,
             .vocab_size = trans_in.vocab_size,
             .heads_count = trans_in.heads_count,
             .emb_size = trans_in.emb_size,
@@ -538,41 +598,56 @@ int main(int argc, char* argv[]) {
             .sequence_size = N,
         );
 
-        transformer_forward(tokens, &trans_out, &trans_in, 1.0f);
+        transformer_forward(tokens, &trans_out, &trans_in, 1.0f, 0);
 
         float c_loss = cross_entropy(trans_out.probs, targets);
         batch_loss += c_loss;
         batch_count += 1;
 
-        transformer_backward(tokens, targets, &trans_out, &trans_in);
+        transformer_backward(tokens, targets, &trans_out, &trans_in, 0);
 
         RESTORE(&arena.alloc, saved);
 
         float max_loss = logf(MAX_VOCAB);
-        float ptc = 1.0f - c_loss / max_loss;
+        float alpha = c_loss / max_loss;
+        float red = 0.0f;
+        float green = 120.0f;
 
-        int colors[] = {196, 202, 208, 214, 220, 226, 190, 154, 118, 82, 46};
+        if (alpha < 0) alpha = 0;
+        if (alpha > 1) alpha = 1;
 
-        int index = (int)(ptc * 10);
+        int r, g, b;
+        hsl_to_rgb(red*alpha + (1.0f - alpha)*green, 1.0f, 0.5f, &r, &g, &b);
+
         const char* block[] = {
           "\u25AE", // vertical rectangle
           "\u2588", // full block
           "\u258C", // left half block
         };
-        printf("\033[38;5;%dm%s\033[38;0m", colors[index], block[1]);
+        printf("\033[38;2;%d;%d;%dm%s\033[38;0m", r, g, b, block[1]);
+
+        // int index = (int)(ptc * 10);
+        // int colors[] = {196, 202, 208, 214, 220, 226, 190, 154, 118, 82, 46};
+        // printf("\033[38;5;%dm%s\033[38;0m", colors[index], block[1]);
       }
-      printf("\r");
+
+      batch_loss = batch_loss / batch_count;
+
+      if (current_batch_size < batch_size) {
+        for (size_t i = current_batch_size; i < batch_size; i++)
+          printf(" ");
+      }
+
+      printf(" = %.6f %.2f\r", optimizer.learning_rate, expf(batch_loss));
       // end batch
 
       mat_zero(mat_row(trans_in.tok_emb.grad, 0));
       update_grads_adam(&optimizer);
 
       // cosine annealing
-      optimizer.learning_rate = cosine_learning_rate(global_step, warmup_steps, total_steps, 0.05f);
+      optimizer.learning_rate = cosine_learning_rate(global_step, warmup_steps, total_steps, peak_lr);
 
       global_step += 1;
-
-      batch_loss = batch_loss / batch_count;
 
       loss += batch_loss;
       count += 1;
@@ -580,16 +655,11 @@ int main(int argc, char* argv[]) {
     printf("\n");
 
     {
-      printf("\033[38;5;130m");
-      printf("Alice   = "); mat_println(mat_row(trans_in.tok_emb.value, find_token("Alice")), 3);
-      printf(" Alice  = "); mat_println(mat_row(trans_in.tok_emb.value, find_token(" Alice")), 3);
-      printf("Rabbit  = "); mat_println(mat_row(trans_in.tok_emb.value, find_token("Rabbit")), 3);
-      printf(" Rabbit = "); mat_println(mat_row(trans_in.tok_emb.value, find_token(" Rabbit")), 3);
-      printf("\033[0m");
+      print_tokens(&trans_in);
 
       size_t saved = SAVE(&arena.alloc);
       set_dropout(&trans_in, 0.0f);
-      generate_text(&arena, &trans_in, "Alice and the Rabbit", &tokens);
+      generate_text(&arena, &trans_in, "the desert", &tokens);
       RESTORE(&arena.alloc, saved);
     }
 
@@ -601,11 +671,9 @@ int main(int argc, char* argv[]) {
         epoch, global_step, loss, optimizer.learning_rate, expf(loss));
     printf("\033[0m");
 
-    // if (epoch % 10 == 0) {
-      save_model(&trans_in);
-      save_optimizer(&optimizer, "models/gentext2.adam", epoch);
-    // }
-  
+    save_model(&trans_in);
+    save_optimizer(&optimizer, "models/gentext2.adam", epoch+1);
+
     epoch += 1;
   }
 

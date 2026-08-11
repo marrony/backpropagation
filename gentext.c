@@ -634,13 +634,6 @@ int sample(NMatrix probs) {
   return MAX_VOCAB - 1;
 }
 
-float mat_cos(NMatrix a, NMatrix b) {
-  float dot = mat_dot(a, b);
-  float len1 = sqrtf(mat_dot(a, a));
-  float len2 = sqrtf(mat_dot(b, b));
-  return dot / (len1 * len2);
-}
-
 void prepare_data(Dataset_Array* dataset) {
   for (size_t i = 0; i < sizeof(training_text)/sizeof(char*); i++) {
     const char* text = training_text[i];

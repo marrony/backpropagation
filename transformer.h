@@ -277,7 +277,7 @@ void dproject_opts(struct Project_Backward_Opts opts) {
 // layer_norm(x + dropout(ff2_out))
 // layer_norm(x + dropout(attn_out))
 // attn_weights = dropout(softmax(Q @ K.T / sqrt(d)))
-// x0 = dropout(tok_emb + pos_emb)
+// x0 = dropout(tok_emb)
 
 void dropout_forward(NMatrix x, NMatrix mask, float p) {
   float m = 1 / (1 - p);
@@ -299,11 +299,48 @@ void dropout_backward(NMatrix dx, NMatrix mask) {
   }
 }
 
+void rope(NMatrix tensor, size_t d, size_t offset) {
+  float inv_d = 1.0f / (float)d;
+
+  for (int32_t m = 0; m < tensor.rows; m++) {
+    for (int32_t i = 0; i < tensor.cols; i += 2) {
+      int32_t local_i = i % d;
+      float theta = powf(10000, -(float)local_i * inv_d);
+      float phi = (m+offset) * theta;
+
+      float p0 = MAT_AT(tensor, m, i+0);
+      float p1 = MAT_AT(tensor, m, i+1);
+
+      MAT_AT(tensor, m, i+0) = p0*cosf(phi) - p1*sinf(phi);
+      MAT_AT(tensor, m, i+1) = p0*sinf(phi) + p1*cosf(phi);
+    }
+  }
+}
+
+void drope(NMatrix dtensor, size_t d, size_t offset, NMatrix dout) {
+  float inv_d = 1.0f / (float)d;
+
+  for (int32_t m = 0; m < dout.rows; m++) {
+    for (int32_t i = 0; i < dout.cols; i += 2) {
+      size_t local_i = i % d;
+      float theta = powf(10000, -(float)local_i * inv_d);
+      float phi = (m+offset) * theta;
+
+      float dout0 = MAT_AT(dout, m, i+0);
+      float dout1 = MAT_AT(dout, m, i+1);
+
+      MAT_AT(dtensor, m, i+0) = dout0*cosf(phi) + dout1*sinf(phi);
+      MAT_AT(dtensor, m, i+1) = dout1*cosf(phi) - dout0*sinf(phi);
+    }
+  }
+}
+
 struct Attention_Forward_Opts {
   Attention_Output* attn_out;
   NMatrix scores;
   Attention* attn_in;
   Tensor in;
+  size_t token_offset;
 };
 
 struct Attention_Backward_Opts {
@@ -312,6 +349,7 @@ struct Attention_Backward_Opts {
   Attention* attn_in;
   NMatrix dout;
   NMatrix dscores;
+  size_t token_offset;
 };
 
 #define attention_forward(...) attention_forward_opts((struct Attention_Forward_Opts){ __VA_ARGS__ })
@@ -322,6 +360,7 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
   NMatrix scores = opts.scores;
   Attention* attn_in = opts.attn_in;
   Tensor in = opts.in;
+  size_t token_offset = opts.token_offset;
 
   int32_t N = in.value.rows;
   int32_t D = in.value.cols;
@@ -352,22 +391,34 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
       .b   = attn_in->V.bias
   );
 
+  rope(attn_out->Q.value, head_dim, token_offset);
+  rope(attn_out->K.value, head_dim, token_offset);
+
   float scale = 1.0f / sqrt(head_dim);
 
   for (int32_t h = 0; h < H; h++) {      // 0..H
-    // scores = Q * K^T
+    int head_start = h*head_dim;
+    int head_end = h*head_dim + head_dim;
+
+    // scores = Q[h] * K[h]^T
     mat_mult_A_and_B_transposed(
         scores,
-        mat_cols(attn_out->Q.value, h*head_dim, h*head_dim + head_dim),
-        mat_cols(attn_out->K.value, h*head_dim, h*head_dim + head_dim)
+        mat_cols(attn_out->Q.value, head_start, head_end),
+        mat_cols(attn_out->K.value, head_start, head_end)
     );
 
     // scores = scores / sqrt(h_dim)
     mat_scale(scores, scores, scale);
 
+    //    K    e    y
+    // Q  s00  -inf -inf -inf -inf
+    // u  s10  s11  -inf -inf -inf
+    // e  s20  s21  s22  -inf -inf
+    // r  s30  s31  s32  s33  -inf
+    // y  s40  s41  s42  s43  s44
     for (int32_t i = 0; i < N; i++) {    // 0..N
-      for (int32_t j = 0; j < N; j++) {  // 0..N
-        if (j > i) MAT_AT(scores, i, j) = -INFINITY;
+      for (int32_t j = i+1; j < N; j++) {  // i..N
+        MAT_AT(scores, i, j) = -INFINITY;
       }
     }
 
@@ -379,9 +430,9 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
 
     // attn_vals = attn_weitghs * V
     mat_mult(
-        mat_cols(attn_out->vals.value, h*head_dim, h*head_dim + head_dim),
+        mat_cols(attn_out->vals.value, head_start, head_end),
         attn_weights,
-        mat_cols(attn_out->V.value,    h*head_dim, h*head_dim + head_dim)
+        mat_cols(attn_out->V.value,    head_start, head_end)
     );
   }
 
@@ -400,6 +451,7 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
   Attention* attn_in = opts.attn_in;
   NMatrix dout = opts.dout;
   NMatrix dscores = opts.dscores;
+  size_t token_offset = opts.token_offset;
 
   int32_t N = in.value.rows;
   int32_t D = in.value.cols;
@@ -413,6 +465,8 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
       .b    = attn_in->O.bias,
       .dout = dout,
   );
+
+  float scale = 1.0f / sqrt(head_dim);
 
   for (int32_t h = 0; h < H; h++) {      // 0..H
     int head_start = h*head_dim;
@@ -447,10 +501,18 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
     mat_zero(dscores);
     dsoftmax_by_row(dscores, attn_weights, dweights, 1.0f);
 
-    // scores = Q * K^T
+    for (int32_t i = 0; i < N; i++) {
+      for (int32_t j = i+1; j < N; j++) {
+        MAT_AT(dscores, i, j) = 0.0f; 
+      }
+    }
+
+    mat_scale(dscores, dscores, scale);
+
+    // scores = Q[h] * K[h]^T
     //
-    // dQ = dScores * K
-    // dK = dScore^T * Q
+    // dQ[h] = dScores * K[h]
+    // dK[h] = dScore^T * Q[h]
 
     mat_mult_acc(
         mat_cols(attn_out->Q.grad,  head_start, head_end),
@@ -465,9 +527,8 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
     );
   }
 
-  float scale = 1.0f / sqrt(head_dim);
-  mat_scale(attn_out->Q.grad, attn_out->Q.grad, scale);
-  mat_scale(attn_out->K.grad, attn_out->K.grad, scale);
+  drope(attn_out->Q.grad, head_dim, token_offset, attn_out->Q.grad);
+  drope(attn_out->K.grad, head_dim, token_offset, attn_out->K.grad);
 
   // V = input*wV + bV
   dproject(
@@ -499,6 +560,7 @@ struct Block_Forward_Opts {
   Block* block_in;
   Tensor in;
   NMatrix scores;
+  size_t token_offset;
 };
 
 struct Block_Backward_Opts {
@@ -507,6 +569,7 @@ struct Block_Backward_Opts {
   NMatrix dscores;
   Block* block_in;
   Block_Output* block_out;
+  size_t token_offset;
 };
 
 #define block_forward(...) block_forward_opts((struct Block_Forward_Opts){ __VA_ARGS__ })
@@ -525,6 +588,7 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
   Block* block_in = opts.block_in;
   Tensor in = opts.in;
   NMatrix scores = opts.scores;
+  size_t token_offset = opts.token_offset;
 
   // ln1_out = norm(input)
   layer_norm_forward(
@@ -539,6 +603,7 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
       .attn_in  = &block_in->attn,
       .scores   = scores,
       .in       = block_out->ln1.out,
+      .token_offset = token_offset,
   );
 
   // dropout(attn_out)
@@ -608,6 +673,7 @@ void block_backward_opts(struct Block_Backward_Opts opts) {
   NMatrix dscores = opts.dscores;
   Block* block_in = opts.block_in;
   Block_Output* block_out = opts.block_out;
+  size_t token_offset = opts.token_offset;
 
   // ff2_out = project(relu_out, ff2W, ff2b)
   //
@@ -664,6 +730,7 @@ void block_backward_opts(struct Block_Backward_Opts opts) {
       .attn_in  = &block_in->attn,
       .dscores  = dscores,
       .dout     = in.grad,
+      .token_offset = token_offset,
   );
 
   // ln1_out = norm(input)
@@ -676,12 +743,10 @@ void block_backward_opts(struct Block_Backward_Opts opts) {
   );
 }
 
-#define NUM_BLOCKS 2
-
 typedef struct {
   Tensor tok_emb;
-  Tensor pos_emb;
-  Block blocks[NUM_BLOCKS];
+  Block* blocks;
+  size_t num_blocks;
   Layer_Norm ln;
   Linear_Layer H;
 
@@ -698,7 +763,8 @@ typedef struct {
 typedef struct {
   Tensor x0;
   NMatrix x0_mask;
-  Block_Output blocks[NUM_BLOCKS];
+  Block_Output* blocks;
+  size_t num_blocks;
   Layer_Norm_Output ln;
   Tensor logits;
   NMatrix probs;
@@ -711,6 +777,7 @@ typedef struct {
 struct Init_Transformer_Opts {
   Allocator* alloc;
   Transformer* trans;
+  size_t num_blocks;
   size_t vocab_size;
   size_t context_size;
   size_t heads_count;
@@ -721,6 +788,7 @@ struct Init_Transformer_Opts {
 struct Init_Transformer_Output_Opts {
   Arena_Allocator* arena;
   Transformer_Output* trans_out;
+  size_t num_blocks;
   size_t sequence_size;
   size_t vocab_size;
   size_t context_size;
@@ -736,7 +804,6 @@ void init_transformer_opts(struct Init_Transformer_Opts opts) {
   Allocator* alloc = opts.alloc;
   Transformer* trans = opts.trans;
   size_t V = opts.vocab_size;
-  size_t C = opts.context_size;
   size_t D = opts.emb_size;
   size_t F = opts.ff_size;
 
@@ -750,13 +817,13 @@ void init_transformer_opts(struct Init_Transformer_Opts opts) {
   alloc_tensor(alloc, &trans->tok_emb, V, D);
   init_xavier_glorot(trans->tok_emb.value, V, D);
 
-  alloc_tensor(alloc, &trans->pos_emb, C, D);
-  init_xavier_glorot(trans->pos_emb.value, C, D);
-
   init_gamma_beta(alloc, &trans->ln.gamma, &trans->ln.beta, D);
   init_linear_layer(alloc, &trans->H, D, V);
 
-  for (size_t i = 0; i < NUM_BLOCKS; i++) {
+  trans->num_blocks = opts.num_blocks;
+  trans->blocks = ALLOC(alloc, sizeof(Block)*trans->num_blocks).void_ptr;
+
+  for (size_t i = 0; i < trans->num_blocks; i++) {
     init_block(alloc, &trans->blocks[i], D, F);
   }
 }
@@ -775,7 +842,10 @@ void init_transformer_output_opts(struct Init_Transformer_Output_Opts opts) {
   alloc_tensor(&arena->alloc, &trans_out->x0, N, D);
   trans_out->x0_mask = mat_alloc2(&arena->alloc, N, V);
 
-  for (size_t i = 0; i < NUM_BLOCKS; i++) {
+  trans_out->num_blocks = opts.num_blocks;
+  trans_out->blocks = ALLOC(&arena->alloc, sizeof(Block_Output)*trans_out->num_blocks).void_ptr;
+
+  for (size_t i = 0; i < trans_out->num_blocks; i++) {
     init_block_output(arena, &trans_out->blocks[i], N, D, H, F);
   }
 
@@ -798,17 +868,17 @@ void transformer_forward(
   TokenID_Array tokens,
   Transformer_Output* out,
   Transformer* in,
-  float temperature
+  float temperature,
+  size_t token_offset
 ) {
   assert(tokens.count <= in->context_size);
   assert(tokens.count == out->sequence_size);
 
   // x0 = tok_embs + pos_embs
   for (size_t i = 0; i < tokens.count; i++) {
-    mat_add(
+    mat_copy(
         mat_row(out->x0.value, i),
-        mat_row(in->tok_emb.value, tokens.elems[i]),
-        mat_row(in->pos_emb.value, i)
+        mat_row(in->tok_emb.value, tokens.elems[i])
     );
   }
 
@@ -818,12 +888,13 @@ void transformer_forward(
   Tensor x = out->x0;
 
   // x[i+1] = block(x[i])
-  for (size_t i = 0; i < NUM_BLOCKS; i++) {
+  for (size_t i = 0; i < in->num_blocks; i++) {
     block_forward(
         .block_out = &out->blocks[i],
         .block_in  = &in->blocks[i],
         .in        = x,
         .scores    = out->scores,
+        .token_offset = token_offset,
     );
     x = out->blocks[i].out;
   }
@@ -851,7 +922,8 @@ void transformer_backward(
   TokenID_Array tokens,
   TokenID_Array targets,
   Transformer_Output* out,
-  Transformer* in
+  Transformer* in,
+  size_t token_offset
 ) {
   float scale = 1.0f / (float)tokens.count;
 
@@ -878,14 +950,14 @@ void transformer_backward(
   // out_ln = norm(x2)
   //
   // dx2 = dnorm(x2, dout_ln)
-  Tensor x2 = out->blocks[NUM_BLOCKS-1].out;
+  Tensor x2 = out->blocks[out->num_blocks-1].out;
   layer_norm_backward(
       .in     = x2,
       .ln_in  = &in->ln,
       .ln_out = &out->ln,
   );
 
-  for (size_t j = NUM_BLOCKS; j > 0; j--) {
+  for (size_t j = out->num_blocks; j > 0; j--) {
     size_t i = j - 1;
 
     Tensor x1 = i > 0 ? out->blocks[i-1].out : out->x0;
@@ -899,6 +971,7 @@ void transformer_backward(
         .dscores   = out->scores,
         .block_in  = &in->blocks[i],
         .block_out = &out->blocks[i],
+        .token_offset = token_offset,
     );
 
     x2 = x1;
@@ -909,20 +982,14 @@ void transformer_backward(
   // dx0 = ddropout(x0)
   dropout_backward(out->x0.grad, out->x0_mask);
 
-  // x0 = tok_embs + pos_embs
+  // x0 = tok_embs
   //
   // dtok_embs += dx0
-  // dpos_embs += dx0
   for (size_t i = 0; i < tokens.count; i++) {
     int32_t token = tokens.elems[i];
     mat_add(
         mat_row(in->tok_emb.grad, token),
         mat_row(in->tok_emb.grad, token),
-        mat_row(out->x0.grad, i)
-    );
-    mat_add(
-        mat_row(in->pos_emb.grad, i),
-        mat_row(in->pos_emb.grad, i),
         mat_row(out->x0.grad, i)
     );
   }
