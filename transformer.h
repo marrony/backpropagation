@@ -148,9 +148,21 @@ void layer_norm_backward_opts(struct Layer_Norm_Backward_Opts opts) {
   }
 }
 
+float xavier_glorot(size_t fan_in, size_t fan_out) {
+  return sqrtf(6.0f / (float)(fan_in + fan_out));
+}
+
 void init_xavier_glorot(NMatrix mat, size_t fan_in, size_t fan_out) {
-  float std = sqrtf(6.0f / (fan_in + fan_out));
+  float std = xavier_glorot(fan_in, fan_out);
   mat_rand_uniform(mat, -std, +std);
+}
+
+void init_transformer_output_projections(NMatrix mat, size_t fan_in, size_t fan_out, size_t num_layers) {
+  float std = xavier_glorot(fan_in, fan_out);
+  float depth_scale = 1.0f / sqrtf(2.0f * (float)num_layers);
+  float final_std = std * depth_scale;
+
+  mat_rand_uniform(mat, -final_std, +final_std);
 }
 
 void alloc_tensor(Allocator* alloc, Tensor* tensor, size_t N, size_t D) {
@@ -168,6 +180,15 @@ void init_linear_layer(Allocator* alloc, Linear_Layer* linear_layer, size_t N, s
   mat_zero(linear_layer->bias.value);
 }
 
+// attn_in->O.weight (Attention Output projection)
+// block_in->ff2.weight (Second Feed-Forward projection)
+void init_output_linear_layer(Allocator* alloc, Linear_Layer* linear_layer, size_t N, size_t D, size_t num_layers) {
+  alloc_tensor(alloc, &linear_layer->weight, N, D);
+  alloc_tensor(alloc, &linear_layer->bias, 1, D);
+  init_transformer_output_projections(linear_layer->weight.value, N, D, num_layers);
+  mat_zero(linear_layer->bias.value);
+}
+
 void init_gamma_beta(Allocator* alloc, Tensor* gamma, Tensor* beta, size_t D) {
   alloc_tensor(alloc, gamma, 1, D);
   alloc_tensor(alloc, beta, 1, D);
@@ -175,15 +196,15 @@ void init_gamma_beta(Allocator* alloc, Tensor* gamma, Tensor* beta, size_t D) {
   mat_zero(beta->value);
 }
 
-void init_block(Allocator* alloc, Block* block, size_t D, size_t F) {
+void init_block(Allocator* alloc, Block* block, size_t D, size_t F, size_t num_layers) {
   init_gamma_beta(alloc, &block->ln1.gamma, &block->ln1.beta, D);
   init_linear_layer(alloc, &block->attn.Q, D, D);
   init_linear_layer(alloc, &block->attn.K, D, D);
   init_linear_layer(alloc, &block->attn.V, D, D);
-  init_linear_layer(alloc, &block->attn.O, D, D);
+  init_output_linear_layer(alloc, &block->attn.O, D, D, num_layers);
   init_gamma_beta(alloc, &block->ln2.gamma, &block->ln2.beta, D);
   init_linear_layer(alloc, &block->ff1, D, F);
-  init_linear_layer(alloc, &block->ff2, F, D);
+  init_output_linear_layer(alloc, &block->ff2, F, D, num_layers);
   block->attn.p = 0.0f;
 }
 
@@ -555,69 +576,23 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
   );
 }
 
-struct Block_Forward_Opts {
-  Block_Output* block_out;
-  Block* block_in;
-  Tensor in;
-  NMatrix scores;
-  size_t token_offset;
+struct Feed_Forward_Opts {
+  Block* in;
+  Block_Output* out;
 };
 
-struct Block_Backward_Opts {
-  Tensor in;
+struct Feed_Backward_Opts {
+  Block* in;
+  Block_Output* out;
   NMatrix dout;
-  NMatrix dscores;
-  Block* block_in;
-  Block_Output* block_out;
-  size_t token_offset;
 };
 
-#define block_forward(...) block_forward_opts((struct Block_Forward_Opts){ __VA_ARGS__ })
-#define block_backward(...) block_backward_opts((struct Block_Backward_Opts){ __VA_ARGS__ })
+#define feed_forward(...) feed_forward_opts((struct Feed_Forward_Opts){ __VA_ARGS__ })
+#define feed_backward(...) feed_backward_opts((struct Feed_Backward_Opts){ __VA_ARGS__ })
 
-// ln1_out  = norm(input)
-// attn_out = attention(ln1_out)
-// x1       = input + attn_out
-// ln2_out  = norm(x1)
-// ff1_out  = project(ln2_out, ff1W, ff1b)
-// relu_out = relu(ff1_out)
-// ff2_out  = project(relu_out, ff2W, ff2b)
-// out      = x1 + ff2_out
-void block_forward_opts(struct Block_Forward_Opts opts) {
-  Block_Output* block_out = opts.block_out;
-  Block* block_in = opts.block_in;
-  Tensor in = opts.in;
-  NMatrix scores = opts.scores;
-  size_t token_offset = opts.token_offset;
-
-  // ln1_out = norm(input)
-  layer_norm_forward(
-      .ln_out = &block_out->ln1,
-      .ln_in  = &block_in->ln1,
-      .in     = in,
-  );
-
-  // attn_out = attention(ln1_out)
-  attention_forward(
-      .attn_out = &block_out->attn,
-      .attn_in  = &block_in->attn,
-      .scores   = scores,
-      .in       = block_out->ln1.out,
-      .token_offset = token_offset,
-  );
-
-  // dropout(attn_out)
-  dropout_forward(block_out->attn.out, block_out->attn.mask, block_in->attn.p);
-
-  // x1 = input + attn_out
-  mat_add(block_out->x1, in.value, block_out->attn.out);
-
-  // ln2_out = norm(x1)
-  layer_norm_forward(
-      .ln_out = &block_out->ln2,
-      .ln_in  = &block_in->ln2,
-      .in     = tensor(block_out->x1, NULL_MATRIX),
-  );
+void feed_forward_opts(struct Feed_Forward_Opts opts) {
+  Block_Output* block_out = opts.out;
+  Block* block_in = opts.in;
 
   // ff1_out = ln2_out*ff1W + ff1b
   project(
@@ -639,41 +614,12 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
       .W   = block_in->ff2.weight,
       .b   = block_in->ff2.bias,
   );
-
-  // dropout(ff2_out)
-
-  // out = x1 + ff2_out
-  mat_add(block_out->out.value, block_out->x1, block_out->ff2_out);
 }
 
-// forward:
-// ln1_out  = norm(input)
-// attn_out = attention(ln1_out)
-// x1       = input + attn_out
-// ln2_out  = norm(x1)
-// ff1_out  = project(ln2_out, ff1W, ff1b)
-// relu_out = relu(ff1_out)
-// ff2_out  = project(relu_out, ff2W, ff2b)
-// out      = x1 + ff2_out
-//
-// backward:
-// dff2_out  = dout                            |
-// drelu_out = dff2_out * ff2W^T               | drelu_out = dproject(ff2_out, dout)
-// dff1_out  = drelu(ff1_out, drelu_out)       | dff1_out  = drelu(ff1_out, drelu_out)
-// dln2_out  = dff1_out * dff1W^T              | dln2_out  = dproject(ln2_out, dff1_out)
-// dx1       = dout                            | din       += dout
-// dx1       += dnorm(x1, dln2_out)            | din       += dnorm(x1, dln2_out)
-// dattn_out = dx1                             |
-// dln1_out  = dattention(ln1_out, dattn_out)  | dln1_out  = dattention(ln1_out, din)
-// din       = dx1                             |
-// din       += dnorm(input, dln1_out)         | din       += dnorm(input, dln1_out)
-void block_backward_opts(struct Block_Backward_Opts opts) {
-  Tensor in = opts.in;
+void feed_backward_opts(struct Feed_Backward_Opts opts) {
+  Block_Output* block_out = opts.out;
+  Block* block_in = opts.in;
   NMatrix dout = opts.dout;
-  NMatrix dscores = opts.dscores;
-  Block* block_in = opts.block_in;
-  Block_Output* block_out = opts.block_out;
-  size_t token_offset = opts.token_offset;
 
   // ff2_out = project(relu_out, ff2W, ff2b)
   //
@@ -703,15 +649,138 @@ void block_backward_opts(struct Block_Backward_Opts opts) {
       .b    = block_in->ff1.bias,
       .dout = block_out->ff1_out.grad,
   );
+}
+
+struct Block_Forward_Opts {
+  Block_Output* block_out;
+  Block* block_in;
+  Tensor in;
+  NMatrix scores;
+  size_t token_offset;
+};
+
+struct Block_Backward_Opts {
+  Tensor in;
+  NMatrix dout;
+  NMatrix dscores;
+  Block* block_in;
+  Block_Output* block_out;
+  size_t token_offset;
+};
+
+#define block_forward(...) block_forward_opts((struct Block_Forward_Opts){ __VA_ARGS__ })
+#define block_backward(...) block_backward_opts((struct Block_Backward_Opts){ __VA_ARGS__ })
+
+// ln1_out  = norm(x0)
+// attn_out = attention(ln1_out)
+// x1       = x0 + attn_out
+// ln2_out  = norm(x1)
+// ff1_out  = project(ln2_out, ff1W, ff1b)
+// relu_out = relu(ff1_out)
+// ff2_out  = project(relu_out, ff2W, ff2b)
+// out      = x1 + ff2_out
+void block_forward_opts(struct Block_Forward_Opts opts) {
+  Block_Output* block_out = opts.block_out;
+  Block* block_in = opts.block_in;
+  Tensor x0 = opts.in;
+  NMatrix scores = opts.scores;
+  size_t token_offset = opts.token_offset;
+
+  ////////////////////////////////////////////////////
+  // x1 = x0 + attention(norm(x0))
+  ////////////////////////////////////////////////////
+
+  // ln1_out = norm(x0)
+  layer_norm_forward(
+      .ln_out = &block_out->ln1,
+      .ln_in  = &block_in->ln1,
+      .in     = x0,
+  );
+
+  // attn_out = attention(ln1_out)
+  attention_forward(
+      .attn_out = &block_out->attn,
+      .attn_in  = &block_in->attn,
+      .scores   = scores,
+      .in       = block_out->ln1.out,
+      .token_offset = token_offset,
+  );
+
+  // dropout(attn_out)
+  dropout_forward(block_out->attn.out, block_out->attn.mask, block_in->attn.p);
+
+  // x1 = x0 + attn_out
+  mat_add(block_out->x1, x0.value, block_out->attn.out);
+
+  ////////////////////////////////////////////////////
+  // x2 = x1 + feed_forward(norm(x1))
+  ////////////////////////////////////////////////////
+
+  // ln2_out = norm(x1)
+  layer_norm_forward(
+      .ln_out = &block_out->ln2,
+      .ln_in  = &block_in->ln2,
+      .in     = tensor(block_out->x1, NULL_MATRIX),
+  );
+
+  // ff2_out = feed_forward(ln2_out)
+  feed_forward(
+      .in  = block_in,
+      .out = block_out,
+  );
+
+  // dropout(ff2_out)
+
+  // out = x1 + ff2_out
+  mat_add(block_out->out.value, block_out->x1, block_out->ff2_out);
+}
+
+// forward:
+// ln1_out  = norm(x0)
+// attn_out = attention(ln1_out)
+// x1       = x0 + attn_out
+// ln2_out  = norm(x1)
+// ff1_out  = project(ln2_out, ff1W, ff1b)
+// relu_out = relu(ff1_out)
+// ff2_out  = project(relu_out, ff2W, ff2b)
+// out      = x1 + ff2_out
+//
+// backward:
+// dff2_out  = dout                            |
+// drelu_out = dff2_out * ff2W^T               | drelu_out = dproject(ff2_out, dout)
+// dff1_out  = drelu(ff1_out, drelu_out)       | dff1_out  = drelu(ff1_out, drelu_out)
+// dln2_out  = dff1_out * dff1W^T              | dln2_out  = dproject(ln2_out, dff1_out)
+// dx1       = dout                            | din       += dout
+// dx1       += dnorm(x1, dln2_out)            | din       += dnorm(x1, dln2_out)
+// dattn_out = dx1                             |
+// dln1_out  = dattention(ln1_out, dattn_out)  | dln1_out  = dattention(ln1_out, din)
+// din       = dx1                             |
+// din       += dnorm(x0, dln1_out)            | din       += dnorm(x0, dln1_out)
+void block_backward_opts(struct Block_Backward_Opts opts) {
+  Tensor x0 = opts.in;
+  NMatrix dout = opts.dout;
+  NMatrix dscores = opts.dscores;
+  Block* block_in = opts.block_in;
+  Block_Output* block_out = opts.block_out;
+  size_t token_offset = opts.token_offset;
+
+  // ff2_out = feed_forward(ln2_out)
+  //
+  // dln2_out = feed_backward(ln2_out)
+  feed_backward(
+      .in   = block_in,
+      .out  = block_out,
+      .dout = dout,
+  );
 
   // ln2_out = norm(x1)
   //
   // din += dout
   // din += dnorm(x1, dln2_out)
-  mat_add(in.grad, in.grad, dout);
+  mat_add(x0.grad, x0.grad, dout);
 
   layer_norm_backward(
-      .in     = in,
+      .in     = x0,
       .ln_in  = &block_in->ln2,
       .ln_out = &block_out->ln2,
   );
@@ -729,15 +798,15 @@ void block_backward_opts(struct Block_Backward_Opts opts) {
       .attn_out = &block_out->attn,
       .attn_in  = &block_in->attn,
       .dscores  = dscores,
-      .dout     = in.grad,
+      .dout     = x0.grad,
       .token_offset = token_offset,
   );
 
-  // ln1_out = norm(input)
+  // ln1_out = norm(x0)
   //
-  // din += dnorm(input, dln1_out)
+  // din += dnorm(x0, dln1_out)
   layer_norm_backward(
-      .in     = in,
+      .in     = x0,
       .ln_in  = &block_in->ln1,
       .ln_out = &block_out->ln1,
   );
@@ -824,7 +893,7 @@ void init_transformer_opts(struct Init_Transformer_Opts opts) {
   trans->blocks = ALLOC(alloc, sizeof(Block)*trans->num_blocks).void_ptr;
 
   for (size_t i = 0; i < trans->num_blocks; i++) {
-    init_block(alloc, &trans->blocks[i], D, F);
+    init_block(alloc, &trans->blocks[i], D, F, trans->num_blocks);
   }
 }
 

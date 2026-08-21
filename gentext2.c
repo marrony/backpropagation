@@ -455,7 +455,7 @@ int main(int argc, char* argv[]) {
   size_t warmup_epochs = 10;
   size_t batch_size = 128;
   float dropout_pct = 0.25;
-  size_t num_blocks = 2;
+  size_t num_blocks = 20;
 
   // optimize learning rate
   // int patience = 100;
