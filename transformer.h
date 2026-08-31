@@ -622,6 +622,7 @@ void feed_backward_opts(struct Feed_Backward_Opts opts) {
   NMatrix dout = opts.dout;
 
   // ff2_out = project(relu_out, ff2W, ff2b)
+  // ff2_out = relu_out*ff2W + ff2b
   //
   // dff2b     += dff2_out
   // dff2W     += relu_out^T * dff2_out
@@ -639,6 +640,7 @@ void feed_backward_opts(struct Feed_Backward_Opts opts) {
   drelu(block_out->ff1_out.grad, block_out->ff1_out.value, block_out->relu_out.grad, 0.0f);
 
   // ff1_out = project(ln2_out, ff1W, ff1b)
+  // ff1_out = ln2_out*ff1W + ff1b
   //
   // dff1b    += dff1_out
   // dff1W    += ln2_out^T * dff1_out
@@ -989,20 +991,10 @@ void transformer_forward(
 
 void transformer_backward(
   TokenID_Array tokens,
-  TokenID_Array targets,
   Transformer_Output* out,
-  Transformer* in,
-  size_t token_offset
+  Transformer* in
 ) {
-  float scale = 1.0f / (float)tokens.count;
-
-  // dlogits = probs - target
   NMatrix dlogits = out->logits.grad;
-  mat_copy(dlogits, out->probs);
-  mat_scale(dlogits, dlogits, scale);
-
-  for (size_t i = 0; i < tokens.count; i++)
-    MAT_AT(dlogits, i, targets.elems[i]) -= scale;
 
   // logits = out_ln*hW + bW
   //
@@ -1040,7 +1032,7 @@ void transformer_backward(
         .dscores   = out->scores,
         .block_in  = &in->blocks[i],
         .block_out = &out->blocks[i],
-        .token_offset = token_offset,
+        .token_offset = 0,
     );
 
     x2 = x1;
@@ -1072,7 +1064,7 @@ float cross_entropy(NMatrix probs, TokenID_Array targets) {
   for (size_t i = 0; i < N; i++)
     loss -= logf(MAT_AT(probs, i, targets.elems[i]) + 1e-10f);
 
-  return loss / (float)N;
+  return loss;
 }
 
 #endif // TRANSFORMER_H

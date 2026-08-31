@@ -1155,6 +1155,7 @@ void drelu_old(NMatrix dst, NMatrix h, NMatrix dL_dh) {
 //           exp(x[i]/t)
 // returns --------------
 //         sum(exp(x[j]/t))
+//
 void softmax_temperature(
     NMatrix probs,
     NMatrix logits,
@@ -1190,6 +1191,24 @@ void softmax_temperature(
   }
 }
 
+// log(x) + log(y) = log(x·y)
+// exp(x) · exp(y) = exp(a+b)
+//
+// Z = Σ_v exp(z_v)
+// logZ = log Σ_v exp(z_v)
+//
+// exp(z − logZ) = exp(z)/exp(logZ) = exp(z)/Z
+//
+// logZ = log Σ_v exp(z_v) = mx + log Σ_v exp(z_v − mx)
+// logZ = mx + log Σ_v exp(z_v − mx)
+//      = log(exp(mx)) + log Σ_v exp(z_v − mx)
+//      = log( exp(mx) · Σ_v exp(z_v − mx) )
+//      = log( Σ_v exp(mx) · exp(z_v − mx) )
+//      = log( Σ_v exp(mx + z_v - mx) )
+//      = log( Σ_v exp(z_v) )
+//      = log Z
+//
+// return logZ - logits[target];
 float softmax_cross_entropy_temperature(
     NMatrix probs,
     NMatrix logits,

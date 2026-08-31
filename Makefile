@@ -55,6 +55,18 @@ generated:
 bin:
 	mkdir -p $@
 
+# corpus:
+# 	uv run scripts/build_seqkd_data.py --split dev   --gold    # control arm, no teacher, seconds
+# 	uv run scripts/build_seqkd_data.py --split train --gold
+# 	uv run scripts/build_seqkd_data.py --split train           # teacher generations, hours + 8GB download
+#
+# export:
+# 	uv run scripts/export_seqkd_ids.py \
+# 	--jsonl data/seqkd_gold_dev.jsonl --out cdata \
+# 	--vocab-size 151936 --eos-id 151645 \
+# 	--tokenizer-hf mlx-community/Qwen3-0.6B-Base-bf16
+# 	--vocab-size <V> --eos-id <ID> --tokenizer-cmd './tokenize'
+
 
 # $@  The target            The file name of the target of the rule.
 # $<  The first dependency  The name of the first dependency (prerequisite).
