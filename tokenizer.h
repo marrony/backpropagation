@@ -340,4 +340,35 @@ int32_t gen_vocabulary(
   return vocabulary_count;
 }
 
+size_t tokenize(
+  TokenID_Array* sequence,
+  const char* text,
+  size_t text_len,
+  Token* vocabulary,
+  Token_Sorted* vocabulary_by_size,
+  size_t max_vocab
+) {
+  size_t tokens_count = 0;
+
+  size_t i = 0;
+  while (i < text_len) {
+    bool found = false;
+    for (size_t ii = 0; ii < max_vocab; ii++) {
+      int32_t token = vocabulary_by_size[ii].id;
+      size_t size = vocabulary_by_size[ii].size;
+
+      if (strncmp(text+i, vocabulary[token].token, size) == 0) {
+        array_append(sequence, token);
+        tokens_count += 1;
+        i += size;
+        found = true;
+        break;
+      }
+    }
+    assert(found && "vocab not found");
+  }
+
+  return tokens_count;
+}
+
 #endif // TOKENIZER_H

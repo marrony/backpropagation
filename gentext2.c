@@ -48,36 +48,6 @@ const char *training_text[] = {
 
 Malloc_Allocator mallocator = MALLOC_CREATE();
 
-size_t tokenize(
-    TokenID_Array* sequence,
-    const char* text,
-    size_t text_len,
-    Token* vocabulary,
-    Token_Sorted* vocabulary_by_size
-) {
-  size_t tokens_count = 0;
-
-  size_t i = 0;
-  while (i < text_len) {
-    bool found = false;
-    for (size_t ii = 0; ii < MAX_VOCAB; ii++) {
-      int32_t token = vocabulary_by_size[ii].id;
-      size_t size = vocabulary_by_size[ii].size;
-
-      if (strncmp(text+i, vocabulary[token].token, size) == 0) {
-        array_append(sequence, token);
-        tokens_count += 1;
-        i += size;
-        found = true;
-        break;
-      }
-    }
-    assert(found && "vocab not found");
-  }
-
-  return tokens_count;
-}
-
 void prepare_data(TokenID_Array* sequence) {
   for (size_t i = 0; i < sizeof(training_text)/sizeof(char*); i++) {
     const char* text = training_text[i];
@@ -87,7 +57,8 @@ void prepare_data(TokenID_Array* sequence) {
         text,
         strlen(text),
         vocabulary,
-        vocabulary_by_size
+        vocabulary_by_size,
+        MAX_VOCAB
     );
 
     array_append(sequence, EOS_TOKEN);
@@ -265,7 +236,8 @@ void generate_text(
       prompt,
       strlen(prompt),
       vocabulary,
-      vocabulary_by_size
+      vocabulary_by_size,
+      MAX_VOCAB
   );
 
   size_t lines_count = 0;
