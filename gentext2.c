@@ -2,6 +2,7 @@
 #include "nn.h"
 #include <_time.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #define BYTEBUFFER_IMPLEMENTATION
 #define ALLOCATOR_IMPLEMENATION
@@ -46,9 +47,111 @@ const char *training_text[] = {
   "the heavy bull ate grass. that male rooster ate grass. the heavy cow ate grass. that female hen ate grass. the loud bull woke farmers. a fierce rooster woke farmers. the loud cow woke farmers. a fierce hen woke farmers.",
 };
 
+void hsl_to_rgb(float h, float s, float l, int *r, int *g, int *b) {
+  // Calculate Chroma
+  float c = (1.0f - fabsf(2.0f * l - 1.0f)) * s;
+
+  // Calculate intermediate value X
+  // fmodf(h / 60.0f, 2.0f) handles the modulo behavior for floating points
+  float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
+
+  // Match value m
+  float m = l - c / 2.0f;
+
+  float rp = 0, gp = 0, bp = 0;
+
+  if (h >= 0.0f && h < 60.0f) {
+    rp = c;
+    gp = x;
+  } else if (h >= 60.0f && h < 120.0f) {
+    rp = x;
+    gp = c;
+  } else if (h >= 120.0f && h < 180.0f) {
+    gp = c;
+    bp = x;
+  } else if (h >= 180.0f && h < 240.0f) {
+    gp = x;
+    bp = c;
+  } else if (h >= 240.0f && h < 300.0f) {
+    rp = x;
+    bp = c;
+  } else if (h >= 300.0f && h <= 360.0f) {
+    rp = c;
+    bp = x;
+  }
+
+  // Scale values to standard 8-bit integers [0, 255]
+  *r = (int)roundf((rp + m) * 255.0f);
+  *g = (int)roundf((gp + m) * 255.0f);
+  *b = (int)roundf((bp + m) * 255.0f);
+}
+
+void set_color(int r, int g, int b) {
+  printf("\033[38;2;%d;%d;%dm", r, g, b);
+}
+
+void rst_color(void) {
+  printf("\033[38;0m");
+}
+
+// #define MIN(a, b) ((a) < (b) ? (a) : (b))
+// #define MAX(a, b) ((a) > (b) ? (a) : (b))
+
 Malloc_Allocator mallocator = MALLOC_CREATE();
 
 void prepare_data(TokenID_Array* sequence) {
+//Non-overlapping chunks, shuffled. That's what real pretraining does, and for 1M tokens it's the right call.
+//
+// The recipe
+//
+// Read C+1 tokens per chunk, advance by C:
+//
+// chunk k covers  ids[k*C  ..  k*C + C]      (C+1 tokens)
+//   input        ids[k*C   .. k*C + C - 1]   (C tokens)
+//   targets      ids[k*C+1 .. k*C + C]       (C tokens)
+//
+// The +1 overlap is what makes coverage exact: the last target of chunk k is ids[(k+1)*C], which is the first input of chunk k+1. Every token is a target exactly once and an input exactly once. No gaps, no duplication.
+//
+// With C = 512:
+//
+// chunks       = (1,000,000 - 1) / 512  =  1953
+// tokens/epoch = 1953 × 512             =  999,936    (64 left over, drop them)
+//
+// One epoch = 1953 forward/backward passes, or 244 optimizer steps at batch 8.
+//
+// Shuffle the chunk order
+//
+// size_t n_chunks = (n_tokens - 1) / C;
+// size_t *order = malloc(n_chunks * sizeof(size_t));
+// for (size_t i = 0; i < n_chunks; i++) { order[i] = i; }
+//
+// for (int epoch = 0; epoch < epochs; epoch++) {
+//     shuffle(order, n_chunks);
+//     for (size_t i = 0; i < n_chunks; i++) {
+//         const int32_t *chunk = &ids[order[i] * C];   /* reads C+1 */
+//         /* forward on chunk[0..C-1], targets chunk[1..C] */
+//     }
+// }
+//
+// This matters. Consecutive chunks come from the same chapter — same topic, same vocabulary — so feeding them in reading order gives you long runs of correlated gradients. Shuffling decorrelates the batch. Same order-array pattern you already have.
+//
+// The one real downside, and a free fix
+//
+// Position 0 of each chunk has zero left context, position 1 has one token, and so on. Fixed boundaries mean the same tokens are handicapped every epoch.
+//
+// Fix: randomize the starting offset each epoch.
+//
+// size_t off = rand_below(C);              /* different every epoch */
+// const int32_t *chunk = &ids[off + order[i] * C];
+//
+// Now epoch 1 cuts at 0, 512, 1024…; epoch 2 cuts at 137, 649, 1161…. Every token sees a different amount of context across epochs, and it costs one addition. You get most of the benefit overlapping strides were supposed to buy, for free.
+//
+// Why not stride 1
+//
+// From the last message: stride 1 is 512× the compute for the same 1M unique tokens. The only thing it buys is that each token is predicted at every possible context length instead of one — and the offset trick above approximates that across epochs at 1/512th the cost.
+//
+// If you want a middle ground, stride = C/2 doubles compute and guarantees every token at least C/2 context. That's the most anyone reasonably does.
+
   for (size_t i = 0; i < sizeof(training_text)/sizeof(char*); i++) {
     const char* text = training_text[i];
 
@@ -228,7 +331,7 @@ void generate_text(
   const char* prompt,
   TokenID_Array* tokens
 ) {
-  size_t C = trans_in->context_size;
+  // size_t C = trans_in->context_size;
 
   tokens->count = 0;
   tokenize(
@@ -241,8 +344,6 @@ void generate_text(
   );
 
   size_t lines_count = 0;
-
-  if (tokens->count > C) tokens->count = C;
 
   const char* separator = "\u22c5";
 
@@ -269,21 +370,31 @@ void generate_text(
     // 1.0 = normal
     // 1.5 = creative
     // 3.0 = nonsensical
-    transformer_forward(*tokens, &trans_out, trans_in, 1.5f, 0);
+    transformer_forward(*tokens, &trans_out, trans_in, 1.0f, 0);
 
-    int32_t next = mat_row_argmax(mat_row(trans_out.probs, N - 1));
-    // int32_t next = sample(mat_row(trans_out.probs, N - 1));
-    // int32_t next = sample_topp(arena, mat_row(trans_out.probs, N - 1), 0.9f);
+    NMatrix last_token = mat_row(trans_out.probs, N - 1);
+
+    int32_t next = mat_row_argmax(last_token);
+    // int32_t next = sample(last_token);
+    // int32_t next = sample_topp(arena, last_token, 0.9f);
 
     if (next == '\r') next = '\n';
 
-    printf("%s%s", vocabulary[next].token, separator);
+    float red = 0.0f;
+    float green = 120.0f;
+    float alpha = VEC_AT(last_token, next);
 
-    if (tokens->count >= C) {
-      for (size_t c = 0; c < C - 1; c++)
-        tokens->elems[c] = tokens->elems[c+1];
-      tokens->count -= 1;
-    }
+    int r, g, b;
+    hsl_to_rgb(green*alpha + (1.0f - alpha)*red, 1.0f, 0.5f, &r, &g, &b);
+    set_color(r, g, b);
+    printf("%s%s", vocabulary[next].token, separator);
+    fflush(stdout);
+
+    // if (tokens->count >= C) {
+    //   for (size_t c = 0; c < C - 1; c++)
+    //     tokens->elems[c] = tokens->elems[c+1];
+    //   tokens->count -= 1;
+    // }
 
     array_append(tokens, next);
 
@@ -299,6 +410,7 @@ void generate_text(
       break;
   }
 
+  rst_color();
   printf("\n");
 }
 
@@ -341,7 +453,11 @@ float cosine_learning_rate(size_t t, size_t t_warmup, size_t t_total, float lr_m
 
   float lr_min = 0.01f * lr_max;
 
-  float alpha = (float)(t  - t_warmup) / (float)(t_total - t_warmup);
+  if (t >= t_total) {
+    return lr_min;
+  }
+
+  float alpha = (float)(t - t_warmup) / (float)(t_total - t_warmup);
   return lr_min + 0.5f*(lr_max - lr_min) * (1.0f + cosf(alpha * M_PI));
 }
 
@@ -355,45 +471,6 @@ void print_tokens(Transformer* trans_in) {
   //   )
   // );
   // printf("\033[0m");
-}
-
-void hsl_to_rgb(float h, float s, float l, int *r, int *g, int *b) {
-  // Calculate Chroma
-  float c = (1.0f - fabsf(2.0f * l - 1.0f)) * s;
-
-  // Calculate intermediate value X
-  // fmodf(h / 60.0f, 2.0f) handles the modulo behavior for floating points
-  float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
-
-  // Match value m
-  float m = l - c / 2.0f;
-
-  float rp = 0, gp = 0, bp = 0;
-
-  if (h >= 0.0f && h < 60.0f) {
-    rp = c;
-    gp = x;
-  } else if (h >= 60.0f && h < 120.0f) {
-    rp = x;
-    gp = c;
-  } else if (h >= 120.0f && h < 180.0f) {
-    gp = c;
-    bp = x;
-  } else if (h >= 180.0f && h < 240.0f) {
-    gp = x;
-    bp = c;
-  } else if (h >= 240.0f && h < 300.0f) {
-    rp = x;
-    bp = c;
-  } else if (h >= 300.0f && h <= 360.0f) {
-    rp = c;
-    bp = x;
-  }
-
-  // Scale values to standard 8-bit integers [0, 255]
-  *r = (int)roundf((rp + m) * 255.0f);
-  *g = (int)roundf((gp + m) * 255.0f);
-  *b = (int)roundf((bp + m) * 255.0f);
 }
 
 typedef struct {
@@ -453,37 +530,50 @@ int main(int argc, char* argv[]) {
   };
   size_t arena_size = MAX_VOCAB*MAX_VOCAB*sizeof(float);
   Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, arena_size + 1024*1024*1024);
-  TokenID_Array sequence = ARRAY_CREATE(&mallocator.alloc);
+  // TokenID_Array sequence = ARRAY_CREATE(&mallocator.alloc);
   TokenID_Array tokens = ARRAY_CREATE(&mallocator.alloc);
   TokenID_Array targets = ARRAY_CREATE(&mallocator.alloc);
   Index32_Array start_indices = ARRAY_CREATE(&mallocator.alloc);
 
-  prepare_data(&sequence);
+  // prepare_data(&sequence);
 
-  // Corpus corpus = corpus_load("distill/cdata/dev.ids.bin", "distill/cdata/dev.index.bin");
+  Corpus corpus = corpus_load("distill/cdata/dev.ids.bin", "distill/cdata/dev.index.bin");
+
+  int32_t max_len = 0;
+  for (size_t i = 0; i < corpus.n_recs; ++i) {
+      max_len = MAX(max_len, corpus.recs[i].total_len);
+  }
+
   // for (size_t i = 0; i < corpus.n_recs; i++) {
   //   int prompt_len = 0;
   //   int total_len = 0;
   //   const int32_t *ids = example(&corpus, i, &prompt_len, &total_len);
-  //   (void)ids;
   //
   //   printf("prompt_len = %d | total_len = %d\n", prompt_len, total_len);
+  //
+  //   //const char* sep = "\u22c5";
+  //   const char* sep = "";
+  //
+  //   for (int j = 0; j < total_len; j++) {
+  //     if (j == prompt_len) printf(" -> ");
+  //     printf("%s%s", vocabulary[ids[j]].token, sep);
+  //   }
+  //
+  //   printf("\n");
   // }
-  // return 0;
 
-  size_t C = 16;
-  size_t D = 32;
+  size_t D = 64;
   size_t H = 4; //headDim = D / H;
   size_t F = D*4;
   size_t V = MAX_VOCAB;
+  size_t num_blocks = 4;
 
   float peak_lr = 0.02f;
   size_t batch_size = 128;
-  size_t batches_per_epoch = sequence.count / batch_size;
+  size_t batches_per_epoch = corpus.n_recs / batch_size;
   size_t total_epochs = 200*batches_per_epoch;
   size_t warmup_epochs = 10*batches_per_epoch;
   float dropout_pct = 0.0;
-  size_t num_blocks = 1;
 
   // optimize learning rate
   // int patience = 100;
@@ -493,8 +583,8 @@ int main(int argc, char* argv[]) {
   // float best_epoch_loss = INFINITY;
   // int plateau_epochs = 0;
 
-  array_ensure(&tokens, C);
-  array_ensure(&targets, C);
+  // array_ensure(&tokens, C);
+  // array_ensure(&targets, C);
 
   Transformer trans_in = {0};
 
@@ -502,20 +592,28 @@ int main(int argc, char* argv[]) {
       .alloc = &arena.alloc,
       .trans = &trans_in,
       .num_blocks = num_blocks,
-      .context_size = C,
       .heads_count = H,
       .vocab_size = V,
       .emb_size = D,
       .ff_size = F,
   );
 
-  register_tensor(&optimizer, trans_in.tok_emb);
-  register_tensor(&optimizer, trans_in.ln.gamma);
-  register_tensor(&optimizer, trans_in.ln.beta);
-  register_tensor(&optimizer, trans_in.H.weight);
-  register_tensor(&optimizer, trans_in.H.bias);
+  {
+    size_t params = count_parameters(&optimizer);
+    register_tensor(&optimizer, trans_in.tok_emb);
+    printf("token emdeddings = %zu\n", count_parameters(&optimizer) - params);
+  }
+  {
+    size_t params1 = count_parameters(&optimizer);
+    register_tensor(&optimizer, trans_in.H.weight);
+    printf("output head = %zu\n", count_parameters(&optimizer) - params1);
+    size_t params2 = count_parameters(&optimizer);
+    register_tensor(&optimizer, trans_in.H.bias);
+    printf("output bias = %zu\n", count_parameters(&optimizer) - params2);
+  }
 
   for (size_t i = 0; i < num_blocks; i++) {
+    size_t params = count_parameters(&optimizer);
     register_tensor(&optimizer, trans_in.blocks[i].ln1.gamma);
     register_tensor(&optimizer, trans_in.blocks[i].ln1.beta);
     register_tensor(&optimizer, trans_in.blocks[i].ln2.gamma);
@@ -534,6 +632,14 @@ int main(int argc, char* argv[]) {
     register_tensor(&optimizer, trans_in.blocks[i].attn.V.bias);
     register_tensor(&optimizer, trans_in.blocks[i].attn.O.weight);
     register_tensor(&optimizer, trans_in.blocks[i].attn.O.bias);
+    printf("transformer block = %zu\n", count_parameters(&optimizer) - params);
+  }
+
+  {
+    size_t params0 = count_parameters(&optimizer);
+    register_tensor(&optimizer, trans_in.ln.gamma);
+    register_tensor(&optimizer, trans_in.ln.beta);
+    printf("final layerNorm = %zu\n", count_parameters(&optimizer) - params0);
   }
 
   size_t params = count_parameters(&optimizer);
@@ -555,9 +661,9 @@ int main(int argc, char* argv[]) {
 
   if (loaded && !train) goto generate_text;
 
-  printf("dataset size = %zu\n", sequence.count);
+  printf("dataset size = %zu\n", corpus.n_recs);
   printf("total parameters = %zu\n", params);
-  printf("ratio = %f\n", sequence.count / (float)params);
+  printf("ratio = %f\n", corpus.n_recs / (float)params);
 
   init_opencl();
   ensure_buffer_size(sizeof(float)*MAX_VOCAB*MAX_VOCAB);
@@ -572,11 +678,19 @@ int main(int argc, char* argv[]) {
 
   optimizer.learning_rate = cosine_learning_rate(epoch, warmup_epochs, total_epochs, peak_lr);
 
-  for (size_t i = 0; i < sequence.count - C - 1; i++)
+  for (size_t i = 0; i < corpus.n_recs; i++)
     array_append(&start_indices, i);
   shuffle_indices(start_indices);
 
   size_t cursor = 0;
+
+  const char* prompt = "User: Find the most important takeaway from the following article.\n\nAn article published by the International Journal of Environmental Research and Public Health found that air pollution levels have been found to have measurable effect on mental health, with people living in more polluted areas having poorer mental health outcomes.";
+  {
+    size_t saved = SAVE(&arena.alloc);
+    set_dropout(&trans_in, 0.0f);
+    generate_text(&arena, &trans_in, prompt, &tokens);
+    RESTORE(&arena.alloc, saved);
+  }
 
   for (; epoch < total_epochs; epoch++) {
     float loss_sum = 0;
@@ -589,6 +703,7 @@ int main(int argc, char* argv[]) {
       size_t saved = SAVE(&arena.alloc);
 
       if (cursor == start_indices.count) {
+        // todo: increment epoch here
         shuffle_indices(start_indices);
         cursor = 0;
       }
@@ -596,12 +711,24 @@ int main(int argc, char* argv[]) {
       size_t start_index = start_indices.elems[cursor];
       cursor += 1;
 
+      int prompt_len = 0;
+      int total_len = 0;
+      const int32_t *ids = example(&corpus, start_index, &prompt_len, &total_len);
+
+      const int first = prompt_len - 1;             /* first loss position */
+      const int npos  = total_len - prompt_len;     /* how many */
+
+      if (npos <= 0)
+        continue;
+
+      // printf("%d %d = %d %d = %zu\n", prompt_len, total_len, first, npos, start_index);
+
       tokens.count = 0;
       targets.count = 0;
 
-      for (size_t c = 0; c < C; c++) {
-        array_append(&tokens, sequence.elems[start_index+c]);
-        array_append(&targets, sequence.elems[start_index+c+1]);
+      for (int c = 0; c < total_len - 1; c++) {
+        array_append(&tokens, ids[c]);
+        array_append(&targets, ids[c+1]);
       }
 
       size_t N = tokens.count;
@@ -618,8 +745,6 @@ int main(int argc, char* argv[]) {
           .sequence_size = N,
       );
 
-      transformer_forward(tokens, &trans_out, &trans_in, 1.0f, 0);
-
       // /* prompt+answer: score only the answer */
       // for (int j = 0; j < n - 1; ++j) {
       //     if (j + 1 < prompt_len) {                       /* target is prompt text */
@@ -631,20 +756,31 @@ int main(int argc, char* argv[]) {
       // }
       //
       // todo: implement masking
-      loss_sum += cross_entropy(trans_out.probs, targets);
-      token_count += N;
+      // loss_sum += cross_entropy(trans_out.probs, targets);
+      // token_count += N;
+
+      transformer_forward(tokens, &trans_out, &trans_in, 1.0f, 0);
 
       // dLoss/dlogits = softmax(logits) - onehot(target).
       NMatrix dlogits = trans_out.logits.grad;
       mat_copy(dlogits, trans_out.probs);
 
-      for (size_t i = 0; i < N; i++)
-        MAT_AT(dlogits, i, targets.elems[i]) -= 1.0f;
+      for (size_t i = 0; i < N; i++) {
+        int32_t target = targets.elems[i];
+
+        if (i >= (size_t)first) {
+          MAT_AT(dlogits, i, target) -= 1.0f;
+          loss_sum -= logf(MAT_AT(trans_out.probs, i, target) + 1e-10f);
+          token_count += 1;
+        } else {
+          mat_zero(mat_row(dlogits, i));
+        }
+      }
+
+      transformer_backward(tokens, &trans_out, &trans_in);
 
       // float scale = 1.0f / (float)N;
       // mat_scale(dlogits, dlogits, scale);
-
-      transformer_backward(tokens, &trans_out, &trans_in);
 
       // float max_loss = logf(MAX_VOCAB);
       // float alpha = c_loss / max_loss;
@@ -684,11 +820,9 @@ int main(int argc, char* argv[]) {
     optimizer.learning_rate = cosine_learning_rate(epoch, warmup_epochs, total_epochs, peak_lr);
 
     if (epoch % batches_per_epoch == 0) {
-      print_tokens(&trans_in);
-
       size_t saved = SAVE(&arena.alloc);
       set_dropout(&trans_in, 0.0f);
-      generate_text(&arena, &trans_in, "the desert was silent", &tokens);
+      generate_text(&arena, &trans_in, prompt, &tokens);
       RESTORE(&arena.alloc, saved);
     }
 
@@ -710,9 +844,9 @@ int main(int argc, char* argv[]) {
   save_optimizer(&optimizer, "models/gentext2.adam", epoch);
 
 generate_text:
-  printf("dataset size = %zu\n", sequence.count);
+  printf("dataset size = %zu\n", corpus.n_recs);
   printf("total parameters = %zu\n", params);
-  printf("ratio = %f\n", sequence.count / (float)params);
+  printf("ratio = %f\n", corpus.n_recs / (float)params);
 
   generate_text(&arena, &trans_in, "the desert", &tokens);
 

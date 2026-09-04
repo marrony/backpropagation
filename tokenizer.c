@@ -22,7 +22,7 @@ Byte_Array read_input(Allocator* alloc, FILE* input) {
 
   while (true) {
     int ch = fgetc(input);
-    if (ch == EOF || ch == '\n') return buff;
+    if (ch == EOF) return buff;
     array_append(&buff, (char)ch);
   }
 

@@ -403,11 +403,11 @@ void node_conv1d(
       NMatrix w = filters[j].value;
 
       float sum = 0;
-      for (int ki = 0; ki < w.rows; ki++) {     // 0..kern_size
+      for (uint32_t ki = 0; ki < w.rows; ki++) {     // 0..kern_size
         int32_t token = context != NULL ? context[current_row+ki] : current_row+ki;
         NMatrix x = mat_row(embeddings->value, token);
 
-        for(int kj = 0; kj < w.cols; kj++)      // 0..emb_size
+        for(uint32_t kj = 0; kj < w.cols; kj++)      // 0..emb_size
           sum += MAT_AT(x, 0, kj) * MAT_AT(w, ki, kj);
       }
 
@@ -436,12 +436,12 @@ void node_dconv1d(
 
       Tensor w = filters[j];
 
-      for(int ki = 0; ki < w.grad.rows; ki++) {     // 0..kern_size
+      for(uint32_t ki = 0; ki < w.grad.rows; ki++) {     // 0..kern_size
         int32_t token = context != NULL ? context[current_row+ki] : current_row+ki;
         NMatrix x = mat_row(embeddings->value, token);
         NMatrix dLdx = mat_row(embeddings->grad, token);
 
-        for(int kj = 0; kj < w.grad.cols; kj++) {   // 0..emb_size
+        for(uint32_t kj = 0; kj < w.grad.cols; kj++) {   // 0..emb_size
           // Weight gradient
           MAT_AT(w.grad, ki, kj) += delta * MAT_AT(x, 0, kj);
 
@@ -535,7 +535,7 @@ Tensor* node_forward(Arena_Allocator* arena, Node* node, Tape_Node_Array* tape) 
 
       // broadcasting the bias
       mat_mult(out->value, x_tensor->value, node->as_linear.weight.value);
-      for (int i = 0; i < out->value.rows; i++) {
+      for (uint32_t i = 0; i < out->value.rows; i++) {
         NMatrix dst = mat_row(out->value, i);
         mat_add(dst, dst, node->as_linear.bias.value);
       }
@@ -878,7 +878,7 @@ void node_backward(Tape_Node_Array* tape) {
       float dL_dLoss = MAT_AT(dLdy, 0, 0);
 
       // 1/t * (y - target) * dLdy
-      for (int i = 0; i < logits_tensor->grad.cols; i++) {
+      for (uint32_t i = 0; i < logits_tensor->grad.cols; i++) {
         float prob = VEC_AT(probs_tensor->value, i);
         float target = VEC_AT(target_tensor->value, i);
         VEC_AT(logits_tensor->grad, i) += dL_dLoss * inv_temperature * (prob - target);
@@ -1060,7 +1060,7 @@ void node_backward(Tape_Node_Array* tape) {
       //   dL/du = (1/v) ⊙ dL/dy (element-wise)
       //   dL/dv = (-u/v²) ⊙ dL/dy (element-wise)
 
-      for (int i = 0; i < dLdy.rows*dLdy.cols; i++) {
+      for (uint32_t i = 0; i < dLdy.rows*dLdy.cols; i++) {
         float inv_v = 1.0f / VEC_AT(tape_node.input[1]->value, i);
 
         VEC_AT(tape_node.input[0]->grad, i) += inv_v * VEC_AT(dLdy, i);
@@ -1139,8 +1139,8 @@ void update_grads_adam(Optimizer* optimizer) {
     NMatrix m = optimizer->history.elems[t];
     NMatrix v = optimizer->second.elems[t];
 
-    for (int i = 0; i < tensor.value.rows; i++) {
-      for (int j = 0; j < tensor.value.cols; j++) {
+    for (uint32_t i = 0; i < tensor.value.rows; i++) {
+      for (uint32_t j = 0; j < tensor.value.cols; j++) {
         float g = MAT_AT(tensor.grad, i, j);
 
         float m_value = beta1*MAT_AT(m, i, j) + (1.0f - beta1)*g;
@@ -1175,8 +1175,8 @@ void update_grads_rms_prop(Optimizer* optimizer, size_t batch_size) {
     Tensor tensor = optimizer->tensors.elems[t];
     NMatrix h = optimizer->history.elems[t];
 
-    for (int i = 0; i < tensor.value.rows; i++) {
-      for (int j = 0; j < tensor.value.cols; j++) {
+    for (uint32_t i = 0; i < tensor.value.rows; i++) {
+      for (uint32_t j = 0; j < tensor.value.cols; j++) {
         float g = MAT_AT(tensor.grad, i, j);
 
         MAT_AT(h, i, j) = (beta * MAT_AT(h, i, j)) + (one_minus_beta * g * g);

@@ -23,9 +23,9 @@
 
 typedef struct {
   float* elems;
-  int16_t rows;
-  int16_t cols;
-  int16_t stride;
+  uint32_t rows;
+  uint32_t cols;
+  uint32_t stride;
 } NMatrix;
 
 #include "gpu.h"
@@ -58,8 +58,8 @@ float rand_uniform2(float min, float max) {
 }
 
 void mat_rand_uniform(NMatrix mat, float min, float max) {
-  for (int i = 0; i < mat.rows; i++) {
-    for (int j = 0; j < mat.cols; j++)
+  for (uint32_t i = 0; i < mat.rows; i++) {
+    for (uint32_t j = 0; j < mat.cols; j++)
       MAT_AT(mat, i, j) = rand_uniform2(min, max);
   }
 }
@@ -118,11 +118,11 @@ NMatrix mat_alloc2(Allocator* alloc, int rows, int cols) {
 
 void mat_fprint(FILE* fp, NMatrix m, int precision) {
   fprintf(fp, "[");
-  for (int i = 0; i < m.rows; i++) {
+  for (uint32_t i = 0; i < m.rows; i++) {
     if (i > 0) fprintf(fp, " ");
 
     if (m.rows > 1) fprintf(fp, "[");
-    for (int j = 0; j < m.cols; j++) {
+    for (uint32_t j = 0; j < m.cols; j++) {
       if (j > 0) fprintf(fp, " ");
       fprintf(fp, "%+.*f", precision, MAT_AT(m, i, j));
     }
@@ -183,7 +183,7 @@ void assert_vec_eq(const char* func, const char* file, int line, NMatrix va, con
     exit(1);
   }
 
-  for (int i = 0; i < va.cols; i++) {
+  for (uint32_t i = 0; i < va.cols; i++) {
     float a = VEC_AT(va, i);
     bool eq0 = isinf(a) && isinf(vb[i]) && signbit(a) == signbit(vb[i]);
     float b = vb[i];
@@ -234,7 +234,7 @@ void mat_print_sizes(size_t n, ...) {
 // IMPORTANT: Changing shape does NOT change data layout. This is safe only if
 // the new dimensions produce the same memory layout (same row-major order).
 // If you need a different layout, use mat_copy with reshape.
-NMatrix mat_reshape(NMatrix x, int rows, int cols) {
+NMatrix mat_reshape(NMatrix x, uint32_t rows, uint32_t cols) {
   assert(x.rows*x.cols == rows*cols);
 
   return (NMatrix) {
@@ -246,8 +246,8 @@ NMatrix mat_reshape(NMatrix x, int rows, int cols) {
 }
 
 void mat_fill(NMatrix dst, float k) {
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = k;
     }
   }
@@ -267,8 +267,8 @@ void mat_copy(NMatrix dst, NMatrix src) {
       "[%dx%d] != [%dx%d]",
       dst.rows, dst.cols, src.rows, src.cols);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = MAT_AT(src, i, j);
     }
   }
@@ -292,10 +292,10 @@ void mat_free(NMatrix* m) {
  * @param b_col  Column index of B (0 to b.cols-1)
  * @return       Dot product result as float
  */
-float mat_dot_row_col(NMatrix a, NMatrix b, int a_row, int b_col) {
+float mat_dot_row_col(NMatrix a, NMatrix b, uint32_t a_row, uint32_t b_col) {
   float dot = 0;
 
-  for (int k = 0; k < a.cols; k++) {
+  for (uint32_t k = 0; k < a.cols; k++) {
     dot += MAT_AT(a, a_row, k) * MAT_AT(b, k, b_col);
   }
 
@@ -314,10 +314,10 @@ float mat_dot_row_col(NMatrix a, NMatrix b, int a_row, int b_col) {
  * @param b_col  Column index of B (0 to b.cols-1)
  * @return       Dot product result as float
  */
-float mat_dot_col_col(NMatrix a, NMatrix b, int a_col, int b_col) {
+float mat_dot_col_col(NMatrix a, NMatrix b, uint32_t a_col, uint32_t b_col) {
   float dot = 0;
 
-  for (int k = 0; k < a.rows; k++) {
+  for (uint32_t k = 0; k < a.rows; k++) {
     dot += MAT_AT(a, k, a_col) * MAT_AT(b, k, b_col);
   }
 
@@ -336,10 +336,10 @@ float mat_dot_col_col(NMatrix a, NMatrix b, int a_col, int b_col) {
  * @param b_row  Row index of B (0 to b.rows-1)
  * @return       Dot product result as float
  */
-float mat_dot_row_row(NMatrix a, NMatrix b, int a_row, int b_row) {
+float mat_dot_row_row(NMatrix a, NMatrix b, uint32_t a_row, uint32_t b_row) {
   float dot = 0;
 
-  for (int k = 0; k < a.cols; k++) {
+  for (uint32_t k = 0; k < a.cols; k++) {
     dot += MAT_AT(a, a_row, k) * MAT_AT(b, b_row, k);
   }
 
@@ -358,9 +358,9 @@ void mat_sum_row(NMatrix dst, NMatrix src) {
   assert(dst.cols == 1);
   assert(dst.rows == src.rows);
 
-  for (int i = 0; i < src.rows; i++) {
+  for (uint32_t i = 0; i < src.rows; i++) {
     MAT_AT(dst, i, 0) = 0;
-    for (int j = 0; j < src.cols; j++) {
+    for (uint32_t j = 0; j < src.cols; j++) {
       MAT_AT(dst, i, 0) += MAT_AT(src, i, j);
     }
   }
@@ -405,8 +405,8 @@ void mat_mult(NMatrix dst, NMatrix a, NMatrix b) {
   // cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, M, N, K,
   //     1.0f, a.elems, a.stride, b.elems, b.stride, 0.0f, dst.elems, dst.stride);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = mat_dot_row_col(a, b, i, j);
     }
   }
@@ -438,8 +438,8 @@ void mat_mult_acc(NMatrix dst, NMatrix a, NMatrix b) {
   // cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, M, N, K,
   //     1.0f, a.elems, a.stride, b.elems, b.stride, 1.0f, dst.elems, dst.stride);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) += mat_dot_row_col(a, b, i, j);
     }
   }
@@ -471,8 +471,8 @@ void mat_mult_A_and_B_transposed(NMatrix dst, NMatrix a, NMatrix b) {
   //     false, true
   // );
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = mat_dot_row_row(a, b, i, j);
     }
   }
@@ -488,8 +488,8 @@ void mat_mult_A_and_B_transposed_acc(NMatrix dst, NMatrix a, NMatrix b) {
   //     false, true
   // );
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) += mat_dot_row_row(a, b, i, j);
     }
   }
@@ -515,8 +515,8 @@ void mat_mult_A_and_B_transposed_acc(NMatrix dst, NMatrix a, NMatrix b) {
 void mat_mult_A_and_B_transposed_add_C(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
   ASSERT_MATRIX_MULT_ADD(dst.rows, dst.cols, a.rows, a.cols, b.cols, b.rows, c.rows, c.cols);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = mat_dot_row_row(a, b, i, j) + MAT_AT(c, i, j);
     }
   }
@@ -548,8 +548,8 @@ void mat_mult_A_transposed_and_B(NMatrix dst, NMatrix a, NMatrix b) {
   //     true, false
   // );
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = mat_dot_col_col(a, b, i, j);
     }
   }
@@ -565,8 +565,8 @@ void mat_mult_A_transposed_and_B_acc(NMatrix dst, NMatrix a, NMatrix b) {
   //     true, false
   // );
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) += mat_dot_col_col(a, b, i, j);
     }
   }
@@ -592,8 +592,8 @@ void mat_mult_A_transposed_and_B_acc(NMatrix dst, NMatrix a, NMatrix b) {
 void mat_mult_A_transposed_and_B_add_C(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
   ASSERT_MATRIX_MULT_ADD(dst.rows, dst.cols, a.cols, a.rows, b.rows, b.cols, c.rows, c.cols);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = mat_dot_col_col(a, b, i, j) + MAT_AT(c, i, j);
     }
   }
@@ -619,8 +619,8 @@ void mat_mult_A_transposed_and_B_add_C(NMatrix dst, NMatrix a, NMatrix b, NMatri
 void mat_mult_add(NMatrix dst, NMatrix a, NMatrix b, NMatrix c) {
   ASSERT_MATRIX_MULT_ADD(dst.rows, dst.cols, a.rows, a.cols, b.rows, b.cols, c.rows, c.cols);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = mat_dot_row_col(a, b, i, j) + MAT_AT(c, i, j);
     }
   }
@@ -645,7 +645,7 @@ float mat_dot(NMatrix a, NMatrix b) {
   assert(a.cols == b.cols);
 
   float dot = 0;
-  for (int n = 0; n < a.cols; n++) {
+  for (uint32_t n = 0; n < a.cols; n++) {
     dot += VEC_AT(a, n) * VEC_AT(b, n);
   }
   return dot;
@@ -670,8 +670,8 @@ void mat_add(NMatrix dst, NMatrix a, NMatrix b) {
   assert(dst.cols == b.cols);
   assert(dst.rows == b.rows);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = MAT_AT(a, i, j) + MAT_AT(b, i, j);
     }
   }
@@ -698,8 +698,8 @@ void mat_weighted_add(NMatrix dst, NMatrix a, NMatrix b, float k) {
   assert(dst.cols == b.cols);
   assert(dst.rows == b.rows);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = MAT_AT(a, i, j) + MAT_AT(b, i, j) * k;
     }
   }
@@ -724,8 +724,8 @@ void mat_sub(NMatrix dst, NMatrix a, NMatrix b) {
   assert(dst.cols == b.cols);
   assert(dst.rows == b.rows);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = MAT_AT(a, i, j) - MAT_AT(b, i, j);
     }
   }
@@ -750,8 +750,8 @@ void mat_memberwise_mult(NMatrix dst, NMatrix a, NMatrix b) {
   assert(dst.cols == b.cols);
   assert(dst.rows == b.rows);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = MAT_AT(a, i, j) * MAT_AT(b, i, j);
     }
   }
@@ -777,8 +777,8 @@ void mat_memberwise_div(NMatrix dst, NMatrix a, NMatrix b, float eps) {
   assert(dst.cols == b.cols);
   assert(dst.rows == b.rows);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = MAT_AT(a, i, j) / (MAT_AT(b, i, j) + eps);
     }
   }
@@ -799,8 +799,8 @@ void mat_square(NMatrix dst, NMatrix src) {
   assert(dst.cols == src.cols);
   assert(dst.rows == src.rows);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = MAT_AT(src, i, j) * MAT_AT(src, i, j);
     }
   }
@@ -822,8 +822,8 @@ void mat_scale(NMatrix dst, NMatrix src, float k) {
   assert(dst.cols == src.cols);
   assert(dst.rows == src.rows);
 
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = MAT_AT(src, i, j) * k;
     }
   }
@@ -843,7 +843,7 @@ void mat_scale(NMatrix dst, NMatrix src, float k) {
  * @param size    Number of columns to extract
  * @return        View of [start, start+size) as 1 × size matrix
  */
-NMatrix mat_row_slice(NMatrix m, int start, int size) {
+NMatrix mat_row_slice(NMatrix m, uint32_t start, uint32_t size) {
   assert(m.rows == 1);
   if (start+size > m.cols) size = m.cols - start;
 
@@ -865,7 +865,7 @@ NMatrix mat_row_slice(NMatrix m, int start, int size) {
  * @param size    Number of rows to extract
  * @return        View of [start, start+size) as size × m.cols matrix
  */
-NMatrix mat_slice(NMatrix m, int start, int size) {
+NMatrix mat_slice(NMatrix m, uint32_t start, uint32_t size) {
   return (NMatrix) {
     .elems = &(MAT_AT(m, start, 0)),
     .rows = size,
@@ -883,7 +883,7 @@ NMatrix mat_slice(NMatrix m, int start, int size) {
  * @param row     Row index to extract (0 to m.rows-1)
  * @return        View as 1 × m.cols matrix
  */
-NMatrix mat_row(NMatrix m, int row) {
+NMatrix mat_row(NMatrix m, uint32_t row) {
   return (NMatrix) {
     .elems = &(MAT_AT(m, row, 0)),
     .rows = 1,
@@ -892,7 +892,7 @@ NMatrix mat_row(NMatrix m, int row) {
   };
 }
 
-NMatrix mat_row_as(NMatrix m, int row, int rows, int cols) {
+NMatrix mat_row_as(NMatrix m, uint32_t row, uint32_t rows, uint32_t cols) {
   return (NMatrix) {
     .elems = &(MAT_AT(m, row, 0)),
     .rows = rows,
@@ -901,7 +901,7 @@ NMatrix mat_row_as(NMatrix m, int row, int rows, int cols) {
   };
 }
 
-NMatrix mat_sub_matrix(NMatrix m, int start_row, int start_col, int end_row, int end_col) {
+NMatrix mat_sub_matrix(NMatrix m, uint32_t start_row, uint32_t start_col, uint32_t end_row, uint32_t end_col) {
   return (NMatrix) {
     .elems = &(MAT_AT(m, start_row, start_col)),
     .rows = end_row - start_row,
@@ -910,7 +910,7 @@ NMatrix mat_sub_matrix(NMatrix m, int start_row, int start_col, int end_row, int
   };
 }
 
-NMatrix mat_cols(NMatrix m, int start_col, int end_col) {
+NMatrix mat_cols(NMatrix m, uint32_t start_col, uint32_t end_col) {
   return mat_sub_matrix(m, 0, start_col, m.rows, end_col);
 }
 
@@ -926,14 +926,14 @@ NMatrix mat_cols(NMatrix m, int start_col, int end_col) {
  * @param row     Input row vector (1 × cols)
  * @return        Index of maximum value (0 to cols-1)
  */
-int mat_row_argmax(NMatrix row) {
+uint32_t mat_row_argmax(NMatrix row) {
   assert(row.rows == 1);
   assert(row.cols >= 1);
 
-  int max_index = 0;
+  uint32_t max_index = 0;
   float max_value = VEC_AT(row, 0);
 
-  for (int i = 1; i < row.cols; i++) {
+  for (uint32_t i = 1; i < row.cols; i++) {
     float v = VEC_AT(row, i);
 
     if (v > max_value) {
@@ -945,14 +945,14 @@ int mat_row_argmax(NMatrix row) {
   return max_index;
 }
 
-int mat_row_argmin(NMatrix row) {
+uint32_t mat_row_argmin(NMatrix row) {
   assert(row.rows == 1);
   assert(row.cols >= 1);
 
-  int min_index = 0;
+  uint32_t min_index = 0;
   float min_value = VEC_AT(row, 0);
 
-  for (int i = 1; i < row.cols; i++) {
+  for (uint32_t i = 1; i < row.cols; i++) {
     float v = VEC_AT(row, i);
 
     if (v < min_value) {
@@ -965,7 +965,7 @@ int mat_row_argmin(NMatrix row) {
 }
 
 void mat_avg_row(NMatrix avg, NMatrix m) {
-  for (int z = 0; z < m.rows; z++) {
+  for (uint32_t z = 0; z < m.rows; z++) {
     mat_add(avg, avg, mat_row(m, z));
   }
 
@@ -996,7 +996,7 @@ void mat_ident(NMatrix m) {
 
   memset(m.elems, 0, sizeof(float) * m.rows * m.cols);
 
-  for (int i = 0; i < m.rows; i++) {
+  for (uint32_t i = 0; i < m.rows; i++) {
     MAT_AT(m, i, i) = 1.0f;
   }
 }
@@ -1010,8 +1010,8 @@ void mat_ident(NMatrix m) {
  * @param m       Input/output matrix to fill with random values
  */
 void mat_rand(NMatrix m) {
-  for (int i = 0; i < m.rows; i++) {
-    for (int j = 0; j < m.cols; j++) {
+  for (uint32_t i = 0; i < m.rows; i++) {
+    for (uint32_t j = 0; j < m.cols; j++) {
       float r = rand() / (float)RAND_MAX;
       MAT_AT(m, i, j) = r * 2.0f - 1.0f;
     }
@@ -1020,16 +1020,16 @@ void mat_rand(NMatrix m) {
 
 
 void mat_rand_normal(NMatrix m, float mean, float stddev) {
-  for (int i = 0; i < m.rows; i++) {
-    for (int j = 0; j < m.cols; j++) {
+  for (uint32_t i = 0; i < m.rows; i++) {
+    for (uint32_t j = 0; j < m.cols; j++) {
       MAT_AT(m, i, j) = random_normal(mean, stddev);
     }
   }
 }
 
 void mat_clip(NMatrix m, float min, float max) {
-  for (int i = 0; i < m.rows; i++) {
-    for (int j = 0; j < m.cols; j++) {
+  for (uint32_t i = 0; i < m.rows; i++) {
+    for (uint32_t j = 0; j < m.cols; j++) {
       if (MAT_AT(m, i, j) < min) MAT_AT(m, i, j) = min;
       if (MAT_AT(m, i, j) > max) MAT_AT(m, i, j) = max;
     }
@@ -1100,7 +1100,7 @@ void sigmoid(NMatrix dst, NMatrix x) {
   assert(x.rows == 1);
   assert(dst.rows == 1);
 
-  for (int j = 0; j < x.cols; j++) {
+  for (uint32_t j = 0; j < x.cols; j++) {
     VEC_AT(dst, j) = sigmoidf(VEC_AT(x, j));
   }
 }
@@ -1109,7 +1109,7 @@ void dsigmoid(NMatrix dst, NMatrix h, NMatrix dL_dh) {
   assert(h.rows == 1);
   assert(dst.rows == 1);
 
-  for (int j = 0; j < h.cols; j++) {
+  for (uint32_t j = 0; j < h.cols; j++) {
     VEC_AT(dst, j) += dsigmoidf(VEC_AT(h, j)) * VEC_AT(dL_dh, j);
   }
 }
@@ -1127,16 +1127,16 @@ static inline float dreluf(float x, float a) {
 // returns if x > 0  : x
 //         if x <= 0 : 0
 void relu(NMatrix dst, NMatrix x, float a) {
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = reluf(MAT_AT(x, i, j), a);
     }
   }
 }
 
 void drelu(NMatrix dst, NMatrix h, NMatrix dL_dh, float a) {
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) += dreluf(MAT_AT(h, i, j), a) * MAT_AT(dL_dh, i, j);
     }
   }
@@ -1169,14 +1169,14 @@ void softmax_temperature(
   float max_logit = -FLT_MAX;
 
   // 1. Find the maximum scaled logit for numerical stability
-  for (int j = 0; j < logits.cols; j++) {
+  for (uint32_t j = 0; j < logits.cols; j++) {
     float logit = VEC_AT(logits, j) * inv_t;
     if (logit > max_logit) max_logit = logit;
   }
 
   // 2. Compute the sum of exponentials (shifted)
   float sum_exp = 0;
-  for (int j = 0; j < logits.cols; j++) {
+  for (uint32_t j = 0; j < logits.cols; j++) {
     float logit = VEC_AT(logits, j) * inv_t;
     sum_exp += expf(logit - max_logit);
   }
@@ -1185,7 +1185,7 @@ void softmax_temperature(
   float log_sum_exp = max_logit + logf(sum_exp);
 
   // 4. Calculate Forward Softmax Probabilities
-  for (int j = 0; j < logits.cols; j++) {
+  for (uint32_t j = 0; j < logits.cols; j++) {
     float logit = VEC_AT(logits, j) * inv_t - log_sum_exp;
     VEC_AT(probs, j) = expf(logit);
   }
@@ -1223,14 +1223,14 @@ float softmax_cross_entropy_temperature(
   float max_logit = -FLT_MAX;
 
   // 1. Find the maximum scaled logit for numerical stability
-  for (int j = 0; j < logits.cols; j++) {
+  for (uint32_t j = 0; j < logits.cols; j++) {
     float logit = VEC_AT(logits, j) * inv_t;
     if (logit > max_logit) max_logit = logit;
   }
 
   // 2. Compute the sum of exponentials (shifted)
   float sum_exp = 0;
-  for (int j = 0; j < logits.cols; j++) {
+  for (uint32_t j = 0; j < logits.cols; j++) {
     float logit = VEC_AT(logits, j) * inv_t;
     sum_exp += expf(logit - max_logit);
   }
@@ -1240,7 +1240,7 @@ float softmax_cross_entropy_temperature(
 
   // 4. Calculate Forward Softmax Probabilities and Cross-Entropy Loss
   float loss = 0;
-  for (int j = 0; j < logits.cols; j++) {
+  for (uint32_t j = 0; j < logits.cols; j++) {
     float logit = VEC_AT(logits, j) * inv_t - log_sum_exp;
     VEC_AT(probs, j) = expf(logit);
     loss -= VEC_AT(target, j) * logit;
@@ -1257,11 +1257,11 @@ void dsoftmax_temperature(NMatrix dLdz, NMatrix h, NMatrix dLdh, float t) {
   assert(t > 0.0f);
 
   float dot = 0;
-  for (int i = 0; i < h.cols; i++)
+  for (uint32_t i = 0; i < h.cols; i++)
     dot += VEC_AT(h, i) * VEC_AT(dLdh, i);
 
   float inv_t = 1.0f / t;
-  for (int i = 0; i < h.cols; i++)
+  for (uint32_t i = 0; i < h.cols; i++)
     VEC_AT(dLdz, i) += inv_t * VEC_AT(h, i) * (VEC_AT(dLdh, i) - dot);
 }
 
@@ -1269,13 +1269,13 @@ void softmax_by_row(NMatrix out, NMatrix logits, float temperature) {
   assert(out.rows == logits.rows);
   assert(out.cols == logits.cols);
 
-  for (int i = 0; i < out.rows; i++) {
+  for (uint32_t i = 0; i < out.rows; i++) {
     softmax_temperature(mat_row(out, i), mat_row(logits, i), temperature);
   }
 }
 
 void dsoftmax_by_row(NMatrix dLdz, NMatrix h, NMatrix dLdh, float t) {
-  for (int i = 0; i < dLdz.rows; i++) {
+  for (uint32_t i = 0; i < dLdz.rows; i++) {
     dsoftmax_temperature(mat_row(dLdz, i), mat_row(h, i), mat_row(dLdh, i), t);
   }
 }
@@ -1298,8 +1298,8 @@ void dlinear(NMatrix dst, NMatrix h, NMatrix dL_dh) {
   mat_copy(dst, dL_dh);
   
   // Check for NaN/Inf propagation
-  for (int i = 0; i < dst.rows; i++) {
-    for (int j = 0; j < dst.cols; j++) {
+  for (uint32_t i = 0; i < dst.rows; i++) {
+    for (uint32_t j = 0; j < dst.cols; j++) {
       float v = MAT_AT(dst, i, j);
       if (isnan(v) || isinf(v)) {
         assert(false); // NaN/Inf detected in gradient
@@ -1356,7 +1356,7 @@ float backward_sigmoid_only(
   for (int i = N-1; i >= 0; i--) {
     NMatrix act = i == 0 ? inputs : activations[i-1];
 
-    for (int j = 0; j < grad->w[i].cols; j++) {
+    for (uint32_t j = 0; j < grad->w[i].cols; j++) {
       // delta_i = sigmoid'(h[i]) * dL[i]
       float delta =  dsigmoidf(VEC_AT(activations[i], j)) * VEC_AT(dL_dw[i], j);
       assert(!isnan(delta));
@@ -1365,13 +1365,13 @@ float backward_sigmoid_only(
       VEC_AT(grad->b[i], j) = delta;
 
       // dw[i] = h[i-1].T * delta_i
-      for (int k = 0; k < grad->w[i].rows; k++) {
+      for (uint32_t k = 0; k < grad->w[i].rows; k++) {
         MAT_AT(grad->w[i], k, j) = VEC_AT(act, k) * delta;
       }
 
       if (i > 0) {
         // dL[i-1] = delta_i * w[i].T
-        for (int k = 0; k < nn->w[i].rows; k++) {
+        for (uint32_t k = 0; k < nn->w[i].rows; k++) {
           VEC_AT(dL_dw[i-1], k) = delta * MAT_AT(nn->w[i], k, j);
         }
       }
@@ -1579,7 +1579,7 @@ void image_to_pixels(NMatrix image, unsigned char* pixels) {
   float min = +FLT_MAX;
   float max = -FLT_MAX;
 
-  for (int i = 0; i < image.cols; i++) {
+  for (uint32_t i = 0; i < image.cols; i++) {
     float v = MAT_AT(image, 0, i);
     if (v > max) max = v;
     if (v < min) min = v;
@@ -1587,7 +1587,7 @@ void image_to_pixels(NMatrix image, unsigned char* pixels) {
 
   float diff = max - min;
 
-  for (int i = 0; i < image.cols; i++) {
+  for (uint32_t i = 0; i < image.cols; i++) {
     float v;
     if (diff == 0) {
       v = 0.5f; // All pixels same value, set to middle gray
@@ -1607,7 +1607,7 @@ void weights_to_pixels(NMatrix weights, int neuron, unsigned char* pixels) {
   float min = +FLT_MAX;
   float max = -FLT_MAX;
 
-  for (int i = 0; i < weights.rows; i++) {
+  for (uint32_t i = 0; i < weights.rows; i++) {
     float v = MAT_AT(weights, i, neuron);
     if (v > max) max = v;
     if (v < min) min = v;
@@ -1615,7 +1615,7 @@ void weights_to_pixels(NMatrix weights, int neuron, unsigned char* pixels) {
 
   float diff = max - min;
 
-  for (int i = 0; i < weights.rows; i++) {
+  for (uint32_t i = 0; i < weights.rows; i++) {
     float v;
     if (diff == 0) {
       v = 0.5f; // All weights same value, set to middle gray
@@ -1726,16 +1726,16 @@ int64_t get_system_micros(void) {
 }
 
 void mat_write(NMatrix mat, FILE* fp) {
-  fwrite(&mat.rows, sizeof(int16_t), 1, fp);
-  fwrite(&mat.cols, sizeof(int16_t), 1, fp);
+  fwrite(&mat.rows, sizeof(uint32_t), 1, fp);
+  fwrite(&mat.cols, sizeof(uint32_t), 1, fp);
   fwrite(mat.elems, sizeof(float), mat.rows*mat.cols, fp);
 }
 
 void mat_read(NMatrix mat, FILE* fp) {
-  int16_t rows = 0;
-  int16_t cols = 0;
-  fread(&rows, sizeof(int16_t), 1, fp);
-  fread(&cols, sizeof(int16_t), 1, fp);
+  uint32_t rows = 0;
+  uint32_t cols = 0;
+  fread(&rows, sizeof(uint32_t), 1, fp);
+  fread(&cols, sizeof(uint32_t), 1, fp);
   assert(rows == mat.rows);
   assert(cols == mat.cols);
   fread(mat.elems, sizeof(float), mat.rows*mat.cols, fp);

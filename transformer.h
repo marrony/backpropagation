@@ -89,15 +89,15 @@ void layer_norm_forward_opts(struct Layer_Norm_Forward_Opts opts) {
   NMatrix xhat = opts.ln_out->xhat;
   NMatrix in = opts.in.value;
 
-  for (int32_t i = 0; i < out.rows; i++) { // 0..N
+  for (uint32_t i = 0; i < out.rows; i++) { // 0..N
     float m = 0;
-    for (int32_t d = 0; d < out.cols; d++) // 0..D
+    for (uint32_t d = 0; d < out.cols; d++) // 0..D
       m += MAT_AT(in, i, d);
     m /= out.cols;
     VEC_AT(mean, i) = m;
 
     float v = 0;
-    for (int32_t d = 0; d < out.cols; d++) { // 0..D
+    for (uint32_t d = 0; d < out.cols; d++) { // 0..D
       float diff = MAT_AT(in, i, d) - m;
       v += diff * diff;
     }
@@ -105,7 +105,7 @@ void layer_norm_forward_opts(struct Layer_Norm_Forward_Opts opts) {
     VEC_AT(var, i) = v;
 
     float inv_std = 1.0f / sqrtf(v + 1e-5f);
-    for (int32_t d = 0; d < out.cols; d++) { // 0..D
+    for (uint32_t d = 0; d < out.cols; d++) { // 0..D
       float hat = (MAT_AT(in, i, d) - m) * inv_std;
       MAT_AT(xhat, i, d) = hat;
       MAT_AT(out, i, d) = VEC_AT(gamma, d) * hat + VEC_AT(beta, d);
@@ -122,26 +122,26 @@ void layer_norm_backward_opts(struct Layer_Norm_Backward_Opts opts) {
   NMatrix dout = opts.ln_out->out.grad;
   NMatrix din = opts.in.grad;
 
-  for (int32_t i = 0; i < dout.rows; i++) { // 0..N
+  for (uint32_t i = 0; i < dout.rows; i++) { // 0..N
     float inv_std = 1.0f / sqrtf(VEC_AT(var, i) + 1e-5f);
 
     float sum_dx_hat = 0;
     float sum_dx_hat_x_hat = 0;
-    for (int32_t d = 0; d < dout.cols; d++) { // 0..D
+    for (uint32_t d = 0; d < dout.cols; d++) { // 0..D
       float dx_hat = MAT_AT(dout, i, d) * VEC_AT(gamma, d);
       sum_dx_hat += dx_hat;
       sum_dx_hat_x_hat += dx_hat * MAT_AT(xhat, i, d);
     }
 
-    for (int32_t d = 0; d < dout.cols; d++) { // 0..D
+    for (uint32_t d = 0; d < dout.cols; d++) { // 0..D
       float dx_hat = MAT_AT(dout, i, d) * VEC_AT(gamma, d);
       float dx_ = dx_hat - sum_dx_hat/dout.cols - MAT_AT(xhat, i, d) * sum_dx_hat_x_hat/dout.cols;
       MAT_AT(din, i, d) += dx_ * inv_std;
     }
   }
 
-  for (int32_t i = 0; i < dout.rows; i++) {    // 0..N
-    for (int32_t d = 0; d < dout.cols; d++) {  // 0..D
+  for (uint32_t i = 0; i < dout.rows; i++) {    // 0..N
+    for (uint32_t d = 0; d < dout.cols; d++) {  // 0..D
       VEC_AT(dgamma, d) += MAT_AT(dout, i, d) * MAT_AT(xhat, i, d);
       VEC_AT(dbeta, d) += MAT_AT(dout, i, d);
     }
@@ -266,8 +266,8 @@ void project_opts(struct Project_Forward_Opts opts) {
 
   ASSERT_MATRIX_MULT(out.rows, out.cols, x.rows, x.cols, W.rows, W.cols);
 
-  for (int i = 0; i < out.rows; i++) {
-    for (int j = 0; j < out.cols; j++) {
+  for (uint32_t i = 0; i < out.rows; i++) {
+    for (uint32_t j = 0; j < out.cols; j++) {
       MAT_AT(out, i, j) = mat_dot_row_col(x, W, i, j) + MAT_AT(b, 0, j);
     }
   }
@@ -280,7 +280,7 @@ void dproject_opts(struct Project_Backward_Opts opts) {
 
   // db += dout
   NMatrix db = opts.b.grad;
-  for (int32_t i = 0; i < dout.rows; i++)
+  for (uint32_t i = 0; i < dout.rows; i++)
     mat_add(db, db, mat_row(dout, i));
 
   // dW += x^T * dout
@@ -303,8 +303,8 @@ void dproject_opts(struct Project_Backward_Opts opts) {
 void dropout_forward(NMatrix x, NMatrix mask, float p) {
   float m = 1 / (1 - p);
 
-  for (int i = 0; i < x.rows; i++) {
-    for (int j = 0; j < x.cols; j++) {
+  for (uint32_t i = 0; i < x.rows; i++) {
+    for (uint32_t j = 0; j < x.cols; j++) {
       MAT_AT(mask, i, j) = rand_uniform() < p ? 0 : m;
       MAT_AT(x, i, j) *= MAT_AT(mask, i, j);
     }
@@ -312,8 +312,8 @@ void dropout_forward(NMatrix x, NMatrix mask, float p) {
 }
 
 void dropout_backward(NMatrix dx, NMatrix mask) {
-  for (int i = 0; i < dx.rows; i++) {
-    for (int j = 0; j < dx.cols; j++) {
+  for (uint32_t i = 0; i < dx.rows; i++) {
+    for (uint32_t j = 0; j < dx.cols; j++) {
       float m = MAT_AT(mask, i, j);
       MAT_AT(dx, i, j) *= m;
     }
@@ -323,9 +323,9 @@ void dropout_backward(NMatrix dx, NMatrix mask) {
 void rope(NMatrix tensor, size_t d, size_t offset) {
   float inv_d = 1.0f / (float)d;
 
-  for (int32_t m = 0; m < tensor.rows; m++) {
-    for (int32_t i = 0; i < tensor.cols; i += 2) {
-      int32_t local_i = i % d;
+  for (uint32_t m = 0; m < tensor.rows; m++) {
+    for (uint32_t i = 0; i < tensor.cols; i += 2) {
+      size_t local_i = i % d;
       float theta = powf(10000, -(float)local_i * inv_d);
       float phi = (m+offset) * theta;
 
@@ -341,8 +341,8 @@ void rope(NMatrix tensor, size_t d, size_t offset) {
 void drope(NMatrix dtensor, size_t d, size_t offset, NMatrix dout) {
   float inv_d = 1.0f / (float)d;
 
-  for (int32_t m = 0; m < dout.rows; m++) {
-    for (int32_t i = 0; i < dout.cols; i += 2) {
+  for (uint32_t m = 0; m < dout.rows; m++) {
+    for (uint32_t i = 0; i < dout.cols; i += 2) {
       size_t local_i = i % d;
       float theta = powf(10000, -(float)local_i * inv_d);
       float phi = (m+offset) * theta;
@@ -825,7 +825,6 @@ typedef struct {
 
   // configs
   size_t vocab_size;
-  size_t context_size;
   size_t heads_count;
   size_t emb_size;
   size_t ff_size;
@@ -850,7 +849,6 @@ struct Init_Transformer_Opts {
   Transformer* trans;
   size_t num_blocks;
   size_t vocab_size;
-  size_t context_size;
   size_t heads_count;
   size_t emb_size;
   size_t ff_size;
@@ -862,7 +860,6 @@ struct Init_Transformer_Output_Opts {
   size_t num_blocks;
   size_t sequence_size;
   size_t vocab_size;
-  size_t context_size;
   size_t emb_size;
   size_t ff_size;
   size_t heads_count;
@@ -879,7 +876,6 @@ void init_transformer_opts(struct Init_Transformer_Opts opts) {
   size_t F = opts.ff_size;
 
   trans->vocab_size = opts.vocab_size;
-  trans->context_size = opts.context_size;
   trans->heads_count = opts.heads_count;
   trans->emb_size = opts.emb_size;
   trans->ff_size = opts.ff_size;
@@ -942,10 +938,9 @@ void transformer_forward(
   float temperature,
   size_t token_offset
 ) {
-  assert(tokens.count <= in->context_size);
   assert(tokens.count == out->sequence_size);
 
-  // x0 = tok_embs + pos_embs
+  // x0 = tok_embs
   for (size_t i = 0; i < tokens.count; i++) {
     mat_copy(
         mat_row(out->x0.value, i),
@@ -978,6 +973,7 @@ void transformer_forward(
   );
 
   // logits = out_ln*hW + bW
+  // logits = out_ln*tok_embs^T + bW (tied embeddings)
   project(
       .out = out->logits.value,
       .x   = out->ln.out,
