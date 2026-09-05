@@ -345,12 +345,13 @@ void generate_text(
 
   size_t lines_count = 0;
 
-  const char* separator = "\u22c5";
+  //const char* separator = "\u22c5";
+  const char* separator = "";
 
   for (size_t i = 0; i < tokens->count; i++)
       printf("%s%s", vocabulary[tokens->elems[i]].token, separator);
 
-  for (size_t i = 0; i < 500; i++) {
+  for (size_t i = 0; i < 256; i++) {
     size_t saved = SAVE(&arena->alloc);
 
     size_t N = tokens->count;
@@ -419,7 +420,7 @@ DEFINE_ARRAY_ALIAS(Index32, size_t);
 // Helper function to shuffle an array of indices (Fisher-Yates)
 void shuffle_indices(Index32_Array indices) {
   for (size_t i = indices.count - 1; i > 0; i--) {
-    int j = rand_between(0, i);
+    size_t j = rand_between(0, i);
     size_t temp = indices.elems[i];
     indices.elems[i] = indices.elems[j];
     indices.elems[j] = temp;
@@ -539,9 +540,11 @@ int main(int argc, char* argv[]) {
 
   Corpus corpus = corpus_load("distill/cdata/dev.ids.bin", "distill/cdata/dev.index.bin");
 
+  int32_t sum_tokens = 0;
   int32_t max_len = 0;
   for (size_t i = 0; i < corpus.n_recs; ++i) {
       max_len = MAX(max_len, corpus.recs[i].total_len);
+      sum_tokens += corpus.recs[i].total_len;
   }
 
   // for (size_t i = 0; i < corpus.n_recs; i++) {
@@ -570,9 +573,9 @@ int main(int argc, char* argv[]) {
 
   float peak_lr = 0.02f;
   size_t batch_size = 128;
-  size_t batches_per_epoch = corpus.n_recs / batch_size;
-  size_t total_epochs = 200*batches_per_epoch;
-  size_t warmup_epochs = 10*batches_per_epoch;
+  size_t steps_per_epoch = corpus.n_recs / batch_size;
+  size_t total_epochs = 200;
+  size_t warmup_epochs = 10;
   float dropout_pct = 0.0;
 
   // optimize learning rate
@@ -598,6 +601,7 @@ int main(int argc, char* argv[]) {
       .ff_size = F,
   );
 
+  set_color(255, 165, 0);
   {
     size_t params = count_parameters(&optimizer);
     register_tensor(&optimizer, trans_in.tok_emb);
@@ -643,10 +647,24 @@ int main(int argc, char* argv[]) {
   }
 
   size_t params = count_parameters(&optimizer);
+  printf("tokens count = %d\n", sum_tokens);
+  printf("total parameters = %zu\n", params);
+  printf("chinchilla target = %zu tokens\n", 20*params);
+  printf("epochs to get there = %zu\n", 20*params / sum_tokens);
+  printf("ratio = %f tokens per parameter\n", sum_tokens / (float)params);
 
+  rst_color();
+
+  // Muennighoff et al. (2023), Scaling Data-Constrained Language Models, is the empirical answer:
+  //
+  //  - Up to ~4 epochs: repeated tokens are worth nearly as much as fresh ones
+  //  - 4 to ~16 epochs: returns decay steadily
+  //  - Past ~16: essentially zero value
   size_t epoch = 0;
+  size_t optimizer_steps = 0;
+
   bool loaded = load_model(&trans_in);
-  load_optimizer(&optimizer, "models/gentext2.adam", &epoch);
+  load_optimizer(&optimizer, "models/gentext2.adam", &epoch, &optimizer_steps);
 
   bool train = false;
 
@@ -661,22 +679,18 @@ int main(int argc, char* argv[]) {
 
   if (loaded && !train) goto generate_text;
 
-  printf("dataset size = %zu\n", corpus.n_recs);
-  printf("total parameters = %zu\n", params);
-  printf("ratio = %f\n", corpus.n_recs / (float)params);
-
   init_opencl();
   ensure_buffer_size(sizeof(float)*MAX_VOCAB*MAX_VOCAB);
 
   mat_zero(mat_row(trans_in.tok_emb.value, 0));
   print_tokens(&trans_in);
 
-  printf("\033[38;5;28m");
+  set_color(0, 255, 0);
   print_timestamp();
   printf(" Start training\n");
-  printf("\033[0m");
+  rst_color();
 
-  optimizer.learning_rate = cosine_learning_rate(epoch, warmup_epochs, total_epochs, peak_lr);
+  optimizer.learning_rate = cosine_learning_rate(epoch, warmup_epochs*steps_per_epoch, total_epochs*steps_per_epoch, peak_lr);
 
   for (size_t i = 0; i < corpus.n_recs; i++)
     array_append(&start_indices, i);
@@ -692,7 +706,7 @@ int main(int argc, char* argv[]) {
     RESTORE(&arena.alloc, saved);
   }
 
-  for (; epoch < total_epochs; epoch++) {
+  while (epoch < total_epochs) {
     float loss_sum = 0;
     size_t token_count = 0;
 
@@ -706,6 +720,16 @@ int main(int argc, char* argv[]) {
         // todo: increment epoch here
         shuffle_indices(start_indices);
         cursor = 0;
+
+        epoch += 1;
+
+        save_model(&trans_in);
+        save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps);
+
+        size_t saved = SAVE(&arena.alloc);
+        set_dropout(&trans_in, 0.0f);
+        generate_text(&arena, &trans_in, prompt, &tokens);
+        RESTORE(&arena.alloc, saved);
       }
 
       size_t start_index = start_indices.elems[cursor];
@@ -720,8 +744,6 @@ int main(int argc, char* argv[]) {
 
       if (npos <= 0)
         continue;
-
-      // printf("%d %d = %d %d = %zu\n", prompt_len, total_len, first, npos, start_index);
 
       tokens.count = 0;
       targets.count = 0;
@@ -745,20 +767,6 @@ int main(int argc, char* argv[]) {
           .sequence_size = N,
       );
 
-      // /* prompt+answer: score only the answer */
-      // for (int j = 0; j < n - 1; ++j) {
-      //     if (j + 1 < prompt_len) {                       /* target is prompt text */
-      //         memset(&dlogits[j*V], 0, V * sizeof(float));   /* <-- do not skip this */
-      //         continue;
-      //     }
-      //     loss_sum += nll_and_grad(&logits[j*V], V, ids[j+1], &dlogits[j*V]);
-      //     n_tok++;
-      // }
-      //
-      // todo: implement masking
-      // loss_sum += cross_entropy(trans_out.probs, targets);
-      // token_count += N;
-
       transformer_forward(tokens, &trans_out, &trans_in, 1.0f, 0);
 
       // dLoss/dlogits = softmax(logits) - onehot(target).
@@ -779,75 +787,31 @@ int main(int argc, char* argv[]) {
 
       transformer_backward(tokens, &trans_out, &trans_in);
 
-      // float scale = 1.0f / (float)N;
-      // mat_scale(dlogits, dlogits, scale);
-
-      // float max_loss = logf(MAX_VOCAB);
-      // float alpha = c_loss / max_loss;
-      // float red = 0.0f;
-      // float green = 120.0f;
-      //
-      // if (alpha < 0) alpha = 0;
-      // if (alpha > 1) alpha = 1;
-      //
-      // int r, g, b;
-      // hsl_to_rgb(red*alpha + (1.0f - alpha)*green, 1.0f, 0.5f, &r, &g, &b);
-      //
-      // const char* block[] = {
-      //   "\u25AE", // vertical rectangle
-      //   "\u2588", // full block
-      //   "\u258C", // left half block
-      // };
-      // printf("\033[38;2;%d;%d;%dm%s\033[38;0m", r, g, b, block[1]);
-
-      // int index = (int)(ptc * 10);
-      // int colors[] = {196, 202, 208, 214, 220, 226, 190, 154, 118, 82, 46};
-      // printf("\033[38;5;%dm%s\033[38;0m", colors[index], block[1]);
-
-      // if (current_batch_size < batch_size) {
-      //   for (size_t i = current_batch_size; i < batch_size; i++)
-      //     printf(" ");
-      // }
-
       RESTORE(&arena.alloc, saved);
     }
-    // printf("\n");
 
     mat_zero(mat_row(trans_in.tok_emb.grad, 0));
     update_grads_adam(&optimizer);
 
     // cosine annealing
-    optimizer.learning_rate = cosine_learning_rate(epoch, warmup_epochs, total_epochs, peak_lr);
-
-    if (epoch % batches_per_epoch == 0) {
-      size_t saved = SAVE(&arena.alloc);
-      set_dropout(&trans_in, 0.0f);
-      generate_text(&arena, &trans_in, prompt, &tokens);
-      RESTORE(&arena.alloc, saved);
-    }
+    optimizer.learning_rate = cosine_learning_rate(optimizer_steps, warmup_epochs*steps_per_epoch, total_epochs*steps_per_epoch, peak_lr);
 
     float loss = loss_sum / token_count;
 
-    printf("\033[38;5;28m");
+    set_color(0, 255, 0);
     print_timestamp();
-    printf(" loss(%zu) = %f learning_rate = %f perplexity = %f\n",
-        epoch, loss, optimizer.learning_rate, expf(loss));
-    printf("\033[0m");
+    printf(" epoch=%zu/%zu opt=%zu/%zu lr=%f loss=%f perp=%f\n",
+        epoch, total_epochs, optimizer_steps, total_epochs*steps_per_epoch,
+        optimizer.learning_rate, loss, expf(loss));
+    rst_color();
 
-    if (epoch % 10 == 0) {
-      save_model(&trans_in);
-      save_optimizer(&optimizer, "models/gentext2.adam", epoch+1);
-    }
+    optimizer_steps += 1;
   }
 
   save_model(&trans_in);
-  save_optimizer(&optimizer, "models/gentext2.adam", epoch);
+  save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps);
 
 generate_text:
-  printf("dataset size = %zu\n", corpus.n_recs);
-  printf("total parameters = %zu\n", params);
-  printf("ratio = %f\n", corpus.n_recs / (float)params);
-
   generate_text(&arena, &trans_in, "the desert", &tokens);
 
   return 0;

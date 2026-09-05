@@ -166,11 +166,12 @@ void register_tensor(Optimizer* opt, Tensor tensor) {
   array_append(&opt->second, second);
 }
 
-void save_optimizer(Optimizer* optimizer, const char* file, size_t epochs) {
+void save_optimizer(Optimizer* optimizer, const char* file, size_t epochs, size_t optimizer_steps) {
   FILE* fp = fopen(file, "wb");
   fwrite(&optimizer->updates, sizeof(size_t), 1, fp);
   fwrite(&optimizer->learning_rate, sizeof(float), 1, fp);
   fwrite(&epochs, sizeof(size_t), 1, fp);
+  fwrite(&optimizer_steps, sizeof(size_t), 1, fp);
   fwrite(&optimizer->tensors.count, sizeof(size_t), 1, fp);
   for (size_t i = 0; i < optimizer->tensors.count; i++) {
     mat_write(optimizer->history.elems[i], fp); // 1st moment
@@ -179,13 +180,14 @@ void save_optimizer(Optimizer* optimizer, const char* file, size_t epochs) {
   fclose(fp);
 }
 
-void load_optimizer(Optimizer* optimizer, const char* file, size_t* epochs) {
+void load_optimizer(Optimizer* optimizer, const char* file, size_t* epochs, size_t* optimizer_steps) {
   FILE* fp = fopen(file, "rb");
   if (fp != NULL) {
     printf("optimizer exists, reading\n");
     fread(&optimizer->updates, sizeof(size_t), 1, fp);
     fread(&optimizer->learning_rate, sizeof(float), 1, fp);
     fread(epochs, sizeof(size_t), 1, fp);
+    fread(optimizer_steps, sizeof(size_t), 1, fp);
     size_t tensors_count = 0;
     fread(&tensors_count, sizeof(size_t), 1, fp);
     assert(tensors_count == optimizer->tensors.count);
