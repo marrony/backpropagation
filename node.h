@@ -145,17 +145,19 @@ void destroy_node(Node** node) {
 DEFINE_ARRAY(Tape_Node);
 DEFINE_ARRAY(Tensor);
 DEFINE_ARRAY(NMatrix);
+DEFINE_ARRAY_ALIAS(Bool, bool);
 
 typedef struct {
   Tensor_Array tensors;
   NMatrix_Array history;
   NMatrix_Array second;
+  Bool_Array decay;
   float learning_rate;
   float decay_factor;
   size_t updates;
 } Optimizer;
 
-void register_tensor(Optimizer* opt, Tensor tensor) {
+void register_tensor(Optimizer* opt, Tensor tensor, bool decay) {
   NMatrix history = mat_alloc(tensor.grad.rows, tensor.grad.cols);
   NMatrix second = mat_alloc(tensor.grad.rows, tensor.grad.cols);
   mat_zero(history);
@@ -164,6 +166,7 @@ void register_tensor(Optimizer* opt, Tensor tensor) {
   array_append(&opt->tensors, tensor);
   array_append(&opt->history, history);
   array_append(&opt->second, second);
+  array_append(&opt->decay, decay);
 }
 
 void save_optimizer(Optimizer* optimizer, const char* file, size_t epochs, size_t optimizer_steps) {
@@ -236,7 +239,7 @@ Node* create_embeddings(Optimizer* optimizer, size_t max_vocab, size_t emb_dim, 
   node->as_embedding.context_size = context_size;
   memset(node->as_embedding.context, 0, sizeof(int32_t)*context_size);
 
-  register_tensor(optimizer, node->as_embedding.embeddings);
+  register_tensor(optimizer, node->as_embedding.embeddings, true);
 
   return node;
 }
@@ -249,7 +252,7 @@ Node* create_embeddings_conv(Optimizer* optimizer, size_t max_vocab, size_t emb_
   node->as_embedding.context_size = context_size;
   memset(node->as_embedding.context, 0, sizeof(int32_t)*context_size);
 
-  register_tensor(optimizer, node->as_embedding.embeddings);
+  register_tensor(optimizer, node->as_embedding.embeddings, true);
 
   size_t kern_size = 3;
   node->as_embedding.filter_count = filter_count;
@@ -261,8 +264,8 @@ Node* create_embeddings_conv(Optimizer* optimizer, size_t max_vocab, size_t emb_
     init_tensor(&node->as_embedding.filters0[i], kern_size, emb_dim);
     init_tensor(&node->as_embedding.filters1[i], kern_size, 48);
 
-    register_tensor(optimizer, node->as_embedding.filters0[i]);
-    register_tensor(optimizer, node->as_embedding.filters1[i]);
+    register_tensor(optimizer, node->as_embedding.filters0[i], true);
+    register_tensor(optimizer, node->as_embedding.filters1[i], true);
   }
 
   return node;
@@ -277,8 +280,8 @@ Node* create_linear(Optimizer* optimizer, Node* input, int in_size, int out_size
   init_tensor(&node->as_linear.weight, in_size, out_size);
   init_tensor(&node->as_linear.bias, 1, out_size);
 
-  register_tensor(optimizer, node->as_linear.weight);
-  register_tensor(optimizer, node->as_linear.bias);
+  register_tensor(optimizer, node->as_linear.weight, true);
+  register_tensor(optimizer, node->as_linear.bias, true);
 
   return node;
 }
@@ -1126,7 +1129,16 @@ void update_grads_sgd(Optimizer* optimizer, size_t batch_size) {
   }
 }
 
-void update_grads_adam(Optimizer* optimizer) {
+// typedef struct { NMatrix value; NMatrix grad; bool decay; } Tensor;
+// ...
+// float wd = tensor.decay ? optimizer->decay_factor : 0.0f;
+// MAT_AT(tensor.value, i, j) = old_weight
+//   - (old_weight * optimizer->learning_rate * wd)
+//   - (adapt_lr * m_hat);
+//
+// Set decay = true on Q/K/V/O, the FF matrices, and the embedding table; false on LN gains and all biases.
+
+void update_grads_adam(Optimizer* optimizer, float scale) {
   float eps = 1e-7f;
   float beta1 = 0.900f;
   float beta2 = 0.999f;
@@ -1140,10 +1152,12 @@ void update_grads_adam(Optimizer* optimizer) {
     Tensor tensor = optimizer->tensors.elems[t];
     NMatrix m = optimizer->history.elems[t];
     NMatrix v = optimizer->second.elems[t];
+    bool decay = optimizer->decay.elems[t];
+    float decay_factor = decay ? optimizer->decay_factor : 0.0f;
 
     for (uint32_t i = 0; i < tensor.value.rows; i++) {
       for (uint32_t j = 0; j < tensor.value.cols; j++) {
-        float g = MAT_AT(tensor.grad, i, j);
+        float g = MAT_AT(tensor.grad, i, j) * scale;
 
         float m_value = beta1*MAT_AT(m, i, j) + (1.0f - beta1)*g;
         float v_value = beta2*MAT_AT(v, i, j) + (1.0f - beta2)*g*g;
@@ -1158,7 +1172,9 @@ void update_grads_adam(Optimizer* optimizer) {
 
         float old_weight = MAT_AT(tensor.value, i, j);
 
-        MAT_AT(tensor.value, i, j) = old_weight - (old_weight * adapt_lr * optimizer->decay_factor) - (adapt_lr * m_hat);
+        MAT_AT(tensor.value, i, j) = old_weight
+          - (old_weight * optimizer->learning_rate * decay_factor)
+          - (adapt_lr * m_hat);
       }
 
       mat_zero(mat_row(tensor.grad, i));

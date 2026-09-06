@@ -56,14 +56,20 @@ bin:
 	mkdir -p $@
 
 corpus:
-	cd distill && uv run scripts/build_seqkd_data.py --split dev   --gold    # control arm, no teacher, seconds
-# 	uv run scripts/build_seqkd_data.py --split train --gold
-# 	uv run scripts/build_seqkd_data.py --split train           # teacher generations, hours + 8GB download
+	cd distill && rm -f data/split_ids.json data/formatted_cache.json
+	cd distill && uv run scripts/build_seqkd_data.py --split dev --gold
+	cd distill && uv run scripts/build_seqkd_data.py --split train --gold
+
+# teacher generations, hours + 8GB download
+# 	uv run scripts/build_seqkd_data.py --split train
 
 export:
 	cd distill && uv run scripts/export_seqkd_ids.py \
-	--jsonl data/seqkd_gold_dev.jsonl --out cdata \
-	--vocab-size 5120 --eos-id 256 --tokenizer-cmd '../bin/tokenizer'
+		--jsonl data/seqkd_gold_dev.jsonl --out cdata \
+		--vocab-size 5120 --eos-id 256 --tokenizer-cmd '../bin/tokenizer'
+	cd distill && uv run scripts/export_seqkd_ids.py \
+		--jsonl data/seqkd_gold_train.jsonl --out cdata \
+		--vocab-size 5120 --eos-id 256 --tokenizer-cmd '../bin/tokenizer'
 
 
 # $@  The target            The file name of the target of the rule.

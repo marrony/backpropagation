@@ -525,6 +525,7 @@ int main(int argc, char* argv[]) {
     .tensors = ARRAY_CREATE(&mallocator.alloc),
     .history = ARRAY_CREATE(&mallocator.alloc),
     .second = ARRAY_CREATE(&mallocator.alloc),
+    .decay = ARRAY_CREATE(&mallocator.alloc),
     .learning_rate = 0.05f,
     .decay_factor = 0.00001f,
     .updates = 0,
@@ -538,7 +539,7 @@ int main(int argc, char* argv[]) {
 
   // prepare_data(&sequence);
 
-  Corpus corpus = corpus_load("distill/cdata/dev.ids.bin", "distill/cdata/dev.index.bin");
+  Corpus corpus = corpus_load("distill/cdata/train.ids.bin", "distill/cdata/train.index.bin");
 
   int32_t sum_tokens = 0;
   int32_t max_len = 0;
@@ -572,10 +573,10 @@ int main(int argc, char* argv[]) {
   size_t num_blocks = 4;
 
   float peak_lr = 0.02f;
-  size_t batch_size = 128;
+  size_t batch_size = 8;
   size_t steps_per_epoch = corpus.n_recs / batch_size;
-  size_t total_epochs = 200;
-  size_t warmup_epochs = 10;
+  size_t total_epochs = 4;
+  size_t warmup_epochs = 1;
   float dropout_pct = 0.0;
 
   // optimize learning rate
@@ -604,53 +605,56 @@ int main(int argc, char* argv[]) {
   set_color(255, 165, 0);
   {
     size_t params = count_parameters(&optimizer);
-    register_tensor(&optimizer, trans_in.tok_emb);
+    register_tensor(&optimizer, trans_in.tok_emb, true);
     printf("token emdeddings = %zu\n", count_parameters(&optimizer) - params);
   }
   {
     size_t params1 = count_parameters(&optimizer);
-    register_tensor(&optimizer, trans_in.H.weight);
+    register_tensor(&optimizer, trans_in.H.weight, true);
     printf("output head = %zu\n", count_parameters(&optimizer) - params1);
     size_t params2 = count_parameters(&optimizer);
-    register_tensor(&optimizer, trans_in.H.bias);
+    register_tensor(&optimizer, trans_in.H.bias, false);
     printf("output bias = %zu\n", count_parameters(&optimizer) - params2);
   }
 
   for (size_t i = 0; i < num_blocks; i++) {
     size_t params = count_parameters(&optimizer);
-    register_tensor(&optimizer, trans_in.blocks[i].ln1.gamma);
-    register_tensor(&optimizer, trans_in.blocks[i].ln1.beta);
-    register_tensor(&optimizer, trans_in.blocks[i].ln2.gamma);
-    register_tensor(&optimizer, trans_in.blocks[i].ln2.beta);
+    register_tensor(&optimizer, trans_in.blocks[i].ln1.gamma, false);
+    register_tensor(&optimizer, trans_in.blocks[i].ln1.beta, false);
+    register_tensor(&optimizer, trans_in.blocks[i].ln2.gamma, false);
+    register_tensor(&optimizer, trans_in.blocks[i].ln2.beta, false);
 
-    register_tensor(&optimizer, trans_in.blocks[i].ff1.weight);
-    register_tensor(&optimizer, trans_in.blocks[i].ff1.bias);
-    register_tensor(&optimizer, trans_in.blocks[i].ff2.weight);
-    register_tensor(&optimizer, trans_in.blocks[i].ff2.bias);
+    register_tensor(&optimizer, trans_in.blocks[i].ff1.weight, true);
+    register_tensor(&optimizer, trans_in.blocks[i].ff1.bias, false);
+    register_tensor(&optimizer, trans_in.blocks[i].ff2.weight, true);
+    register_tensor(&optimizer, trans_in.blocks[i].ff2.bias, false);
 
-    register_tensor(&optimizer, trans_in.blocks[i].attn.K.weight);
-    register_tensor(&optimizer, trans_in.blocks[i].attn.K.bias);
-    register_tensor(&optimizer, trans_in.blocks[i].attn.Q.weight);
-    register_tensor(&optimizer, trans_in.blocks[i].attn.Q.bias);
-    register_tensor(&optimizer, trans_in.blocks[i].attn.V.weight);
-    register_tensor(&optimizer, trans_in.blocks[i].attn.V.bias);
-    register_tensor(&optimizer, trans_in.blocks[i].attn.O.weight);
-    register_tensor(&optimizer, trans_in.blocks[i].attn.O.bias);
+    register_tensor(&optimizer, trans_in.blocks[i].attn.K.weight, true);
+    register_tensor(&optimizer, trans_in.blocks[i].attn.K.bias, false);
+    register_tensor(&optimizer, trans_in.blocks[i].attn.Q.weight, true);
+    register_tensor(&optimizer, trans_in.blocks[i].attn.Q.bias, false);
+    register_tensor(&optimizer, trans_in.blocks[i].attn.V.weight, true);
+    register_tensor(&optimizer, trans_in.blocks[i].attn.V.bias, false);
+    register_tensor(&optimizer, trans_in.blocks[i].attn.O.weight, true);
+    register_tensor(&optimizer, trans_in.blocks[i].attn.O.bias, false);
     printf("transformer block = %zu\n", count_parameters(&optimizer) - params);
   }
 
   {
     size_t params0 = count_parameters(&optimizer);
-    register_tensor(&optimizer, trans_in.ln.gamma);
-    register_tensor(&optimizer, trans_in.ln.beta);
+    register_tensor(&optimizer, trans_in.ln.gamma, false);
+    register_tensor(&optimizer, trans_in.ln.beta, false);
     printf("final layerNorm = %zu\n", count_parameters(&optimizer) - params0);
   }
 
   size_t params = count_parameters(&optimizer);
+  printf("corpus size = %zu\n", corpus.n_recs);
   printf("tokens count = %d\n", sum_tokens);
   printf("total parameters = %zu\n", params);
   printf("chinchilla target = %zu tokens\n", 20*params);
-  printf("epochs to get there = %zu\n", 20*params / sum_tokens);
+  printf("epochs to get there = %zu\n", (20*params + sum_tokens - 1) / sum_tokens);
+  printf("steps per epoch = %zu\n", steps_per_epoch);
+  printf("batch size = %zu\n", batch_size);
   printf("ratio = %f tokens per parameter\n", sum_tokens / (float)params);
 
   rst_color();
@@ -666,6 +670,7 @@ int main(int argc, char* argv[]) {
   bool loaded = load_model(&trans_in);
   load_optimizer(&optimizer, "models/gentext2.adam", &epoch, &optimizer_steps);
 
+  char* prompt = "User: Write a horror story.";
   bool train = false;
 
   for (int i = 1; i < argc; i++) {
@@ -674,6 +679,11 @@ int main(int argc, char* argv[]) {
 
     if (strncmp(argv[i], "--epoch", 7) == 0) {
       sscanf(argv[i], "--epoch=%zu", &epoch);
+    }
+
+    if (strncmp(argv[i], "--prompt", 8) == 0) {
+      prompt = argv[i] + 9;
+      goto generate_text;
     }
   }
 
@@ -690,7 +700,12 @@ int main(int argc, char* argv[]) {
   printf(" Start training\n");
   rst_color();
 
-  optimizer.learning_rate = cosine_learning_rate(epoch, warmup_epochs*steps_per_epoch, total_epochs*steps_per_epoch, peak_lr);
+  optimizer.learning_rate = cosine_learning_rate(
+      epoch,
+      warmup_epochs*steps_per_epoch,
+      total_epochs*steps_per_epoch,
+      peak_lr
+  );
 
   for (size_t i = 0; i < corpus.n_recs; i++)
     array_append(&start_indices, i);
@@ -698,7 +713,6 @@ int main(int argc, char* argv[]) {
 
   size_t cursor = 0;
 
-  const char* prompt = "User: Find the most important takeaway from the following article.\n\nAn article published by the International Journal of Environmental Research and Public Health found that air pollution levels have been found to have measurable effect on mental health, with people living in more polluted areas having poorer mental health outcomes.";
   {
     size_t saved = SAVE(&arena.alloc);
     set_dropout(&trans_in, 0.0f);
@@ -791,28 +805,43 @@ int main(int argc, char* argv[]) {
     }
 
     mat_zero(mat_row(trans_in.tok_emb.grad, 0));
-    update_grads_adam(&optimizer);
+    update_grads_adam(&optimizer, 1.0f / (float)token_count);
 
     // cosine annealing
-    optimizer.learning_rate = cosine_learning_rate(optimizer_steps, warmup_epochs*steps_per_epoch, total_epochs*steps_per_epoch, peak_lr);
+    optimizer.learning_rate = cosine_learning_rate(
+        optimizer_steps,
+        warmup_epochs*steps_per_epoch,
+        total_epochs*steps_per_epoch,
+        peak_lr
+    );
 
     float loss = loss_sum / token_count;
 
     set_color(0, 255, 0);
     print_timestamp();
     printf(" epoch=%zu/%zu opt=%zu/%zu lr=%f loss=%f perp=%f\n",
-        epoch, total_epochs, optimizer_steps, total_epochs*steps_per_epoch,
+        epoch+1, total_epochs, optimizer_steps, total_epochs*steps_per_epoch,
         optimizer.learning_rate, loss, expf(loss));
     rst_color();
 
     optimizer_steps += 1;
+
+    if (optimizer_steps % 10 == 0) {
+      save_model(&trans_in);
+      save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps);
+
+      size_t saved = SAVE(&arena.alloc);
+      set_dropout(&trans_in, 0.0f);
+      generate_text(&arena, &trans_in, prompt, &tokens);
+      RESTORE(&arena.alloc, saved);
+    }
   }
 
   save_model(&trans_in);
   save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps);
 
 generate_text:
-  generate_text(&arena, &trans_in, "the desert", &tokens);
+  generate_text(&arena, &trans_in, prompt, &tokens);
 
   return 0;
 }

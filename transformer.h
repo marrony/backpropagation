@@ -973,7 +973,15 @@ void transformer_forward(
   );
 
   // logits = out_ln*hW + bW
+  //
   // logits = out_ln*tok_embs^T + bW (tied embeddings)
+  //
+  // What it means geometrically
+  //
+  // Under tying, the logit for token v is out_ln[i] · E[v].
+  // So the model's last-layer job becomes:
+  //
+  // >> produce a hidden vector that points at the next token's embedding.
   project(
       .out = out->logits.value,
       .x   = out->ln.out,
