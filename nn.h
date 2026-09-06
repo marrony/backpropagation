@@ -93,6 +93,14 @@ float random_normal(float mean, float stddev) {
   return mean + stddev * (u * s);
 }
 
+bool mats_overlap(NMatrix x, NMatrix y) {
+  const float *x0 = x.elems;
+  const float *x1 = x.elems + (size_t)(x.rows - 1) * x.stride + x.cols;
+  const float *y0 = y.elems;
+  const float *y1 = y.elems + (size_t)(y.rows - 1) * y.stride + y.cols;
+  return x0 < y1 && y0 < x1;
+}
+
 NMatrix mat_alloc(int rows, int cols) {
   return (NMatrix) {
     .elems = malloc(sizeof(float) * rows * cols),
@@ -366,6 +374,145 @@ void mat_sum_row(NMatrix dst, NMatrix src) {
   }
 }
 
+/* ---------------------------------------------------------------------------
+ * GEMM cores.  Naming follows BLAS: N = normal, T = transposed.
+ *
+ *   gemm_nn   dst[i][j] = Σ_k a[i][k]·b[k][j]     a[M,K]  b[K,N]  dst[M,N]
+ *   gemm_tn   dst[i][j] = Σ_k a[k][i]·b[k][j]     a[K,M]  b[K,N]  dst[M,N]
+ *   gemm_nt   dst[i][j] = Σ_q a[i][q]·b[j][q]     a[P,Q]  b[R,Q]  dst[P,R]
+ *
+ * Loop order is chosen so the innermost loop walks memory contiguously. That
+ * decides where the accumulator lives, which decides how `acc` is honoured:
+ *
+ *   contraction index OUTER  -> accumulator is memory -> seed dst, then +=
+ *   contraction index INNER  -> accumulator is a register -> assign at the end
+ *
+ * `bias` (length dst.cols, or NULL) seeds the accumulator, so `dst = a·b + bias`
+ * costs nothing extra. Only meaningful with acc == false.
+ *
+ * `restrict` asserts dst does not overlap a or b. Violating it is UB, not a
+ * slowdown -- see mats_overlap() in the debug asserts.
+ * ------------------------------------------------------------------------ */
+static inline void gemm_nn(NMatrix dst, NMatrix a, NMatrix b,
+                           const float *bias, const bool acc) {
+  assert(dst.rows == a.rows && dst.cols == b.cols && a.cols == b.rows);
+  assert(dst.stride >= dst.cols && a.stride >= a.cols && b.stride >= b.cols);
+  assert(!(acc && bias));
+
+  const uint32_t M = dst.rows, N = dst.cols, K = a.cols;
+
+  for (uint32_t i = 0; i < M; i++) {
+    float       * restrict d  = dst.elems + (size_t)i * dst.stride;
+    const float * restrict ai = a.elems   + (size_t)i * a.stride;
+
+    if (!acc) {
+      for (uint32_t j = 0; j < N; j++) {
+        d[j] = bias ? bias[j] : 0.0f;
+      }
+    }
+
+    uint32_t k = 0;
+    for (; k + 4 <= K; k += 4) {
+      const float a0 = ai[k + 0], a1 = ai[k + 1];
+      const float a2 = ai[k + 2], a3 = ai[k + 3];
+      const float * restrict b0 = b.elems + (size_t)(k + 0) * b.stride;
+      const float * restrict b1 = b.elems + (size_t)(k + 1) * b.stride;
+      const float * restrict b2 = b.elems + (size_t)(k + 2) * b.stride;
+      const float * restrict b3 = b.elems + (size_t)(k + 3) * b.stride;
+
+      for (uint32_t j = 0; j < N; j++) {
+        d[j] += a0 * b0[j] + a1 * b1[j] + a2 * b2[j] + a3 * b3[j];
+      }
+    }
+    for (; k < K; k++) {
+      const float ak = ai[k];
+      const float * restrict bk = b.elems + (size_t)k * b.stride;
+      for (uint32_t j = 0; j < N; j++) {
+        d[j] += ak * bk[j];
+      }
+    }
+  }
+}
+
+static inline void gemm_tn(NMatrix dst, NMatrix a, NMatrix b, const bool acc) {
+  assert(dst.rows == a.cols && dst.cols == b.cols && a.rows == b.rows);
+  assert(dst.stride >= dst.cols && a.stride >= a.cols && b.stride >= b.cols);
+
+  const uint32_t M = dst.rows, N = dst.cols, K = a.rows;
+
+  if (!acc) {
+    mat_zero(dst);
+  }
+
+  /* k outermost: each step is a rank-1 update, so both inner reads are
+   * contiguous. b's row stays in L1 and is reused across all M. */
+  for (uint32_t k = 0; k < K; k++) {
+    const float * restrict ak = a.elems + (size_t)k * a.stride;  /* len M */
+    const float * restrict bk = b.elems + (size_t)k * b.stride;  /* len N */
+
+    for (uint32_t i = 0; i < M; i++) {
+      const float aki = ak[i];
+      float * restrict di = dst.elems + (size_t)i * dst.stride;
+
+      for (uint32_t j = 0; j < N; j++) {
+        di[j] += aki * bk[j];
+      }
+    }
+  }
+}
+
+static inline void gemm_nt(NMatrix dst, NMatrix a, NMatrix b,
+                           const float *bias, const bool acc) {
+  assert(dst.rows == a.rows && dst.cols == b.rows && a.cols == b.cols);
+  assert(dst.stride >= dst.cols && a.stride >= a.cols && b.stride >= b.cols);
+  assert(!(acc && bias));
+
+  const uint32_t P = dst.rows, R = dst.cols, Q = a.cols;
+
+  for (uint32_t i = 0; i < P; i++) {
+    const float * restrict ai = a.elems   + (size_t)i * a.stride;
+    float       * restrict di = dst.elems + (size_t)i * dst.stride;
+
+    uint32_t j = 0;
+    for (; j + 4 <= R; j += 4) {
+      const float * restrict b0 = b.elems + (size_t)(j + 0) * b.stride;
+      const float * restrict b1 = b.elems + (size_t)(j + 1) * b.stride;
+      const float * restrict b2 = b.elems + (size_t)(j + 2) * b.stride;
+      const float * restrict b3 = b.elems + (size_t)(j + 3) * b.stride;
+
+      float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
+      for (uint32_t q = 0; q < Q; q++) {
+        const float av = ai[q];
+        s0 += av * b0[q];
+        s1 += av * b1[q];
+        s2 += av * b2[q];
+        s3 += av * b3[q];
+      }
+
+      if (acc) {
+        di[j + 0] += s0;  di[j + 1] += s1;
+        di[j + 2] += s2;  di[j + 3] += s3;
+      } else if (bias) {
+        di[j + 0] = s0 + bias[j + 0];  di[j + 1] = s1 + bias[j + 1];
+        di[j + 2] = s2 + bias[j + 2];  di[j + 3] = s3 + bias[j + 3];
+      } else {
+        di[j + 0] = s0;  di[j + 1] = s1;
+        di[j + 2] = s2;  di[j + 3] = s3;
+      }
+    }
+    for (; j < R; j++) {
+      const float * restrict bj = b.elems + (size_t)j * b.stride;
+      float s = 0.0f;
+      for (uint32_t q = 0; q < Q; q++) {
+        s += ai[q] * bj[q];
+      }
+      if (acc)       { di[j] += s; }
+      else if (bias) { di[j]  = s + bias[j]; }
+      else           { di[j]  = s; }
+    }
+  }
+}
+
 /**
  * Matrix multiplication: dst = A × B
  * 
@@ -381,13 +528,11 @@ void mat_sum_row(NMatrix dst, NMatrix src) {
  * @param a      First matrix (a.rows × a.cols)
  * @param b      Second matrix (b.rows × b.cols) where b.rows = a.cols
  */
-
-#define ACCELERATE_NEW_LAPACK
-#define ACCELERATE_LAPACK_ILP64
-#include <Accelerate/Accelerate.h>
-
 void mat_mult(NMatrix dst, NMatrix a, NMatrix b) {
   ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.rows, a.cols, b.rows, b.cols);
+
+  assert(!mats_overlap(dst, a));
+  assert(!mats_overlap(dst, b));  
 
   // mat_zero(dst);
   // execute_kernel(
@@ -405,11 +550,15 @@ void mat_mult(NMatrix dst, NMatrix a, NMatrix b) {
   // cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, M, N, K,
   //     1.0f, a.elems, a.stride, b.elems, b.stride, 0.0f, dst.elems, dst.stride);
 
+#if 0
   for (uint32_t i = 0; i < dst.rows; i++) {
     for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = mat_dot_row_col(a, b, i, j);
     }
   }
+#else
+  gemm_nn(dst, a, b, NULL, false);
+#endif
 }
 
 // // For C = A^T * B
@@ -422,6 +571,9 @@ void mat_mult(NMatrix dst, NMatrix a, NMatrix b) {
 
 void mat_mult_acc(NMatrix dst, NMatrix a, NMatrix b) {
   ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.rows, a.cols, b.rows, b.cols);
+
+  assert(!mats_overlap(dst, a));
+  assert(!mats_overlap(dst, b));
 
   // execute_kernel(
   //     commands,
@@ -438,11 +590,15 @@ void mat_mult_acc(NMatrix dst, NMatrix a, NMatrix b) {
   // cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, M, N, K,
   //     1.0f, a.elems, a.stride, b.elems, b.stride, 1.0f, dst.elems, dst.stride);
 
+#if 0
   for (uint32_t i = 0; i < dst.rows; i++) {
     for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) += mat_dot_row_col(a, b, i, j);
     }
   }
+#else
+  gemm_nn(dst, a, b, NULL, true);
+#endif
 }
 
 /**
@@ -463,6 +619,9 @@ void mat_mult_acc(NMatrix dst, NMatrix a, NMatrix b) {
 void mat_mult_A_and_B_transposed(NMatrix dst, NMatrix a, NMatrix b) {
   ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.rows, a.cols, b.cols, b.rows);
 
+  assert(!mats_overlap(dst, a));
+  assert(!mats_overlap(dst, b));
+
   // mat_zero(dst);
   // execute_kernel(
   //     commands,
@@ -471,15 +630,22 @@ void mat_mult_A_and_B_transposed(NMatrix dst, NMatrix a, NMatrix b) {
   //     false, true
   // );
 
+#if 0
   for (uint32_t i = 0; i < dst.rows; i++) {
     for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = mat_dot_row_row(a, b, i, j);
     }
   }
+#else
+  gemm_nt(dst, a, b, NULL, false);
+#endif
 }
 
 void mat_mult_A_and_B_transposed_acc(NMatrix dst, NMatrix a, NMatrix b) {
   ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.rows, a.cols, b.cols, b.rows);
+
+  assert(!mats_overlap(dst, a));
+  assert(!mats_overlap(dst, b));
 
   // execute_kernel(
   //     commands,
@@ -488,11 +654,15 @@ void mat_mult_A_and_B_transposed_acc(NMatrix dst, NMatrix a, NMatrix b) {
   //     false, true
   // );
 
+#if 0
   for (uint32_t i = 0; i < dst.rows; i++) {
     for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) += mat_dot_row_row(a, b, i, j);
     }
   }
+#else
+  gemm_nt(dst, a, b, NULL, true);
+#endif
 }
 
 /**
@@ -540,6 +710,9 @@ void mat_mult_A_and_B_transposed_add_C(NMatrix dst, NMatrix a, NMatrix b, NMatri
 void mat_mult_A_transposed_and_B(NMatrix dst, NMatrix a, NMatrix b) {
   ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.cols, a.rows, b.rows, b.cols);
 
+  assert(!mats_overlap(dst, a));
+  assert(!mats_overlap(dst, b));
+
   // mat_zero(dst);
   // execute_kernel(
   //     commands,
@@ -548,15 +721,22 @@ void mat_mult_A_transposed_and_B(NMatrix dst, NMatrix a, NMatrix b) {
   //     true, false
   // );
 
+#if 0
   for (uint32_t i = 0; i < dst.rows; i++) {
     for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) = mat_dot_col_col(a, b, i, j);
     }
   }
+#else
+  gemm_tn(dst, a, b, false);
+#endif
 }
 
 void mat_mult_A_transposed_and_B_acc(NMatrix dst, NMatrix a, NMatrix b) {
   ASSERT_MATRIX_MULT(dst.rows, dst.cols, a.cols, a.rows, b.rows, b.cols);
+
+  assert(!mats_overlap(dst, a));
+  assert(!mats_overlap(dst, b));
 
   // execute_kernel(
   //     commands,
@@ -565,11 +745,15 @@ void mat_mult_A_transposed_and_B_acc(NMatrix dst, NMatrix a, NMatrix b) {
   //     true, false
   // );
 
+#if 0
   for (uint32_t i = 0; i < dst.rows; i++) {
     for (uint32_t j = 0; j < dst.cols; j++) {
       MAT_AT(dst, i, j) += mat_dot_col_col(a, b, i, j);
     }
   }
+#else
+  gemm_tn(dst, a, b, true);
+#endif
 }
 
 /**

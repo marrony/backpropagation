@@ -1136,7 +1136,8 @@ void update_grads_sgd(Optimizer* optimizer, size_t batch_size) {
 //   - (old_weight * optimizer->learning_rate * wd)
 //   - (adapt_lr * m_hat);
 //
-// Set decay = true on Q/K/V/O, the FF matrices, and the embedding table; false on LN gains and all biases.
+// Set decay = true on Q/K/V/O, the FF matrices, and the embedding table;
+// false on LN gains and all biases.
 
 void update_grads_adam(Optimizer* optimizer, float scale) {
   float eps = 1e-7f;

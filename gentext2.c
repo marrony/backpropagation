@@ -255,7 +255,8 @@ void save_model(Transformer* trans_in) {
   mat_write(trans_in->tok_emb.value, fp);
   mat_write(trans_in->ln.gamma.value, fp);
   mat_write(trans_in->ln.beta.value, fp);
-  mat_write(trans_in->H.weight.value, fp);
+  if (!trans_in->tie_embeddings)
+    mat_write(trans_in->H.weight.value, fp);
   mat_write(trans_in->H.bias.value, fp);
 
   fwrite(&trans_in->num_blocks, sizeof(size_t), 1, fp);
@@ -289,7 +290,8 @@ bool load_model(Transformer* trans_in) {
   mat_read(trans_in->tok_emb.value, fp);
   mat_read(trans_in->ln.gamma.value, fp);
   mat_read(trans_in->ln.beta.value, fp);
-  mat_read(trans_in->H.weight.value, fp);
+  if (!trans_in->tie_embeddings)
+    mat_read(trans_in->H.weight.value, fp);
   mat_read(trans_in->H.bias.value, fp);
 
   fread(&trans_in->num_blocks, sizeof(size_t), 1, fp);
@@ -518,6 +520,25 @@ const int32_t *example(const Corpus *c, size_t i, int *prompt_len, int *total_le
   return c->ids + r.offset;
 }
 
+float logits_std(NMatrix logits) {
+  float acc = 0.0;
+  for (uint32_t i = 0; i < logits.rows; i++) {
+    double mean = 0.0;
+    for (uint32_t v = 0; v < logits.cols; v++) {
+        mean += MAT_AT(logits, i, v);
+    }
+    mean /= logits.cols;
+
+    float var = 0.0;
+    for (uint32_t v = 0; v < logits.cols; v++) {
+        float d = MAT_AT(logits, i, v) - mean;
+        var += d * d;
+    }
+    acc += sqrtf(var / logits.cols);
+  }
+  return acc / logits.rows;
+}
+
 int main(int argc, char* argv[]) {
   srand(getpid());
 
@@ -541,10 +562,8 @@ int main(int argc, char* argv[]) {
 
   Corpus corpus = corpus_load("distill/cdata/train.ids.bin", "distill/cdata/train.index.bin");
 
-  int32_t sum_tokens = 0;
-  int32_t max_len = 0;
+  size_t sum_tokens = 0;
   for (size_t i = 0; i < corpus.n_recs; ++i) {
-      max_len = MAX(max_len, corpus.recs[i].total_len);
       sum_tokens += corpus.recs[i].total_len;
   }
 
@@ -565,6 +584,7 @@ int main(int argc, char* argv[]) {
   //
   //   printf("\n");
   // }
+  // return 0;
 
   size_t D = 64;
   size_t H = 4; //headDim = D / H;
@@ -572,7 +592,7 @@ int main(int argc, char* argv[]) {
   size_t V = MAX_VOCAB;
   size_t num_blocks = 4;
 
-  float peak_lr = 0.02f;
+  float peak_lr = 1e-3;
   size_t batch_size = 8;
   size_t steps_per_epoch = corpus.n_recs / batch_size;
   size_t total_epochs = 4;
@@ -595,6 +615,7 @@ int main(int argc, char* argv[]) {
   init_transformer(
       .alloc = &arena.alloc,
       .trans = &trans_in,
+      .tie_embeddings = true,
       .num_blocks = num_blocks,
       .heads_count = H,
       .vocab_size = V,
@@ -610,7 +631,8 @@ int main(int argc, char* argv[]) {
   }
   {
     size_t params1 = count_parameters(&optimizer);
-    register_tensor(&optimizer, trans_in.H.weight, true);
+    if (!trans_in.tie_embeddings)
+      register_tensor(&optimizer, trans_in.H.weight, true);
     printf("output head = %zu\n", count_parameters(&optimizer) - params1);
     size_t params2 = count_parameters(&optimizer);
     register_tensor(&optimizer, trans_in.H.bias, false);
@@ -649,7 +671,7 @@ int main(int argc, char* argv[]) {
 
   size_t params = count_parameters(&optimizer);
   printf("corpus size = %zu\n", corpus.n_recs);
-  printf("tokens count = %d\n", sum_tokens);
+  printf("tokens count = %zu\n", sum_tokens);
   printf("total parameters = %zu\n", params);
   printf("chinchilla target = %zu tokens\n", 20*params);
   printf("epochs to get there = %zu\n", (20*params + sum_tokens - 1) / sum_tokens);
@@ -713,12 +735,12 @@ int main(int argc, char* argv[]) {
 
   size_t cursor = 0;
 
-  {
-    size_t saved = SAVE(&arena.alloc);
-    set_dropout(&trans_in, 0.0f);
-    generate_text(&arena, &trans_in, prompt, &tokens);
-    RESTORE(&arena.alloc, saved);
-  }
+  // {
+  //   size_t saved = SAVE(&arena.alloc);
+  //   set_dropout(&trans_in, 0.0f);
+  //   generate_text(&arena, &trans_in, prompt, &tokens);
+  //   RESTORE(&arena.alloc, saved);
+  // }
 
   while (epoch < total_epochs) {
     float loss_sum = 0;
@@ -726,6 +748,8 @@ int main(int argc, char* argv[]) {
 
     set_dropout(&trans_in, dropout_pct);
     mat_zero(mat_row(trans_in.tok_emb.value, 0));
+
+    size_t tokens_count = 0;
 
     for (size_t sample = 0; sample < batch_size; sample++) {
       size_t saved = SAVE(&arena.alloc);
@@ -769,6 +793,8 @@ int main(int argc, char* argv[]) {
 
       size_t N = tokens.count;
 
+      tokens_count += total_len;
+
       Transformer_Output trans_out = {0};
       init_transformer_output(
           .arena = &arena,
@@ -782,6 +808,55 @@ int main(int argc, char* argv[]) {
       );
 
       transformer_forward(tokens, &trans_out, &trans_in, 1.0f, 0);
+
+      if (optimizer_steps == 0) {
+        set_color(0, 0, 255);
+        printf("std(logits) = %.4f  (target ~0.11)\n", logits_std(trans_out.logits.value));
+        rst_color();
+
+        NMatrix x = trans_out.ln.out.value;     /* whatever the head reads */
+        double n2 = 0.0;
+        for (uint32_t d = 0; d < x.cols; d++) {
+            double t = MAT_AT(x, 0, d);
+            n2 += t * t;
+        }
+        printf("||x[0]|| = %.4f  (expect %.4f)   gamma[0]=%.3f beta[0]=%.3f\n",
+               sqrt(n2), sqrt((double)x.cols),
+               VEC_AT(trans_in.ln.gamma.value, 0), VEC_AT(trans_in.ln.beta.value, 0));        
+      }
+
+      if (optimizer_steps == 0) {
+          NMatrix z = trans_out.logits.value;
+          int zero_rows = 0;
+          double lo = 1e9, hi = -1e9;
+          for (uint32_t i = 0; i < z.rows; i++) {
+              double mean = 0.0;
+              for (uint32_t d = 0; d < z.cols; d++) mean += MAT_AT(z, i, d);
+              mean /= z.cols;
+              double var = 0.0;
+              for (uint32_t d = 0; d < z.cols; d++) {
+                  double t = MAT_AT(z, i, d) - mean; var += t * t;
+              }
+              double s = sqrt(var / z.cols);
+              if (s < 0.01) zero_rows++;
+              if (s < lo) lo = s;
+              if (s > hi) hi = s;
+          }
+          printf("N=%zu rows=%u  row_std range [%.4f, %.4f]  zero_rows=%d\n",
+                 N, z.rows, lo, hi, zero_rows);
+      }
+
+      if (optimizer_steps == 0) {
+          NMatrix x = trans_out.ln.out.value;
+          uint32_t rows[3] = { 0, x.rows/2, x.rows-1 };
+          for (int k = 0; k < 3; k++) {
+              double n2 = 0.0;
+              for (uint32_t d = 0; d < x.cols; d++) {
+                  double t = MAT_AT(x, rows[k], d); n2 += t*t;
+              }
+              printf("||x[%u]|| = %.4f\n", rows[k], sqrt(n2));
+          }
+      }
 
       // dLoss/dlogits = softmax(logits) - onehot(target).
       NMatrix dlogits = trans_out.logits.grad;
@@ -819,9 +894,9 @@ int main(int argc, char* argv[]) {
 
     set_color(0, 255, 0);
     print_timestamp();
-    printf(" epoch=%zu/%zu opt=%zu/%zu lr=%f loss=%f perp=%f\n",
+    printf(" epoch=%zu/%zu opt=%zu/%zu lr=%f loss=%f perp=%f tokens=%zu\n",
         epoch+1, total_epochs, optimizer_steps, total_epochs*steps_per_epoch,
-        optimizer.learning_rate, loss, expf(loss));
+        optimizer.learning_rate, loss, expf(loss), tokens_count);
     rst_color();
 
     optimizer_steps += 1;

@@ -245,6 +245,7 @@ struct Project_Forward_Opts {
   Tensor x;
   Tensor W;
   Tensor b;
+  bool transpose_w;
 };
 
 struct Project_Backward_Opts {
@@ -252,6 +253,7 @@ struct Project_Backward_Opts {
   Tensor W;
   Tensor b;
   NMatrix dout;
+  bool transpose_w;
 };
 
 #define project(...) project_opts((struct Project_Forward_Opts){ __VA_ARGS__ })
@@ -264,18 +266,18 @@ void project_opts(struct Project_Forward_Opts opts) {
   NMatrix W = opts.W.value;
   NMatrix b = opts.b.value;
 
-  ASSERT_MATRIX_MULT(out.rows, out.cols, x.rows, x.cols, W.rows, W.cols);
-
-  for (uint32_t i = 0; i < out.rows; i++) {
-    for (uint32_t j = 0; j < out.cols; j++) {
-      MAT_AT(out, i, j) = mat_dot_row_col(x, W, i, j) + MAT_AT(b, 0, j);
-    }
+  if (opts.transpose_w) {
+    // dst = x * W^T + b
+    ASSERT_MATRIX_MULT(out.rows, out.cols, x.rows, x.cols, W.cols, W.rows);
+    gemm_nt(out, x, W, b.elems, false);
+  } else {
+    // dst = x * W + b
+    ASSERT_MATRIX_MULT(out.rows, out.cols, x.rows, x.cols, W.rows, W.cols);
+    gemm_nn(out, x, W, b.elems, false);
   }
 }
 
 void dproject_opts(struct Project_Backward_Opts opts) {
-  // out = x*W + b
-
   NMatrix dout = opts.dout;
 
   // db += dout
@@ -283,15 +285,32 @@ void dproject_opts(struct Project_Backward_Opts opts) {
   for (uint32_t i = 0; i < dout.rows; i++)
     mat_add(db, db, mat_row(dout, i));
 
-  // dW += x^T * dout
-  NMatrix x = opts.x.value;
-  NMatrix dW = opts.W.grad;
-  mat_mult_A_transposed_and_B_acc(dW, x, dout);
+  if (opts.transpose_w) {
+    // out = x*W^T + b
+    //
+    // dW^T += x^T * dout
+    // dW += (x^T * dout)^T = dout^T * x
+    NMatrix x = opts.x.value;
+    NMatrix dW = opts.W.grad;
+    mat_mult_A_transposed_and_B_acc(dW, dout, x);
 
-  // dx += dout * W^T
-  NMatrix dx = opts.x.grad;
-  NMatrix W = opts.W.value;
-  mat_mult_A_and_B_transposed_acc(dx, dout, W);
+    // dx += dout * (W^T)^T = dout * W
+    NMatrix dx = opts.x.grad;
+    NMatrix W = opts.W.value;
+    mat_mult_acc(dx, dout, W);
+  } else {
+    // out = x*W + b
+
+    // dW += x^T * dout
+    NMatrix x = opts.x.value;
+    NMatrix dW = opts.W.grad;
+    mat_mult_A_transposed_and_B_acc(dW, x, dout);
+
+    // dx += dout * W^T
+    NMatrix dx = opts.x.grad;
+    NMatrix W = opts.W.value;
+    mat_mult_A_and_B_transposed_acc(dx, dout, W);
+  }
 }
 
 // linear2(dropout(relu_out))
@@ -824,6 +843,7 @@ typedef struct {
   float x0_p;
 
   // configs
+  bool tie_embeddings;
   size_t vocab_size;
   size_t heads_count;
   size_t emb_size;
@@ -847,6 +867,7 @@ typedef struct {
 struct Init_Transformer_Opts {
   Allocator* alloc;
   Transformer* trans;
+  bool tie_embeddings;
   size_t num_blocks;
   size_t vocab_size;
   size_t heads_count;
@@ -875,6 +896,7 @@ void init_transformer_opts(struct Init_Transformer_Opts opts) {
   size_t D = opts.emb_size;
   size_t F = opts.ff_size;
 
+  trans->tie_embeddings = opts.tie_embeddings;
   trans->vocab_size = opts.vocab_size;
   trans->heads_count = opts.heads_count;
   trans->emb_size = opts.emb_size;
@@ -985,8 +1007,9 @@ void transformer_forward(
   project(
       .out = out->logits.value,
       .x   = out->ln.out,
-      .W   = in->H.weight,
+      .W   = in->tie_embeddings ? in->tok_emb : in->H.weight,
       .b   = in->H.bias,
+      .transpose_w = in->tie_embeddings,
   );
 
   // probs = softmax(logits)
@@ -1007,9 +1030,10 @@ void transformer_backward(
   // dout_ln += dlogits * hW^T
   dproject(
       .x    = out->ln.out,
-      .W    = in->H.weight,
+      .W    = in->tie_embeddings ? in->tok_emb : in->H.weight,
       .b    = in->H.bias,
       .dout = dlogits,
+      .transpose_w = in->tie_embeddings,
   );
 
   // out_ln = norm(x2)
