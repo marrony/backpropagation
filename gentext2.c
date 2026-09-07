@@ -333,8 +333,6 @@ void generate_text(
   const char* prompt,
   TokenID_Array* tokens
 ) {
-  // size_t C = trans_in->context_size;
-
   tokens->count = 0;
   tokenize(
       tokens,
@@ -373,13 +371,13 @@ void generate_text(
     // 1.0 = normal
     // 1.5 = creative
     // 3.0 = nonsensical
-    transformer_forward(*tokens, &trans_out, trans_in, 1.0f, 0);
+    transformer_forward(*tokens, &trans_out, trans_in, 1.01f, 0);
 
     NMatrix last_token = mat_row(trans_out.probs, N - 1);
 
-    int32_t next = mat_row_argmax(last_token);
+    // int32_t next = mat_row_argmax(last_token);
     // int32_t next = sample(last_token);
-    // int32_t next = sample_topp(arena, last_token, 0.9f);
+    int32_t next = sample_topp(arena, last_token, 0.9f);
 
     if (next == '\r') next = '\n';
 
@@ -755,7 +753,7 @@ int main(int argc, char* argv[]) {
   bool loaded = load_model(&trans_in);
   load_optimizer(&optimizer, "models/gentext2.adam", &epoch, &optimizer_steps);
 
-  char* prompt = "User: Write a horror story.";
+  char* prompt = "User: What is data science?\nAssistant: ";
   bool train = false;
 
   for (int i = 1; i < argc; i++) {
@@ -798,13 +796,14 @@ int main(int argc, char* argv[]) {
 
   size_t cursor = 0;
 
-  // {
-  //   size_t saved = SAVE(&arena.alloc);
-  //   set_dropout(&trans_in, 0.0f);
-  //   generate_text(&arena, &trans_in, prompt, &tokens);
-  //   RESTORE(&arena.alloc, saved);
-  // }
+  {
+    size_t saved = SAVE(&arena.alloc);
+    set_dropout(&trans_in, 0.0f);
+    generate_text(&arena, &trans_in, prompt, &tokens);
+    RESTORE(&arena.alloc, saved);
+  }
 
+  printf("%zu=%zu\n", epoch+1, total_epochs);
   while (epoch < total_epochs) {
     float loss_sum = 0;
     size_t token_count = 0;
@@ -966,7 +965,7 @@ int main(int argc, char* argv[]) {
 
     if (optimizer_steps % 50 == 0) {
       save_model(&trans_in);
-      save_optimizer(&optimizer, "models/gentext2.adam", epoch+1, optimizer_steps);
+      save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps);
 
       size_t saved = SAVE(&arena.alloc);
       set_dropout(&trans_in, 0.0f);

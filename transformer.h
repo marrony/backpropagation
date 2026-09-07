@@ -320,6 +320,8 @@ void dproject_opts(struct Project_Backward_Opts opts) {
 // x0 = dropout(tok_emb)
 
 void dropout_forward(NMatrix x, NMatrix mask, float p) {
+  if (p <= 0.0f) return;
+
   float m = 1 / (1 - p);
 
   for (uint32_t i = 0; i < x.rows; i++) {
@@ -330,7 +332,9 @@ void dropout_forward(NMatrix x, NMatrix mask, float p) {
   }
 }
 
-void dropout_backward(NMatrix dx, NMatrix mask) {
+void dropout_backward(NMatrix dx, NMatrix mask, float p) {
+  if (p <= 0.0f) return;
+
   for (uint32_t i = 0; i < dx.rows; i++) {
     for (uint32_t j = 0; j < dx.cols; j++) {
       float m = MAT_AT(mask, i, j);
@@ -466,7 +470,7 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
     NMatrix attn_weights = mat_row_as(attn_out->weights.value, h, N, N);
     softmax_by_row(attn_weights, scores, 1);
 
-    // dropout(attn_weights)
+    // mask = dropout(attn_weights)
 
     // attn_vals = attn_weitghs * V
     mat_mult(
@@ -624,7 +628,7 @@ void feed_forward_opts(struct Feed_Forward_Opts opts) {
   // relu_out = relu(ff1_out)
   relu(block_out->relu_out.value, block_out->ff1_out.value, 0.0f);
 
-  // dropout(relu_out)
+  // mask = dropout(relu_out)
 
   // ff2_out = relu_out*ff2W + ff2b
   project(
@@ -727,7 +731,7 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
       .token_offset = token_offset,
   );
 
-  // dropout(attn_out)
+  // mask = dropout(attn_out)
   dropout_forward(block_out->attn.out, block_out->attn.mask, block_in->attn.p);
 
   // x1 = x0 + attn_out
@@ -750,7 +754,7 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
       .out = block_out,
   );
 
-  // dropout(ff2_out)
+  // mask = dropout(ff2_out)
 
   // out = x1 + ff2_out
   mat_add(block_out->out.value, block_out->x1, block_out->ff2_out);
@@ -806,10 +810,10 @@ void block_backward_opts(struct Block_Backward_Opts opts) {
       .ln_out = &block_out->ln2,
   );
 
-  // dropout(attn_out)
+  // mask = dropout(attn_out)
   //
   // dattn_out = ddropout(attn_out)
-  dropout_backward(block_out->attn.out, block_out->attn.mask);
+  dropout_backward(x0.grad, block_out->attn.mask, block_in->attn.p);
 
   // attn_out = attention(ln1_out)
   //
@@ -970,7 +974,7 @@ void transformer_forward(
     );
   }
 
-  // dropout(x0)
+  // mask = dropout(x0)
   dropout_forward(out->x0.value, out->x0_mask, in->x0_p);
 
   Tensor x = out->x0;
@@ -1066,10 +1070,10 @@ void transformer_backward(
     x2 = x1;
   }
 
-  // dropout(x0)
+  // mask = dropout(x0)
   //
   // dx0 = ddropout(x0)
-  dropout_backward(out->x0.grad, out->x0_mask);
+  dropout_backward(out->x0.grad, out->x0_mask, in->x0_p);
 
   // x0 = tok_embs
   //

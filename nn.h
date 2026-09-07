@@ -1361,17 +1361,15 @@ void softmax_temperature(
   // 2. Compute the sum of exponentials (shifted)
   float sum_exp = 0;
   for (uint32_t j = 0; j < logits.cols; j++) {
-    float logit = VEC_AT(logits, j) * inv_t;
-    sum_exp += expf(logit - max_logit);
+    float e = expf(VEC_AT(logits, j) * inv_t - max_logit);
+    VEC_AT(probs, j) = e;
+    sum_exp += e;
   }
 
-  // 3. Calculate the log of the sum of exponentials
-  float log_sum_exp = max_logit + logf(sum_exp);
-
-  // 4. Calculate Forward Softmax Probabilities
+  // 3. Calculate Forward Softmax Probabilities
+  float inv_sum = 1.0f / sum_exp;
   for (uint32_t j = 0; j < logits.cols; j++) {
-    float logit = VEC_AT(logits, j) * inv_t - log_sum_exp;
-    VEC_AT(probs, j) = expf(logit);
+    VEC_AT(probs, j) *= inv_sum;
   }
 }
 
