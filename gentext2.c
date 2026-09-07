@@ -539,6 +539,67 @@ float logits_std(NMatrix logits) {
   return acc / logits.rows;
 }
 
+static float evaluate(Arena_Allocator* arena, Transformer *trans_in, Corpus *dev, size_t nrecs) {
+  const float saved_p = trans_in->x0_p;
+  set_dropout(trans_in, 0.0f);
+
+  double loss_sum = 0.0;
+  long   token_count = 0;
+
+  size_t saved = SAVE(&arena->alloc);
+
+  TokenID_Array tokens = ARRAY_CREATE(&arena->alloc);
+  TokenID_Array targets = ARRAY_CREATE(&arena->alloc);
+
+  for (size_t e = 0; e < nrecs; e++) {
+    int prompt_len, total_len;
+    const int32_t *ids = example(dev, e, &prompt_len, &total_len);
+
+    const int first = prompt_len - 1;
+    const int npos  = total_len - prompt_len;
+    if (npos <= 0) continue;
+
+    tokens.count = 0;
+    targets.count = 0;
+
+    for (int c = 0; c < total_len - 1; c++) {
+      array_append(&tokens, ids[c]);
+      array_append(&targets, ids[c+1]);
+    }
+
+    size_t saved = SAVE(&arena->alloc);
+
+    size_t N = tokens.count;
+
+    Transformer_Output trans_out = {0};
+    init_transformer_output(
+        .arena = arena,
+        .trans_out = &trans_out,
+        .num_blocks = trans_in->num_blocks,
+        .vocab_size = trans_in->vocab_size,
+        .heads_count = trans_in->heads_count,
+        .emb_size = trans_in->emb_size,
+        .ff_size = trans_in->ff_size,
+        .sequence_size = N,
+    );
+
+    transformer_forward(tokens, &trans_out, trans_in, 1.0f, 0);
+
+    for (size_t i = (size_t)first; i < N; i++) {
+      const int32_t target = targets.elems[i];
+      loss_sum -= log((double)MAT_AT(trans_out.probs, i, target) + 1e-10);
+      token_count++;
+    }
+
+    RESTORE(&arena->alloc, saved);
+  }
+
+  RESTORE(&arena->alloc, saved);
+
+  set_dropout(trans_in, saved_p);
+  return loss_sum / (double)token_count;
+}
+
 int main(int argc, char* argv[]) {
   srand(getpid());
 
@@ -561,6 +622,7 @@ int main(int argc, char* argv[]) {
   // prepare_data(&sequence);
 
   Corpus corpus = corpus_load("distill/cdata/train.ids.bin", "distill/cdata/train.index.bin");
+  Corpus corpus_dev = corpus_load("distill/cdata/dev.ids.bin", "distill/cdata/dev.index.bin");
 
   size_t sum_tokens = 0;
   for (size_t i = 0; i < corpus.n_recs; ++i) {
@@ -670,7 +732,8 @@ int main(int argc, char* argv[]) {
   }
 
   size_t params = count_parameters(&optimizer);
-  printf("corpus size = %zu\n", corpus.n_recs);
+  printf("corpus size (train) = %zu\n", corpus.n_recs);
+  printf("corpus size (dev)   = %zu\n", corpus_dev.n_recs);
   printf("tokens count = %zu\n", sum_tokens);
   printf("total parameters = %zu\n", params);
   printf("chinchilla target = %zu tokens\n", 20*params);
@@ -752,8 +815,6 @@ int main(int argc, char* argv[]) {
     size_t tokens_count = 0;
 
     for (size_t sample = 0; sample < batch_size; sample++) {
-      size_t saved = SAVE(&arena.alloc);
-
       if (cursor == start_indices.count) {
         // todo: increment epoch here
         shuffle_indices(start_indices);
@@ -795,87 +856,89 @@ int main(int argc, char* argv[]) {
 
       tokens_count += total_len;
 
-      Transformer_Output trans_out = {0};
-      init_transformer_output(
-          .arena = &arena,
-          .trans_out = &trans_out,
-          .num_blocks = trans_in.num_blocks,
-          .vocab_size = trans_in.vocab_size,
-          .heads_count = trans_in.heads_count,
-          .emb_size = trans_in.emb_size,
-          .ff_size = trans_in.ff_size,
-          .sequence_size = N,
-      );
+      size_t saved = SAVE(&arena.alloc);
+      {
+        Transformer_Output trans_out = {0};
+        init_transformer_output(
+            .arena = &arena,
+            .trans_out = &trans_out,
+            .num_blocks = trans_in.num_blocks,
+            .vocab_size = trans_in.vocab_size,
+            .heads_count = trans_in.heads_count,
+            .emb_size = trans_in.emb_size,
+            .ff_size = trans_in.ff_size,
+            .sequence_size = N,
+        );
 
-      transformer_forward(tokens, &trans_out, &trans_in, 1.0f, 0);
+        transformer_forward(tokens, &trans_out, &trans_in, 1.0f, 0);
 
-      if (optimizer_steps == 0) {
-        set_color(0, 0, 255);
-        printf("std(logits) = %.4f  (target ~0.11)\n", logits_std(trans_out.logits.value));
-        rst_color();
+        if (optimizer_steps == 0) {
+          set_color(0, 0, 255);
+          printf("std(logits) = %.4f  (target ~0.11)\n", logits_std(trans_out.logits.value));
+          rst_color();
 
-        NMatrix x = trans_out.ln.out.value;     /* whatever the head reads */
-        double n2 = 0.0;
-        for (uint32_t d = 0; d < x.cols; d++) {
-            double t = MAT_AT(x, 0, d);
-            n2 += t * t;
-        }
-        printf("||x[0]|| = %.4f  (expect %.4f)   gamma[0]=%.3f beta[0]=%.3f\n",
-               sqrt(n2), sqrt((double)x.cols),
-               VEC_AT(trans_in.ln.gamma.value, 0), VEC_AT(trans_in.ln.beta.value, 0));        
-      }
-
-      if (optimizer_steps == 0) {
-          NMatrix z = trans_out.logits.value;
-          int zero_rows = 0;
-          double lo = 1e9, hi = -1e9;
-          for (uint32_t i = 0; i < z.rows; i++) {
-              double mean = 0.0;
-              for (uint32_t d = 0; d < z.cols; d++) mean += MAT_AT(z, i, d);
-              mean /= z.cols;
-              double var = 0.0;
-              for (uint32_t d = 0; d < z.cols; d++) {
-                  double t = MAT_AT(z, i, d) - mean; var += t * t;
-              }
-              double s = sqrt(var / z.cols);
-              if (s < 0.01) zero_rows++;
-              if (s < lo) lo = s;
-              if (s > hi) hi = s;
+          NMatrix x = trans_out.ln.out.value;     /* whatever the head reads */
+          double n2 = 0.0;
+          for (uint32_t d = 0; d < x.cols; d++) {
+              double t = MAT_AT(x, 0, d);
+              n2 += t * t;
           }
-          printf("N=%zu rows=%u  row_std range [%.4f, %.4f]  zero_rows=%d\n",
-                 N, z.rows, lo, hi, zero_rows);
-      }
-
-      if (optimizer_steps == 0) {
-          NMatrix x = trans_out.ln.out.value;
-          uint32_t rows[3] = { 0, x.rows/2, x.rows-1 };
-          for (int k = 0; k < 3; k++) {
-              double n2 = 0.0;
-              for (uint32_t d = 0; d < x.cols; d++) {
-                  double t = MAT_AT(x, rows[k], d); n2 += t*t;
-              }
-              printf("||x[%u]|| = %.4f\n", rows[k], sqrt(n2));
-          }
-      }
-
-      // dLoss/dlogits = softmax(logits) - onehot(target).
-      NMatrix dlogits = trans_out.logits.grad;
-      mat_copy(dlogits, trans_out.probs);
-
-      for (size_t i = 0; i < N; i++) {
-        int32_t target = targets.elems[i];
-
-        if (i >= (size_t)first) {
-          MAT_AT(dlogits, i, target) -= 1.0f;
-          loss_sum -= logf(MAT_AT(trans_out.probs, i, target) + 1e-10f);
-          token_count += 1;
-        } else {
-          mat_zero(mat_row(dlogits, i));
+          printf("||x[0]|| = %.4f  (expect %.4f)   gamma[0]=%.3f beta[0]=%.3f\n",
+                 sqrt(n2), sqrt((double)x.cols),
+                 VEC_AT(trans_in.ln.gamma.value, 0), VEC_AT(trans_in.ln.beta.value, 0));        
         }
+
+        if (optimizer_steps == 0) {
+            NMatrix z = trans_out.logits.value;
+            int zero_rows = 0;
+            double lo = 1e9, hi = -1e9;
+            for (uint32_t i = 0; i < z.rows; i++) {
+                double mean = 0.0;
+                for (uint32_t d = 0; d < z.cols; d++) mean += MAT_AT(z, i, d);
+                mean /= z.cols;
+                double var = 0.0;
+                for (uint32_t d = 0; d < z.cols; d++) {
+                    double t = MAT_AT(z, i, d) - mean; var += t * t;
+                }
+                double s = sqrt(var / z.cols);
+                if (s < 0.01) zero_rows++;
+                if (s < lo) lo = s;
+                if (s > hi) hi = s;
+            }
+            printf("N=%zu rows=%u  row_std range [%.4f, %.4f]  zero_rows=%d\n",
+                   N, z.rows, lo, hi, zero_rows);
+        }
+
+        if (optimizer_steps == 0) {
+            NMatrix x = trans_out.ln.out.value;
+            uint32_t rows[3] = { 0, x.rows/2, x.rows-1 };
+            for (int k = 0; k < 3; k++) {
+                double n2 = 0.0;
+                for (uint32_t d = 0; d < x.cols; d++) {
+                    double t = MAT_AT(x, rows[k], d); n2 += t*t;
+                }
+                printf("||x[%u]|| = %.4f\n", rows[k], sqrt(n2));
+            }
+        }
+
+        // dLoss/dlogits = softmax(logits) - onehot(target).
+        NMatrix dlogits = trans_out.logits.grad;
+        mat_copy(dlogits, trans_out.probs);
+
+        for (size_t i = 0; i < N; i++) {
+          int32_t target = targets.elems[i];
+
+          if (i >= (size_t)first) {
+            MAT_AT(dlogits, i, target) -= 1.0f;
+            loss_sum -= logf(MAT_AT(trans_out.probs, i, target) + 1e-10f);
+            token_count += 1;
+          } else {
+            mat_zero(mat_row(dlogits, i));
+          }
+        }
+
+        transformer_backward(tokens, &trans_out, &trans_in);
       }
-
-      transformer_backward(tokens, &trans_out, &trans_in);
-
       RESTORE(&arena.alloc, saved);
     }
 
@@ -901,14 +964,23 @@ int main(int argc, char* argv[]) {
 
     optimizer_steps += 1;
 
-    if (optimizer_steps % 10 == 0) {
+    if (optimizer_steps % 50 == 0) {
       save_model(&trans_in);
-      save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps);
+      save_optimizer(&optimizer, "models/gentext2.adam", epoch+1, optimizer_steps);
 
       size_t saved = SAVE(&arena.alloc);
       set_dropout(&trans_in, 0.0f);
       generate_text(&arena, &trans_in, prompt, &tokens);
       RESTORE(&arena.alloc, saved);
+    }
+
+    if (optimizer_steps % 1000 == 0) {
+      float dev = evaluate(&arena, &trans_in, &corpus_dev, corpus_dev.n_recs);
+
+      set_color(50, 50, 255);
+      printf("  eval opt=%zu  train=%.4f  dev=%.4f  gap=%+.4f\n",
+              optimizer_steps, loss, dev, dev - loss);
+      rst_color();
     }
   }
 

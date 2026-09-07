@@ -66,6 +66,7 @@ corpus:
 # 	uv run scripts/build_seqkd_data.py --split train
 
 export:
+	cd distill && rm -f cdata/*
 	cd distill && uv run scripts/export_seqkd_ids.py \
 		--jsonl data/seqkd_gold_dev.jsonl --out cdata \
 		--vocab-size 5120 --eos-id 256 --tokenizer-cmd '../bin/tokenizer'
