@@ -9,7 +9,16 @@
 #include "allocator.h"
 #include "tokenizer.h"
 
-#include "generated/vocab.h"
+#undef STR
+#undef STR0
+#define STR0(x) #x
+#define STR(x) STR0(x)
+
+#ifdef VOCAB_HEADER
+#include STR(VOCAB_HEADER)
+#else
+#error VOCAB_HEADER not defined
+#endif
 
 Malloc_Allocator mallocator = MALLOC_CREATE();
 

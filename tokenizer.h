@@ -1,6 +1,7 @@
 #ifndef TOKENIZER_H
 #define TOKENIZER_H
 
+#include <time.h>
 #include <pcre2.h>
 #include <ctype.h>
 #include <stdint.h>
@@ -89,7 +90,6 @@ typedef struct {
 
 DEFINE_ARRAY(Byte_Buffer);
 DEFINE_ARRAY_ALIAS(TokenID, int32_t);
-DEFINE_ARRAY_ALIAS(Dataset, TokenID_Array);
 
 Byte_Buffer alloc_pair(Allocator* alloc, Token_Pair pair) {
   Byte_Buffer buf = byte_buffer_filled(alloc, sizeof(Token_Pair), 0);
@@ -107,10 +107,10 @@ bool contains_space(Token* token) {
 #define PAD_TOKEN 0
 #define EOS_TOKEN 256
 
-bool pre_split(const char* text, Byte_Buffer_Array* array) {
+bool pre_split(Byte_Buffer text, Byte_Buffer_Array* array) {
   pcre2_code *re;
   PCRE2_SPTR pattern = (PCRE2_SPTR)"(?i:\'s|\'t|\'re|\'ve|\'m|\'ll|\'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s";
-  PCRE2_SPTR subject = (PCRE2_SPTR)text;
+  PCRE2_SPTR subject = (PCRE2_SPTR)text.cptr;
 
   int errornumber;
   PCRE2_SIZE erroroffset;
@@ -133,7 +133,7 @@ bool pre_split(const char* text, Byte_Buffer_Array* array) {
 
   pcre2_match_data *match_data = pcre2_match_data_create_from_pattern(re, NULL);
   PCRE2_SIZE *ovector;
-  size_t subject_length = strlen((char *)subject);
+  size_t subject_length = text.len;
   size_t start_offset = 0;
 
   // Loop to extract tokens matching the cl100k pattern (mimicking finditer)
@@ -171,42 +171,64 @@ bool pre_split(const char* text, Byte_Buffer_Array* array) {
   return true;
 }
 
-void calculate_histogram(Dataset_Array ids_list, int32_t* histogram, int32_t vocab_size) {
-  bool punctuation[256] = {0};
-  punctuation['.'] = true;
-  punctuation[','] = true;
-  punctuation['?'] = true;
-  punctuation['!'] = true;
-  punctuation[':'] = true;
-  punctuation[';'] = true;
-  punctuation['-'] = true;
-  punctuation['\''] = true;
-  punctuation['\"'] = true;
-  punctuation['('] = true;
-  punctuation[')'] = true;
-  punctuation['\r'] = true;
-  punctuation['\n'] = true;
+static inline bool countable(int32_t t0, int32_t t1) {
+  static bool punctuation[256] = {
+    ['.'] = true,
+    [','] = true,
+    ['?'] = true,
+    ['!'] = true,
+    [':'] = true,
+    [';'] = true,
+    ['-'] = true,
+    ['\''] = true,
+    ['\"'] = true,
+    ['('] = true,
+    [')'] = true,
+    ['\r'] = true,
+    ['\n'] = true,
+  };
 
-  for (size_t i = 0; i < ids_list.count; i++) {
-    TokenID_Array ids = ids_list.elems[i];
+  if (t0 == 0 || t1 == 0) { return false; }
+  if (t0 > 0 && t0 < 256 && punctuation[t0]) { return false; }
+  if (t1 > 0 && t1 < 256 && punctuation[t1]) { return false; }
+  return true;
+}
 
-    for (size_t j = 0; j < ids.count-1; j++) {
-      int32_t token0 = ids.elems[j + 0];
-      int32_t token1 = ids.elems[j + 1];
+void calculate_histogram(
+  TokenID_Array ids,
+  int32_t* histogram,
+  int32_t vocab_size
+) {
+  for (size_t i = 0; i < ids.count - 1; i++) {
+    int32_t token0 = ids.elems[i + 0];
+    int32_t token1 = ids.elems[i + 1];
 
-      if (token0 > 0 && token0 < 256 && punctuation[token0]) continue;
-      if (token1 > 0 && token1 < 256 && punctuation[token1]) continue;
+    if (!countable(token0, token1)) continue;
 
-      int32_t index = token0*vocab_size + token1;
-      histogram[index] += 1;
-    }
+    int32_t index = token0*vocab_size + token1;
+    histogram[index] += 1;
   }
 }
 
-void array_remove_ith(TokenID_Array* array, size_t ith) {
-  for (size_t i = ith; i < array->count-1; i++)
-    array->elems[i] = array->elems[i+1];
-  array->count -=1;
+int32_t find_max(int32_t* histogram, size_t vocab_size, Token_Pair* max_pair_out) {
+  int32_t max_count = 0;
+  size_t max_pair_index = 0;
+
+  for (size_t i = 0; i < vocab_size*vocab_size; i++) {
+    if (histogram[i] > max_count) {
+      max_count = histogram[i];
+      max_pair_index = i;
+    }
+  }
+
+  // max_pair.token0*max_vocab + max_pair.token1
+  // 2*3072 + 10 = 6154
+  // 2  = 6154 / 3072
+  // 10 = 6154 % 3072
+  max_pair_out->token0 = max_pair_index / vocab_size;
+  max_pair_out->token1 = max_pair_index % vocab_size;
+
+  return max_count;
 }
 
 void array_println(TokenID_Array array) {
@@ -216,39 +238,64 @@ void array_println(TokenID_Array array) {
   printf("]\n");
 }
 
-void merge_ids(Dataset_Array* ids_list, Token_Pair pair, int32_t new_token) {
-  for (size_t i = 0; i < ids_list->count; i++) {
-    TokenID_Array* ids = &ids_list->elems[i];
+void merge_ids(
+    TokenID_Array* ids_array,
+    Token_Pair pair,
+    int32_t c,
+    int32_t* histogram,
+    size_t max_vocab
+) {
+  int32_t a = pair.token0;
+  int32_t b = pair.token1;
+  int32_t* ids = ids_array->elems;
+  size_t n = ids_array->count;
+  size_t w = 0;
 
-    if (ids->count <= 1) continue;
-
-    for (size_t j = ids->count - 1; j > 0; j--) {
-      int32_t token0 = ids->elems[j-1];
-      int32_t token1 = ids->elems[j-0];
-
-      if (token0 == pair.token0 && token1 == pair.token1) {
-        array_remove_ith(ids, j);
-        ids->elems[j-1] = new_token;
+  for (size_t r = 0; r < n; ) {
+    if (r + 1 < n && ids[r] == a && ids[r + 1] == b) {
+      if (w > 0) {
+        int32_t left = ids[w - 1];
+        if (countable(left, a)) histogram[left*max_vocab + a] -= 1;
+        if (countable(left, c)) histogram[left*max_vocab + c] += 1;
       }
+
+      if (r + 2 < n) {
+        int32_t right = ids[r + 2];
+        if (countable(b, right)) histogram[b*max_vocab + right] -= 1;
+        if (countable(c, right)) histogram[c*max_vocab + right] += 1;
+      }
+
+      histogram[a*max_vocab + b] -= 1;
+      ids[w++] = c;
+      r += 2;
+    } else {
+      ids[w++] = ids[r++];
     }
   }
+  ids_array->count = w;
+}
+
+void print_timestamp(FILE* fp) {
+  time_t raw_time;
+  struct tm tm;
+  char buffer[128];
+
+  time(&raw_time);
+  localtime_r(&raw_time, &tm);
+  strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &tm);
+
+  fprintf(fp, "%s", buffer);
 }
 
 int32_t gen_vocabulary(
     Allocator* global,
-    const char* text[],
-    size_t text_len,
+    Byte_Buffer_Array text,
     Token* vocabulary,
-    int32_t max_vocab
+    size_t max_vocab
 ) {
   assert(max_vocab > 256);
 
-  size_t arena_size = max_vocab*max_vocab*sizeof(int32_t);
-
-  Arena_Allocator arena = ARENA_CREATE(global, 1*1024*1024 + arena_size);
-  Allocator* alloc = &arena.alloc;
-
-  int32_t vocabulary_count = 0;
+  size_t vocabulary_count = 0;
 
   Token token = {0};
 
@@ -270,72 +317,64 @@ int32_t gen_vocabulary(
   vocabulary[vocabulary_count] = token;
   vocabulary_count += 1;
 
-  Dataset_Array ids_list = ARRAY_CREATE(global);
+  TokenID_Array ids = ARRAY_CREATE(global);
   Byte_Buffer_Array words_array = ARRAY_CREATE(global);
 
-  for (size_t text_idx = 0; text_idx < text_len; text_idx++) {
+  for (size_t text_idx = 0; text_idx < text.count; text_idx++) {
+    Byte_Buffer str = text.elems[text_idx];
+
     words_array.count = 0;
 
-    if (!pre_split(text[text_idx], &words_array)) {
+    if (!pre_split(str, &words_array)) {
       return 0;
     }
 
     for (size_t word_idx = 0; word_idx < words_array.count; word_idx++) {
       Byte_Buffer word = words_array.elems[word_idx];
-      TokenID_Array tokens = ARRAY_CREATE(global);
 
       // convert bytes to token id
       for (size_t i = 0; i < word.len; i++) {
-        array_append(&tokens, vocabulary[word.ptr[i]].id);
+        array_append(&ids, vocabulary[word.ptr[i]].id);
       }
 
-      array_append(&ids_list, tokens);
+      array_append(&ids, 0);
     }
   }
 
-  size_t x = 256 + 1;
-  size_t num_merges = max_vocab - x;
+  size_t histogram_size = sizeof(int32_t)*max_vocab*max_vocab;
+  int32_t* histogram = ALLOC(global, histogram_size).void_ptr;
+  memset(histogram, 0, histogram_size);
 
-  for (size_t i = 0; i < num_merges; i++) {
-    size_t saved = SAVE(alloc);
+  // print_timestamp(stderr);
+  // fprintf(stderr, " creating histogram\n");
 
-    size_t histogram_size = sizeof(int32_t)*vocabulary_count*vocabulary_count;
-    int32_t* histogram = ALLOC(alloc, histogram_size).void_ptr;
-    memset(histogram, 0, histogram_size);
+  calculate_histogram(ids, histogram, max_vocab);
 
-    calculate_histogram(ids_list, histogram, vocabulary_count);
+  // print_timestamp(stderr);
+  // fprintf(stderr, " histogram created\n");
 
-    int32_t max_count = 0;
+  for (size_t c = 256+1; c < max_vocab; c++) {
+    // print_timestamp(stderr);
+    // fprintf(stderr, " finding max\n");
+
     Token_Pair max_pair = {0};
+    int32_t count = find_max(histogram, max_vocab, &max_pair);
 
-    for (int32_t token0 = 0; token0 < vocabulary_count; token0++) {
-      for (int32_t token1 = 0; token1 < vocabulary_count; token1++) {
-        int32_t index = token0*vocabulary_count + token1;
+    if (count <= 0) break;
 
-        if (histogram[index] > max_count) {
-          max_count = histogram[index];
-          max_pair.token0 = token0;
-          max_pair.token1 = token1;
-        }
-      }
-    }
-
-    if (max_count == 0) break;
-
-    int32_t new_token = i + x;
-    vocabulary[new_token].id = new_token;
-    strncpy(vocabulary[new_token].token, vocabulary[max_pair.token0].token, MAX_TOKEN);
-    strncat(vocabulary[new_token].token, vocabulary[max_pair.token1].token, MAX_TOKEN);
+    vocabulary[c].id = c;
+    snprintf(vocabulary[c].token, MAX_TOKEN, "%s%s",
+        vocabulary[max_pair.token0].token, vocabulary[max_pair.token1].token);
     vocabulary_count += 1;
 
-    merge_ids(&ids_list, max_pair, new_token);
+    // print_timestamp(stderr);
+    // fprintf(stderr, " merge ids, new token %zu\n", c);
+    merge_ids(&ids, max_pair, c, histogram, max_vocab);
 
-    RESTORE(alloc, saved);
+    assert(histogram[(size_t)max_pair.token0*max_vocab + max_pair.token1] == 0);
   }
 
   assert(vocabulary_count <= max_vocab);
-
-  ARENA_DESTROY(global, &arena);
 
   return vocabulary_count;
 }

@@ -1,31 +1,30 @@
+#include <stdlib.h>
 #define BYTEBUFFER_IMPLEMENTATION
 #define ALLOCATOR_IMPLEMENATION
 #define HASHMAP_IMPLMENTATION
 
 #include "tokenizer.h"
+#include "array.h"
 #include "bytebuffer.h"
 #include "allocator.h"
-#include "hashmap.h"
 
-#include "generated/alice.h"
+Malloc_Allocator mallocator = MALLOC_CREATE();
 
-const char *training_text[] = {
-  (const char*)alice_txt,
-  "the desert was silent except for the low, rhythmic hum of the wind sweeping across the dunes. for miles in every direction, nothing broke the horizon line but shifting sand and the occasional skeletal remains of ancient shrubs. evelyn checked her gps device, frowning at the uncoordinated coordinates flashing across the screen. the signal was dead. she had exactly two liters of water left, a compass that could not find true north, and six hours of daylight remaining before the temperature dropped below freezing.",
-  "the desert is a landscape of surprising contrasts and quiet resilience. during the day, the sun beats down relentlessly, turning the sand into a glowing sea of gold. cacti and deep-rooted shrubs stand as silent sentinels, conserving every drop of precious moisture in their thick stems. yet, as twilight approaches, the extreme heat yields to a crisp, cooling breeze. the sky shifts into a canvas of violet and deep indigo. nocturnal creatures, such as the kit fox and the rattlesnake, emerge from their underground burrows to hunt and forage, breathing vibrant life into the quiet night.",
-  "the desert was an oven of white heat that felt entirely unescapable. jackson tapped the cracked glass of his analog barometer, watching the needle fluctuate wildly against the glass. his satellite uplink to the desert research base had been dark for forty-eight hours, leaving him completely isolated. he rationed his final half-liter of water, scanning the shimmering horizon for any sign of shelter before the sub-zero desert night winds set in.",
-  "the roman empire was one of the most powerful and enduring civilizations in human history, fundamentally shaping the trajectory of the western world. beginning as a modest republic on the italian peninsula, it expanded rapidly through strategic military conquests and advanced engineering. roman legions established dominance across the mediterranean, bringing law, architecture, and commerce to diverse cultures. at its peak, the empire spanned from the rainy hills of britannia to the arid deserts of egypt. even after its eventual collapse, the architectural marvels, legal systems, and cultural innovations of rome continued to influence modern societies for centuries.",
-  "artificial intelligence has rapidly transformed from a theoretical concept into an everyday reality. machine learning algorithms now power everything from basic email filters to complex autonomous vehicles. by processing massive amounts of historical data, these systems can identify hidden patterns, make accurate predictions, and automate tedious tasks. however, this technological leap brings significant ethical challenges, including data privacy concerns and algorithmic bias. as these neural networks become increasingly sophisticated, developers face the crucial responsibility of ensuring transparency and fairness, so that these powerful digital tools ultimately benefit society as a whole.",
-  "baking the perfect loaf of artisan bread requires patience, precision, and a deep understanding of basic ingredients. the process begins with just four simple components: flour, water, salt, and yeast. when combined, these elements undergo a magical transformation. the yeast feeds on the natural sugars in the flour, releasing carbon dioxide that causes the dough to rise and develop a complex network of air pockets. kneading and resting the dough properly are essential steps that build gluten structure. finally, baking the dough in a scorching hot oven creates a beautiful, crispy crust while keeping the interior soft.",
-  "earth is a dynamic, ever-changing planet covered mostly by vast, interconnected oceans. beneath the water lies a complex topography of deep trenches, underwater mountain ranges, and expansive plains. these marine ecosystems are home to an astonishing variety of life, ranging from microscopic phytoplankton to massive whales. the oceans also play a critical role in regulating the global climate by absorbing massive amounts of carbon dioxide and distributing heat across the globe. despite their importance, these fragile aquatic environments are currently facing severe threats from pollution, overfishing, and rising water temperatures caused by climate change.",
-  "the powerful king ruled. this man wore gold. the wise queen ruled. this woman wore gold. the brave king led men. that man commanded troops. the brave queen led men. that woman commanded troops. the noble king signed laws. a man signed laws. the noble queen signed laws. a woman signed laws.",
-  "the young prince smiled. a happy boy smiled. the young princess smiled. a happy girl smiled. the small prince played. that young boy played. the small princess played. that young girl played. the royal prince learned. every smart boy learned. the royal princess learned. every smart girl learned.",
-  "the great lord feasted. his proud husband feasted. the great lady feasted. her proud wife feasted. the rich lord rested. this loyal husband rested. the rich lady rested. this loyal wife rested.",
-  "the loving father built homes. the young son built homes. the loving mother built homes. the young daughter built homes. the proud father worked hard. that brave son worked hard. the proud mother worked hard. that brave daughter worked hard. a kind father teaches youth. the elder son teaches youth. a kind mother teaches youth. the elder daughter teaches youth.",
-  "the strict chairman signed deals. that male executive signed deals. the strict chairwoman signed deals. that female executive signed deals. the smart chairman led teams. a top director led teams. the smart chairwoman led teams. a top director led teams.",
-  "the ancient god created life. this divine wizard created life. the ancient goddess created life. this divine witch created life. the powerful god cast spells. that cruel wizard cast spells. the powerful goddess cast spells. that cruel witch cast spells.",
-  "the heavy bull ate grass. that male rooster ate grass. the heavy cow ate grass. that female hen ate grass. the loud bull woke farmers. a fierce rooster woke farmers. the loud cow woke farmers. a fierce hen woke farmers.",
-};
+DEFINE_ARRAY_ALIAS(Byte, char);
+
+Byte_Array read_input(Allocator* alloc, FILE* input) {
+  Byte_Array buff =  ARRAY_CREATE(alloc);
+
+  array_ensure(&buff, 10*1024);
+
+  while (true) {
+    int ch = fgetc(input);
+    if (ch == EOF) return buff;
+    array_append(&buff, (char)ch);
+  }
+
+  return buff;
+}
 
 int comp_token(const void* a, const void* b) {
   const Token* token_a = a;
@@ -39,19 +38,38 @@ int comp_token(const void* a, const void* b) {
   return 0;
 }
 
-Malloc_Allocator mallocator = MALLOC_CREATE();
+int main(int argc, const char* argv[]) {
+  size_t max_vocab = 0;
 
-#define MAX_VOCAB (5*1024)
+  for (int i = 1; i < argc; i++) {
+    if (strncmp(argv[i], "--max-vocab=", 12) == 0) {
+      max_vocab = strtoul(argv[i]+12, NULL, 10);
+    }
+  }
 
-int main(void) {
-  Token vocabulary[MAX_VOCAB] = {0};
+  if (max_vocab == 0) {
+    printf("--max-vocab is mandatory\n");
+    return -1;
+  }
+
+  Byte_Array buf = read_input(&mallocator.alloc, stdin);
+  Byte_Buffer_Array training = ARRAY_CREATE(&mallocator.alloc);
+
+  for (size_t i = 0, start = 0; i < buf.count; i++) {
+      if (buf.elems[i] != '\0') { continue; }
+      Byte_Buffer b = byte_buffer_from_parts(buf.elems + start, i - start);
+      array_append(&training, b);
+      start = i + 1;
+  }
+
+  Token* vocabulary = ALLOC(&mallocator.alloc, sizeof(Token)*max_vocab).void_ptr;
+  memset(vocabulary, 0, sizeof(Token)*max_vocab);
 
   int32_t token_count = gen_vocabulary(
       &mallocator.alloc,
-      training_text,
-      sizeof(training_text)/sizeof(char*),
+      training,
       vocabulary,
-      MAX_VOCAB
+      max_vocab
   );
 
   printf("#define MAX_VOCAB %d\n", token_count);

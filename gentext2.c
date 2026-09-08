@@ -1,6 +1,6 @@
 #include "array.h"
 #include "nn.h"
-#include <_time.h>
+#include <time.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,39 +13,18 @@
 #include "transformer.h"
 #include "node.h"
 
-#include "generated/alice.h"
-#include "generated/vocab.h"
+#undef STR
+#undef STR0
+#define STR0(x) #x
+#define STR(x) STR0(x)
 
-// ratio = tokens / parameters
-//
-// 20:1 to 100:1
+#define CORPUS(x, y) "distill/cdata-" STR(MAX_VOCAB) "/" #x "." #y ".bin"
 
-const char *training_text[] = {
-  // (const char*)alice_txt,
-  "the desert was silent except for the low, rhythmic hum of the wind sweeping across the dunes. for miles in every direction, nothing broke the horizon line but shifting sand and the occasional skeletal remains of ancient shrubs. evelyn checked her gps device, frowning at the uncoordinated coordinates flashing across the screen. the signal was dead. she had exactly two liters of water left, a compass that could not find true north, and six hours of daylight remaining before the temperature dropped below freezing.",
-  "the desert is a landscape of surprising contrasts and quiet resilience. during the day, the sun beats down relentlessly, turning the sand into a glowing sea of gold. cacti and deep-rooted shrubs stand as silent sentinels, conserving every drop of precious moisture in their thick stems. yet, as twilight approaches, the extreme heat yields to a crisp, cooling breeze. the sky shifts into a canvas of violet and deep indigo. nocturnal creatures, such as the kit fox and the rattlesnake, emerge from their underground burrows to hunt and forage, breathing vibrant life into the quiet night.",
-  "the desert was an oven of white heat that felt entirely unescapable. jackson tapped the cracked glass of his analog barometer, watching the needle fluctuate wildly against the glass. his satellite uplink to the desert research base had been dark for forty-eight hours, leaving him completely isolated. he rationed his final half-liter of water, scanning the shimmering horizon for any sign of shelter before the sub-zero desert night winds set in.",
-  "the roman empire was one of the most powerful and enduring civilizations in human history, fundamentally shaping the trajectory of the western world. beginning as a modest republic on the italian peninsula, it expanded rapidly through strategic military conquests and advanced engineering. roman legions established dominance across the mediterranean, bringing law, architecture, and commerce to diverse cultures. at its peak, the empire spanned from the rainy hills of britannia to the arid deserts of egypt. even after its eventual collapse, the architectural marvels, legal systems, and cultural innovations of rome continued to influence modern societies for centuries.",
-  "a sudden dust devil whirled across the gravel flats, peppering maya's goggles with sharp desert grit. she pulled up her scarf, squinting at the digital compass on her wrist watch, which kept looping through calibration cycles. the drone tracking her movements across this barren desert had lost its rotors to a sudden thermal draft miles ago. she had four hours of functional twilight left to navigate the maze of canyon vents before visibility dropped to zero.",
-  "the steering column of the overland truck was burning to the touch in the midday sun. tom climbed down into the blinding white glare of the playa, his boots sinking into the fine, powdery desert silt. the main truck battery was dead, fried by the extreme desert temperature peak. armed with only a basic multi-tool, a single thermal blanket, and three miles of open sand ahead of him, he began his long trek.",
-  "the sandstone arroyo offered a tiny sliver of shade, but the shifting sun was shrinking it by the minute. rachel checked her emergency radio, met only by the steady hiss of static from the surrounding desert mountain iron deposits. her digital mapping tablets had overheated and shut down an hour ago. she calculated her remaining energy against a steep, five-hundred-foot climb to get a line of sight across the desert before the air froze over.",
-  "nothing but sun-bleached shale stretched between ben and the horizon line. he shook his heavy aluminum flask, disturbed by the light, hollow thud of the last few drops of water inside. the automated waypoint markers he followed had been completely washed away by a previous desert flash flood. with the sun dipping low and turning the desert hills a dangerous orange, he needed to find high ground to avoid the nocturnal predators.",
-  "the abandoned mining outpost was a skeletal ruin collapsing into the sand. mark kicked the rusted iron door open, desperate to escape the relentless glare of the afternoon sun. he was entirely offline, his satellite phone battery ruined by the intense desert heat wave. he checked his supplies, noting he had exactly one liter of water left to survive his long trek across the open desert landscape.",
-  "the desert plateau exists in a perpetual state of extreme thermal swings. by afternoon, the black basalt rocks absorb enough heat to scorch anything that touches them, forcing even the hardiest desert insects deep into volcanic fissures. but as the sun slips below the jagged peaks, the rock faces rapidly radiate their warmth away. the sudden chill triggers the emergence of nocturnal creatures, transforming the barren stone into a bustling hunting ground.",
-  "adaptability is the ultimate currency for survival in the parched desert badlands. desert ironwood trees grow incredibly slowly, producing dense, heavy wood that resists both intense heat and parasitic rot. their deep taproots lock onto moisture hidden deep within underground aquifers. when nightfall brings a cool mist, the entire desert plant community shifts, opening microscopic pores to breathe in the damp air.",
-  "the dry clay pans appear dead and heavily fractured under the blinding summer sky. this brittle crust, however, protects millions of dormant desert organisms and microscopic algae spores waiting for a rare rain event. when twilight cools the baked earth to a pleasant crispness, the landscape undergoes a subtle awakening as desert owls sweep low over the cracked ground, searching for movement.",
-  "the oasis acts as a vibrant focal point within a vast, silent desert wilderness. tall fan palms cluster tightly around a hidden artesian spring, creating a microclimate where delicate ferns can survive the surrounding glare. at dusk, the division between the harsh desert and this green sanctuary blurs as kit foxes, bats, and migrating birds descend upon the water, filling the night with a chorus of calls.",
-  "artificial intelligence has rapidly transformed from a theoretical concept into an everyday reality. machine learning algorithms now power everything from basic email filters to complex autonomous vehicles. by processing massive amounts of historical data, these systems can identify hidden patterns, make accurate predictions, and automate tedious tasks. however, this technological leap brings significant ethical challenges, including data privacy concerns and algorithmic bias. as these neural networks become increasingly sophisticated, developers face the crucial responsibility of ensuring transparency and fairness, so that these powerful digital tools ultimately benefit society as a whole.",
-  "baking the perfect loaf of artisan bread requires patience, precision, and a deep understanding of basic ingredients. the process begins with just four simple components: flour, water, salt, and yeast. when combined, these elements undergo a magical transformation. the yeast feeds on the natural sugars in the flour, releasing carbon dioxide that causes the dough to rise and develop a complex network of air pockets. kneading and resting the dough properly are essential steps that build gluten structure. finally, baking the dough in a scorching hot oven creates a beautiful, crispy crust while keeping the interior soft.",
-  "earth is a dynamic, ever-changing planet covered mostly by vast, interconnected oceans. beneath the water lies a complex topography of deep trenches, underwater mountain ranges, and expansive plains. these marine ecosystems are home to an astonishing variety of life, ranging from microscopic phytoplankton to massive whales. the oceans also play a critical role in regulating the global climate by absorbing massive amounts of carbon dioxide and distributing heat across the globe. despite their importance, these fragile aquatic environments are currently facing severe threats from pollution, overfishing, and rising water temperatures caused by climate change.",
-  "the powerful king ruled. this man wore gold. the wise queen ruled. this woman wore gold. the brave king led men. that man commanded troops. the brave queen led men. that woman commanded troops. the noble king signed laws. a man signed laws. the noble queen signed laws. a woman signed laws.",
-  "the young prince smiled. a happy boy smiled. the young princess smiled. a happy girl smiled. the small prince played. that young boy played. the small princess played. that young girl played. the royal prince learned. every smart boy learned. the royal princess learned. every smart girl learned.",
-  "the great lord feasted. his proud husband feasted. the great lady feasted. her proud wife feasted. the rich lord rested. this loyal husband rested. the rich lady rested. this loyal wife rested.",
-  "the loving father built homes. the young son built homes. the loving mother built homes. the young daughter built homes. the proud father worked hard. that brave son worked hard. the proud mother worked hard. that brave daughter worked hard. a kind father teaches youth. the elder son teaches youth. a kind mother teaches youth. the elder daughter teaches youth.",
-  "the strict chairman signed deals. that male executive signed deals. the strict chairwoman signed deals. that female executive signed deals. the smart chairman led teams. a top director led teams. the smart chairwoman led teams. a top director led teams.",
-  "the ancient god created life. this divine wizard created life. the ancient goddess created life. this divine witch created life. the powerful god cast spells. that cruel wizard cast spells. the powerful goddess cast spells. that cruel witch cast spells.",
-  "the heavy bull ate grass. that male rooster ate grass. the heavy cow ate grass. that female hen ate grass. the loud bull woke farmers. a fierce rooster woke farmers. the loud cow woke farmers. a fierce hen woke farmers.",
-};
+#ifdef VOCAB_HEADER
+#include STR(VOCAB_HEADER)
+#else
+#error VOCAB_HEADER not defined
+#endif
 
 void hsl_to_rgb(float h, float s, float l, int *r, int *g, int *b) {
   // Calculate Chroma
@@ -94,79 +73,13 @@ void rst_color(void) {
   printf("\033[38;0m");
 }
 
-// #define MIN(a, b) ((a) < (b) ? (a) : (b))
-// #define MAX(a, b) ((a) > (b) ? (a) : (b))
+#undef MIN
+#undef MAX
+
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 Malloc_Allocator mallocator = MALLOC_CREATE();
-
-void prepare_data(TokenID_Array* sequence) {
-//Non-overlapping chunks, shuffled. That's what real pretraining does, and for 1M tokens it's the right call.
-//
-// The recipe
-//
-// Read C+1 tokens per chunk, advance by C:
-//
-// chunk k covers  ids[k*C  ..  k*C + C]      (C+1 tokens)
-//   input        ids[k*C   .. k*C + C - 1]   (C tokens)
-//   targets      ids[k*C+1 .. k*C + C]       (C tokens)
-//
-// The +1 overlap is what makes coverage exact: the last target of chunk k is ids[(k+1)*C], which is the first input of chunk k+1. Every token is a target exactly once and an input exactly once. No gaps, no duplication.
-//
-// With C = 512:
-//
-// chunks       = (1,000,000 - 1) / 512  =  1953
-// tokens/epoch = 1953 × 512             =  999,936    (64 left over, drop them)
-//
-// One epoch = 1953 forward/backward passes, or 244 optimizer steps at batch 8.
-//
-// Shuffle the chunk order
-//
-// size_t n_chunks = (n_tokens - 1) / C;
-// size_t *order = malloc(n_chunks * sizeof(size_t));
-// for (size_t i = 0; i < n_chunks; i++) { order[i] = i; }
-//
-// for (int epoch = 0; epoch < epochs; epoch++) {
-//     shuffle(order, n_chunks);
-//     for (size_t i = 0; i < n_chunks; i++) {
-//         const int32_t *chunk = &ids[order[i] * C];   /* reads C+1 */
-//         /* forward on chunk[0..C-1], targets chunk[1..C] */
-//     }
-// }
-//
-// This matters. Consecutive chunks come from the same chapter — same topic, same vocabulary — so feeding them in reading order gives you long runs of correlated gradients. Shuffling decorrelates the batch. Same order-array pattern you already have.
-//
-// The one real downside, and a free fix
-//
-// Position 0 of each chunk has zero left context, position 1 has one token, and so on. Fixed boundaries mean the same tokens are handicapped every epoch.
-//
-// Fix: randomize the starting offset each epoch.
-//
-// size_t off = rand_below(C);              /* different every epoch */
-// const int32_t *chunk = &ids[off + order[i] * C];
-//
-// Now epoch 1 cuts at 0, 512, 1024…; epoch 2 cuts at 137, 649, 1161…. Every token sees a different amount of context across epochs, and it costs one addition. You get most of the benefit overlapping strides were supposed to buy, for free.
-//
-// Why not stride 1
-//
-// From the last message: stride 1 is 512× the compute for the same 1M unique tokens. The only thing it buys is that each token is predicted at every possible context length instead of one — and the offset trick above approximates that across epochs at 1/512th the cost.
-//
-// If you want a middle ground, stride = C/2 doubles compute and guarantees every token at least C/2 context. That's the most anyone reasonably does.
-
-  for (size_t i = 0; i < sizeof(training_text)/sizeof(char*); i++) {
-    const char* text = training_text[i];
-
-    tokenize(
-        sequence,
-        text,
-        strlen(text),
-        vocabulary,
-        vocabulary_by_size,
-        MAX_VOCAB
-    );
-
-    array_append(sequence, EOS_TOKEN);
-  }
-}
 
 size_t count_parameters(Optimizer* optmizer) {
   size_t count = 0;
@@ -330,14 +243,15 @@ void set_dropout(Transformer* trans_in, float p) {
 void generate_text(
   Arena_Allocator* arena,
   Transformer* trans_in,
-  const char* prompt,
-  TokenID_Array* tokens
+  Byte_Buffer prompt,
+  TokenID_Array* tokens,
+  size_t max_tokens
 ) {
   tokens->count = 0;
   tokenize(
       tokens,
-      prompt,
-      strlen(prompt),
+      prompt.cptr,
+      strlen(prompt.cptr),
       vocabulary,
       vocabulary_by_size,
       MAX_VOCAB
@@ -351,7 +265,7 @@ void generate_text(
   for (size_t i = 0; i < tokens->count; i++)
       printf("%s%s", vocabulary[tokens->elems[i]].token, separator);
 
-  for (size_t i = 0; i < 256; i++) {
+  for (size_t i = 0; i < max_tokens; i++) {
     size_t saved = SAVE(&arena->alloc);
 
     size_t N = tokens->count;
@@ -371,7 +285,7 @@ void generate_text(
     // 1.0 = normal
     // 1.5 = creative
     // 3.0 = nonsensical
-    transformer_forward(*tokens, &trans_out, trans_in, 1.01f, 0);
+    transformer_forward(*tokens, &trans_out, trans_in, 1.1f, 0);
 
     NMatrix last_token = mat_row(trans_out.probs, N - 1);
 
@@ -427,18 +341,6 @@ void shuffle_indices(Index32_Array indices) {
   }
 }
 
-void print_timestamp(void) {
-  time_t raw_time;
-  struct tm tm;
-  char buffer[128];
-
-  time(&raw_time);
-  localtime_r(&raw_time, &tm);
-  strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &tm);
-
-  printf("%s", buffer);
-}
-
 int find_token(const char* token) {
   for (int i = 0; i < MAX_VOCAB; i++) {
     if (strcmp(token, vocabulary[i].token) == 0)
@@ -447,18 +349,19 @@ int find_token(const char* token) {
   return -1;
 }
 
-float cosine_learning_rate(size_t t, size_t t_warmup, size_t t_total, float lr_max) {
-  if (t <= t_warmup) {
-    return lr_max * (float)t / (float)t_warmup;
-  }
-
-  float lr_min = 0.01f * lr_max;
-
-  if (t >= t_total) {
-    return lr_min;
+float cosine_learning_rate(
+  size_t t,
+  size_t t_warmup,
+  size_t t_total,
+  float lr_max,
+  float lr_min
+) {
+  if (t < t_warmup) {
+    return lr_max * (float)(t + 1) / (float)t_warmup;
   }
 
   float alpha = (float)(t - t_warmup) / (float)(t_total - t_warmup);
+  if (alpha > 1.0f) alpha = 1.0f;
   return lr_min + 0.5f*(lr_max - lr_min) * (1.0f + cosf(alpha * M_PI));
 }
 
@@ -598,6 +501,22 @@ static float evaluate(Arena_Allocator* arena, Transformer *trans_in, Corpus *dev
   return loss_sum / (double)token_count;
 }
 
+DEFINE_ARRAY_ALIAS(Byte, char);
+
+Byte_Array read_input(Allocator* alloc, FILE* input) {
+  Byte_Array buff =  ARRAY_CREATE(alloc);
+
+  array_ensure(&buff, 10*1024);
+
+  while (true) {
+    int ch = fgetc(input);
+    if (ch == EOF) return buff;
+    array_append(&buff, (char)ch);
+  }
+
+  return buff;
+}
+
 int main(int argc, char* argv[]) {
   srand(getpid());
 
@@ -619,8 +538,8 @@ int main(int argc, char* argv[]) {
 
   // prepare_data(&sequence);
 
-  Corpus corpus = corpus_load("distill/cdata/train.ids.bin", "distill/cdata/train.index.bin");
-  Corpus corpus_dev = corpus_load("distill/cdata/dev.ids.bin", "distill/cdata/dev.index.bin");
+  Corpus corpus = corpus_load(CORPUS(train, ids), CORPUS(train, index));
+  Corpus corpus_dev = corpus_load(CORPUS(dev, ids), CORPUS(dev, index));
 
   size_t sum_tokens = 0;
   for (size_t i = 0; i < corpus.n_recs; ++i) {
@@ -646,17 +565,18 @@ int main(int argc, char* argv[]) {
   // }
   // return 0;
 
-  size_t D = 64;
-  size_t H = 4; //headDim = D / H;
-  size_t F = D*4;
+  size_t D = 192;
+  size_t heads_count = 4;
+  size_t F = D*heads_count;
   size_t V = MAX_VOCAB;
   size_t num_blocks = 4;
 
   float peak_lr = 1e-3;
   size_t batch_size = 8;
   size_t steps_per_epoch = corpus.n_recs / batch_size;
-  size_t total_epochs = 4;
-  size_t warmup_epochs = 1;
+  size_t total_epochs = 2;
+  size_t total_steps = total_epochs * steps_per_epoch;
+  size_t warmup_steps = MAX(1000, (size_t)(total_epochs * 0.02f));
   float dropout_pct = 0.0;
 
   // optimize learning rate
@@ -677,69 +597,77 @@ int main(int argc, char* argv[]) {
       .trans = &trans_in,
       .tie_embeddings = true,
       .num_blocks = num_blocks,
-      .heads_count = H,
+      .heads_count = heads_count,
       .vocab_size = V,
       .emb_size = D,
       .ff_size = F,
   );
 
   set_color(255, 165, 0);
+  printf("D = %zu\n", D);
+  printf("V = %zu\n", V);
+  printf("F = %zu\n", F);
+  printf("tie_embeddings = %s\n", trans_in.tie_embeddings ? "yes" : "no");
+  printf("heads_count = %zu\n", heads_count);
+  printf("head_dim = %zu\n", D / heads_count);
+  printf("block_count = %zu\n", num_blocks);
   {
     size_t params = count_parameters(&optimizer);
     register_tensor(&optimizer, trans_in.tok_emb, true);
-    printf("token emdeddings = %zu\n", count_parameters(&optimizer) - params);
+    printf("token_emdeddings = %zu\n", count_parameters(&optimizer) - params);
   }
   {
     size_t params1 = count_parameters(&optimizer);
     if (!trans_in.tie_embeddings)
       register_tensor(&optimizer, trans_in.H.weight, true);
-    printf("output head = %zu\n", count_parameters(&optimizer) - params1);
+    printf("output_head = %zu\n", count_parameters(&optimizer) - params1);
     size_t params2 = count_parameters(&optimizer);
     register_tensor(&optimizer, trans_in.H.bias, false);
-    printf("output bias = %zu\n", count_parameters(&optimizer) - params2);
+    printf("output_bias = %zu\n", count_parameters(&optimizer) - params2);
   }
 
-  for (size_t i = 0; i < num_blocks; i++) {
+  {
     size_t params = count_parameters(&optimizer);
-    register_tensor(&optimizer, trans_in.blocks[i].ln1.gamma, false);
-    register_tensor(&optimizer, trans_in.blocks[i].ln1.beta, false);
-    register_tensor(&optimizer, trans_in.blocks[i].ln2.gamma, false);
-    register_tensor(&optimizer, trans_in.blocks[i].ln2.beta, false);
+    for (size_t i = 0; i < num_blocks; i++) {
+      register_tensor(&optimizer, trans_in.blocks[i].ln1.gamma, false);
+      register_tensor(&optimizer, trans_in.blocks[i].ln1.beta, false);
+      register_tensor(&optimizer, trans_in.blocks[i].ln2.gamma, false);
+      register_tensor(&optimizer, trans_in.blocks[i].ln2.beta, false);
 
-    register_tensor(&optimizer, trans_in.blocks[i].ff1.weight, true);
-    register_tensor(&optimizer, trans_in.blocks[i].ff1.bias, false);
-    register_tensor(&optimizer, trans_in.blocks[i].ff2.weight, true);
-    register_tensor(&optimizer, trans_in.blocks[i].ff2.bias, false);
+      register_tensor(&optimizer, trans_in.blocks[i].ff1.weight, true);
+      register_tensor(&optimizer, trans_in.blocks[i].ff1.bias, false);
+      register_tensor(&optimizer, trans_in.blocks[i].ff2.weight, true);
+      register_tensor(&optimizer, trans_in.blocks[i].ff2.bias, false);
 
-    register_tensor(&optimizer, trans_in.blocks[i].attn.K.weight, true);
-    register_tensor(&optimizer, trans_in.blocks[i].attn.K.bias, false);
-    register_tensor(&optimizer, trans_in.blocks[i].attn.Q.weight, true);
-    register_tensor(&optimizer, trans_in.blocks[i].attn.Q.bias, false);
-    register_tensor(&optimizer, trans_in.blocks[i].attn.V.weight, true);
-    register_tensor(&optimizer, trans_in.blocks[i].attn.V.bias, false);
-    register_tensor(&optimizer, trans_in.blocks[i].attn.O.weight, true);
-    register_tensor(&optimizer, trans_in.blocks[i].attn.O.bias, false);
-    printf("transformer block = %zu\n", count_parameters(&optimizer) - params);
+      register_tensor(&optimizer, trans_in.blocks[i].attn.K.weight, true);
+      register_tensor(&optimizer, trans_in.blocks[i].attn.K.bias, false);
+      register_tensor(&optimizer, trans_in.blocks[i].attn.Q.weight, true);
+      register_tensor(&optimizer, trans_in.blocks[i].attn.Q.bias, false);
+      register_tensor(&optimizer, trans_in.blocks[i].attn.V.weight, true);
+      register_tensor(&optimizer, trans_in.blocks[i].attn.V.bias, false);
+      register_tensor(&optimizer, trans_in.blocks[i].attn.O.weight, true);
+      register_tensor(&optimizer, trans_in.blocks[i].attn.O.bias, false);
+    }
+    printf("transformer_block = %zu\n", (count_parameters(&optimizer) - params) / num_blocks);
   }
 
   {
     size_t params0 = count_parameters(&optimizer);
     register_tensor(&optimizer, trans_in.ln.gamma, false);
     register_tensor(&optimizer, trans_in.ln.beta, false);
-    printf("final layerNorm = %zu\n", count_parameters(&optimizer) - params0);
+    printf("final_layer_norm = %zu\n", count_parameters(&optimizer) - params0);
   }
 
   size_t params = count_parameters(&optimizer);
-  printf("corpus size (train) = %zu\n", corpus.n_recs);
-  printf("corpus size (dev)   = %zu\n", corpus_dev.n_recs);
-  printf("tokens count = %zu\n", sum_tokens);
-  printf("total parameters = %zu\n", params);
+  printf("total_parameters = %zu\n", params);
+  printf("corpus_size (train) = %zu\n", corpus.n_recs);
+  printf("corpus_size (dev)   = %zu\n", corpus_dev.n_recs);
+  printf("tokens_count = %zu\n", sum_tokens);
+  printf("batch_size = %zu\n", batch_size);
+  printf("steps_per_epoch = %zu\n", steps_per_epoch);
   printf("chinchilla target = %zu tokens\n", 20*params);
-  printf("epochs to get there = %zu\n", (20*params + sum_tokens - 1) / sum_tokens);
-  printf("steps per epoch = %zu\n", steps_per_epoch);
-  printf("batch size = %zu\n", batch_size);
   printf("ratio = %f tokens per parameter\n", sum_tokens / (float)params);
-
+  printf("epochs to get there = %zu\n", (20*params + sum_tokens - 1) / sum_tokens);
   rst_color();
 
   // Muennighoff et al. (2023), Scaling Data-Constrained Language Models, is the empirical answer:
@@ -753,24 +681,36 @@ int main(int argc, char* argv[]) {
   bool loaded = load_model(&trans_in);
   load_optimizer(&optimizer, "models/gentext2.adam", &epoch, &optimizer_steps);
 
-  char* prompt = "User: What is data science?\nAssistant: ";
+  Byte_Buffer prompt = from_cstring(&mallocator.alloc, "What is data science?");
   bool train = false;
+  bool gen_text = false;
 
+  Byte_Array buf = {0};
   for (int i = 1; i < argc; i++) {
     if (strncmp(argv[i], "--train", 7) == 0)
       train = true;
 
-    if (strncmp(argv[i], "--epoch", 7) == 0) {
+    if (strncmp(argv[i], "--epoch=", 8) == 0) {
       sscanf(argv[i], "--epoch=%zu", &epoch);
     }
 
     if (strncmp(argv[i], "--prompt", 8) == 0) {
-      prompt = argv[i] + 9;
-      goto generate_text;
+      FREE(&mallocator.alloc, prompt);
+      buf = read_input(&mallocator.alloc, stdin);
+      prompt = byte_buffer_from_parts(buf.elems, buf.count);
+      gen_text = true;
     }
   }
 
-  if (loaded && !train) goto generate_text;
+  if (prompt.len == 0) return -1;
+
+  Byte_Buffer prompt_fmt = ALLOC(&mallocator.alloc, prompt.len + 128);
+  snprintf(prompt_fmt.cptr, prompt_fmt.len, "User: %*sAssistant: ", (int)prompt.len, prompt.cptr);
+  array_destroy(&buf);
+
+  if ((loaded && !train) || gen_text) {
+    goto generate_text;
+  }
 
   init_opencl();
   ensure_buffer_size(sizeof(float)*MAX_VOCAB*MAX_VOCAB);
@@ -779,15 +719,16 @@ int main(int argc, char* argv[]) {
   print_tokens(&trans_in);
 
   set_color(0, 255, 0);
-  print_timestamp();
+  print_timestamp(stdout);
   printf(" Start training\n");
   rst_color();
 
   optimizer.learning_rate = cosine_learning_rate(
-      epoch,
-      warmup_epochs*steps_per_epoch,
-      total_epochs*steps_per_epoch,
-      peak_lr
+      optimizer_steps,
+      warmup_steps,
+      total_steps,
+      peak_lr,
+      peak_lr / 10.0f
   );
 
   for (size_t i = 0; i < corpus.n_recs; i++)
@@ -799,12 +740,14 @@ int main(int argc, char* argv[]) {
   {
     size_t saved = SAVE(&arena.alloc);
     set_dropout(&trans_in, 0.0f);
-    generate_text(&arena, &trans_in, prompt, &tokens);
+    generate_text(&arena, &trans_in, prompt_fmt, &tokens, 100);
     RESTORE(&arena.alloc, saved);
   }
 
-  printf("%zu=%zu\n", epoch+1, total_epochs);
-  while (epoch < total_epochs) {
+  float win_loss = 0;
+  size_t win_tok = 0;
+
+  while (optimizer_steps < total_steps) {
     float loss_sum = 0;
     size_t token_count = 0;
 
@@ -826,7 +769,7 @@ int main(int argc, char* argv[]) {
 
         size_t saved = SAVE(&arena.alloc);
         set_dropout(&trans_in, 0.0f);
-        generate_text(&arena, &trans_in, prompt, &tokens);
+        generate_text(&arena, &trans_in, prompt_fmt, &tokens, 100);
         RESTORE(&arena.alloc, saved);
       }
 
@@ -947,18 +890,22 @@ int main(int argc, char* argv[]) {
     // cosine annealing
     optimizer.learning_rate = cosine_learning_rate(
         optimizer_steps,
-        warmup_epochs*steps_per_epoch,
-        total_epochs*steps_per_epoch,
-        peak_lr
+        warmup_steps,
+        total_steps,
+        peak_lr,
+        peak_lr / 10.0f
     );
+
+    win_loss += loss_sum;
+    win_tok += token_count;
 
     float loss = loss_sum / token_count;
 
     set_color(0, 255, 0);
-    print_timestamp();
-    printf(" epoch=%zu/%zu opt=%zu/%zu lr=%f loss=%f perp=%f tokens=%zu\n",
-        epoch+1, total_epochs, optimizer_steps, total_epochs*steps_per_epoch,
-        optimizer.learning_rate, loss, expf(loss), tokens_count);
+    print_timestamp(stdout);
+    printf(" epoch=%zu/%zu step=%zu/%zu lr=%f loss=%f perp=%f tokens=%zu (avg %0.3f/sample)\n",
+        epoch+1, total_epochs, optimizer_steps+1, total_epochs*steps_per_epoch,
+        optimizer.learning_rate, loss, expf(loss), tokens_count, (float)token_count/(float)batch_size);
     rst_color();
 
     optimizer_steps += 1;
@@ -969,16 +916,19 @@ int main(int argc, char* argv[]) {
 
       size_t saved = SAVE(&arena.alloc);
       set_dropout(&trans_in, 0.0f);
-      generate_text(&arena, &trans_in, prompt, &tokens);
+      generate_text(&arena, &trans_in, prompt_fmt, &tokens, 100);
       RESTORE(&arena.alloc, saved);
     }
 
     if (optimizer_steps % 1000 == 0) {
       float dev = evaluate(&arena, &trans_in, &corpus_dev, corpus_dev.n_recs);
+      float train = win_loss / (float)win_tok;
+      win_loss = 0;
+      win_tok = 0;
 
-      set_color(50, 50, 255);
+      set_color(66, 140, 211);
       printf("  eval opt=%zu  train=%.4f  dev=%.4f  gap=%+.4f\n",
-              optimizer_steps, loss, dev, dev - loss);
+              optimizer_steps, train, dev, dev - train);
       rst_color();
     }
   }
@@ -987,7 +937,7 @@ int main(int argc, char* argv[]) {
   save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps);
 
 generate_text:
-  generate_text(&arena, &trans_in, prompt, &tokens);
+  generate_text(&arena, &trans_in, prompt_fmt, &tokens, 2048);
 
   return 0;
 }
