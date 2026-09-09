@@ -329,8 +329,6 @@ void generate_text(
   printf("\n");
 }
 
-DEFINE_ARRAY_ALIAS(Index32, size_t);
-
 // Helper function to shuffle an array of indices (Fisher-Yates)
 void shuffle_indices(Index32_Array indices) {
   for (size_t i = indices.count - 1; i > 0; i--) {
@@ -445,7 +443,7 @@ static float evaluate(Arena_Allocator* arena, Transformer *trans_in, Corpus *dev
   set_dropout(trans_in, 0.0f);
 
   double loss_sum = 0.0;
-  long   token_count = 0;
+  long   tokens_scored = 0;
 
   size_t saved = SAVE(&arena->alloc);
 
@@ -489,7 +487,7 @@ static float evaluate(Arena_Allocator* arena, Transformer *trans_in, Corpus *dev
     for (size_t i = (size_t)first; i < N; i++) {
       const int32_t target = targets.elems[i];
       loss_sum -= log((double)MAT_AT(trans_out.probs, i, target) + 1e-10);
-      token_count++;
+      tokens_scored++;
     }
 
     RESTORE(&arena->alloc, saved);
@@ -498,7 +496,7 @@ static float evaluate(Arena_Allocator* arena, Transformer *trans_in, Corpus *dev
   RESTORE(&arena->alloc, saved);
 
   set_dropout(trans_in, saved_p);
-  return loss_sum / (double)token_count;
+  return loss_sum / (double)tokens_scored;
 }
 
 DEFINE_ARRAY_ALIAS(Byte, char);
@@ -530,7 +528,7 @@ int main(int argc, char* argv[]) {
     .updates = 0,
   };
   size_t arena_size = MAX_VOCAB*MAX_VOCAB*sizeof(float);
-  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, arena_size + 1024*1024*1024);
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, arena_size + 2L*1024*1024*1024);
   // TokenID_Array sequence = ARRAY_CREATE(&mallocator.alloc);
   TokenID_Array tokens = ARRAY_CREATE(&mallocator.alloc);
   TokenID_Array targets = ARRAY_CREATE(&mallocator.alloc);
@@ -541,10 +539,16 @@ int main(int argc, char* argv[]) {
   Corpus corpus = corpus_load(CORPUS(train, ids), CORPUS(train, index));
   Corpus corpus_dev = corpus_load(CORPUS(dev, ids), CORPUS(dev, index));
 
+  // todo: save start_indices, so the order survices restart
+  array_ensure(&start_indices, corpus.n_recs);
+
   size_t sum_tokens = 0;
   for (size_t i = 0; i < corpus.n_recs; ++i) {
-      sum_tokens += corpus.recs[i].total_len;
+    sum_tokens += corpus.recs[i].total_len;
+    array_append(&start_indices, i);
   }
+
+  shuffle_indices(start_indices);
 
   // for (size_t i = 0; i < corpus.n_recs; i++) {
   //   int prompt_len = 0;
@@ -679,7 +683,8 @@ int main(int argc, char* argv[]) {
   size_t optimizer_steps = 0;
 
   bool loaded = load_model(&trans_in);
-  load_optimizer(&optimizer, "models/gentext2.adam", &epoch, &optimizer_steps);
+  load_optimizer(&optimizer, "models/gentext2.adam",
+      &epoch, &optimizer_steps, start_indices);
 
   Byte_Buffer prompt = from_cstring(&mallocator.alloc, "What is data science?");
   bool train = false;
@@ -731,10 +736,6 @@ int main(int argc, char* argv[]) {
       peak_lr / 10.0f
   );
 
-  for (size_t i = 0; i < corpus.n_recs; i++)
-    array_append(&start_indices, i);
-  shuffle_indices(start_indices);
-
   size_t cursor = 0;
 
   {
@@ -749,7 +750,7 @@ int main(int argc, char* argv[]) {
 
   while (optimizer_steps < total_steps) {
     float loss_sum = 0;
-    size_t token_count = 0;
+    size_t tokens_scored = 0;
 
     set_dropout(&trans_in, dropout_pct);
     mat_zero(mat_row(trans_in.tok_emb.value, 0));
@@ -765,7 +766,7 @@ int main(int argc, char* argv[]) {
         epoch += 1;
 
         save_model(&trans_in);
-        save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps);
+        save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps, start_indices);
 
         size_t saved = SAVE(&arena.alloc);
         set_dropout(&trans_in, 0.0f);
@@ -873,7 +874,7 @@ int main(int argc, char* argv[]) {
           if (i >= (size_t)first) {
             MAT_AT(dlogits, i, target) -= 1.0f;
             loss_sum -= logf(MAT_AT(trans_out.probs, i, target) + 1e-10f);
-            token_count += 1;
+            tokens_scored += 1;
           } else {
             mat_zero(mat_row(dlogits, i));
           }
@@ -885,7 +886,7 @@ int main(int argc, char* argv[]) {
     }
 
     mat_zero(mat_row(trans_in.tok_emb.grad, 0));
-    update_grads_adam(&optimizer, 1.0f / (float)token_count);
+    update_grads_adam(&optimizer, 1.0f / (float)tokens_scored);
 
     // cosine annealing
     optimizer.learning_rate = cosine_learning_rate(
@@ -897,22 +898,23 @@ int main(int argc, char* argv[]) {
     );
 
     win_loss += loss_sum;
-    win_tok += token_count;
+    win_tok += tokens_scored;
 
-    float loss = loss_sum / token_count;
+    float loss = loss_sum / tokens_scored;
 
     set_color(0, 255, 0);
     print_timestamp(stdout);
-    printf(" epoch=%zu/%zu step=%zu/%zu lr=%f loss=%f perp=%f tokens=%zu (avg %0.3f/sample)\n",
+    printf(" epoch=%zu/%zu step=%zu/%zu lr=%f loss=%f perp=%f tokens=%zu scored=%zu (avg %.1f/sample, %.1f%% scored)\n",
         epoch+1, total_epochs, optimizer_steps+1, total_epochs*steps_per_epoch,
-        optimizer.learning_rate, loss, expf(loss), tokens_count, (float)token_count/(float)batch_size);
+        optimizer.learning_rate, loss, expf(loss), tokens_count, tokens_scored,
+        (float)tokens_scored/(float)batch_size, (float)tokens_scored/(float)tokens_count * 100.0f);
     rst_color();
 
     optimizer_steps += 1;
 
     if (optimizer_steps % 50 == 0) {
       save_model(&trans_in);
-      save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps);
+      save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps, start_indices);
 
       size_t saved = SAVE(&arena.alloc);
       set_dropout(&trans_in, 0.0f);
@@ -934,7 +936,7 @@ int main(int argc, char* argv[]) {
   }
 
   save_model(&trans_in);
-  save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps);
+  save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps, start_indices);
 
 generate_text:
   generate_text(&arena, &trans_in, prompt_fmt, &tokens, 2048);

@@ -18,9 +18,9 @@ CFLAGS_DEBUG=$(CFLAGS_COMMON) -g \
     -fsanitize=unsigned-integer-overflow \
     -fsanitize=address -fassociative-math
 
-CFLAGS_RELEASE=$(CFLAGS_COMMON) -O3 \
-    -mcpu=native -Rpass=loop-vectorize -Rpass-missed=loop-vectorize \
-    -Rpass-analysis=loop-vectorize
+CFLAGS_RELEASE=$(CFLAGS_COMMON) -O3
+    # -mcpu=native -Rpass=loop-vectorize -Rpass-missed=loop-vectorize \
+    # -Rpass-analysis=loop-vectorize
 
 CFLAGS=$(CFLAGS_RELEASE)
 

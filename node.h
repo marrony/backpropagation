@@ -169,7 +169,9 @@ void register_tensor(Optimizer* opt, Tensor tensor, bool decay) {
   array_append(&opt->decay, decay);
 }
 
-void save_optimizer(Optimizer* optimizer, const char* file, size_t epochs, size_t optimizer_steps) {
+DEFINE_ARRAY_ALIAS(Index32, size_t);
+
+void save_optimizer(Optimizer* optimizer, const char* file, size_t epochs, size_t optimizer_steps, Index32_Array order) {
   FILE* fp = fopen(file, "wb");
   fwrite(&optimizer->updates, sizeof(size_t), 1, fp);
   fwrite(&optimizer->learning_rate, sizeof(float), 1, fp);
@@ -180,10 +182,12 @@ void save_optimizer(Optimizer* optimizer, const char* file, size_t epochs, size_
     mat_write(optimizer->history.elems[i], fp); // 1st moment
     mat_write(optimizer->second.elems[i], fp); // 2nd moment
   }
+  fwrite(&order.count, sizeof(size_t), 1, fp);
+  fwrite(order.elems, sizeof(size_t), order.count, fp);
   fclose(fp);
 }
 
-void load_optimizer(Optimizer* optimizer, const char* file, size_t* epochs, size_t* optimizer_steps) {
+void load_optimizer(Optimizer* optimizer, const char* file, size_t* epochs, size_t* optimizer_steps, Index32_Array order) {
   FILE* fp = fopen(file, "rb");
   if (fp != NULL) {
     printf("optimizer exists, reading\n");
@@ -191,6 +195,7 @@ void load_optimizer(Optimizer* optimizer, const char* file, size_t* epochs, size
     fread(&optimizer->learning_rate, sizeof(float), 1, fp);
     fread(epochs, sizeof(size_t), 1, fp);
     fread(optimizer_steps, sizeof(size_t), 1, fp);
+
     size_t tensors_count = 0;
     fread(&tensors_count, sizeof(size_t), 1, fp);
     assert(tensors_count == optimizer->tensors.count);
@@ -199,6 +204,11 @@ void load_optimizer(Optimizer* optimizer, const char* file, size_t* epochs, size
       mat_read(optimizer->history.elems[i], fp); // 1st moment
       mat_read(optimizer->second.elems[i], fp); // 2nd moment
     }
+
+    size_t order_count = 0;
+    fread(&order_count, sizeof(size_t), 1, fp);
+    assert(order_count == order.count);
+    fread(order.elems, sizeof(size_t), order.count, fp);
     fclose(fp);
   }
 }
