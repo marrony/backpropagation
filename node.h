@@ -171,7 +171,7 @@ void register_tensor(Optimizer* opt, Tensor tensor, bool decay) {
 
 DEFINE_ARRAY_ALIAS(Index32, size_t);
 
-void save_optimizer(Optimizer* optimizer, const char* file, size_t epochs, size_t optimizer_steps, Index32_Array order) {
+void save_optimizer(Optimizer* optimizer, const char* file, size_t epochs, size_t optimizer_steps, Index32_Array order, size_t cursor) {
   FILE* fp = fopen(file, "wb");
   fwrite(&optimizer->updates, sizeof(size_t), 1, fp);
   fwrite(&optimizer->learning_rate, sizeof(float), 1, fp);
@@ -184,10 +184,11 @@ void save_optimizer(Optimizer* optimizer, const char* file, size_t epochs, size_
   }
   fwrite(&order.count, sizeof(size_t), 1, fp);
   fwrite(order.elems, sizeof(size_t), order.count, fp);
+  fwrite(&cursor, sizeof(size_t), 1, fp);
   fclose(fp);
 }
 
-void load_optimizer(Optimizer* optimizer, const char* file, size_t* epochs, size_t* optimizer_steps, Index32_Array order) {
+void load_optimizer(Optimizer* optimizer, const char* file, size_t* epochs, size_t* optimizer_steps, Index32_Array order, size_t* cursor) {
   FILE* fp = fopen(file, "rb");
   if (fp != NULL) {
     printf("optimizer exists, reading\n");
@@ -209,6 +210,9 @@ void load_optimizer(Optimizer* optimizer, const char* file, size_t* epochs, size
     fread(&order_count, sizeof(size_t), 1, fp);
     assert(order_count == order.count);
     fread(order.elems, sizeof(size_t), order.count, fp);
+
+    fread(cursor, sizeof(size_t), 1, fp);
+
     fclose(fp);
   }
 }

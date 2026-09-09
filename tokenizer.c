@@ -42,23 +42,32 @@ int main(void) {
   TokenID_Array tokens = ARRAY_CREATE(&mallocator.alloc);
   Byte_Array prompt =  read_input(&mallocator.alloc, stdin);
 
-  tokenize(
-      &tokens,
-      prompt.elems,
-      prompt.count,
-      vocabulary,
-      vocabulary_by_size,
-      MAX_VOCAB
-  );
+  if (prompt.count > 0 && prompt.elems[prompt.count-1] != '\0')
+    array_append(&prompt, '\0');
 
-  for (size_t i = 0; i < tokens.count; i++) {
-    printf("%d", tokens.elems[i]);
+  for (size_t i = 0, start = 0; i < prompt.count; i++) {
+    if (prompt.elems[i] != '\0')
+      continue;
 
-    if (i < tokens.count-1)
-      printf(" ");
+    tokens.count = 0;
+    tokenize(
+        &tokens,
+        prompt.elems + start,
+        i - start,
+        vocabulary,
+        vocabulary_by_size,
+        MAX_VOCAB
+    );
+
+    for (size_t i = 0; i < tokens.count; i++) {
+      printf("%d", tokens.elems[i]);
+
+      if (i < tokens.count-1)
+        printf(" ");
+    }
+
+    printf("\n");
   }
-
-  printf("\n");
 
   return 0;
 }

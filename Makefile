@@ -36,18 +36,21 @@ generated/alice.h: generated books/alice.txt
 
 VOCAB_SIZE=2048
 EOS_ID=256
+CDATA_OUT=cdata-$(VOCAB_SIZE)
+TOKENIZER_CMD=$(BINDIR)/tokenizer-$(VOCAB_SIZE)
+VOCAB_HEADER=vocabs/vocab_$(VOCAB_SIZE).h
 
 generated/data.bin: distill/data/seqkd_gold_train.jsonl distill/data/seqkd_gold_dev.jsonl
 	cd distill && uv run scripts/dump_samples.py data/seqkd_gold_*.jsonl > ../generated/data.bin
 
-vocabs/vocab_$(VOCAB_SIZE).h: generated bin/genvocab # generated/data.bin
-	./bin/genvocab --max-vocab=$(VOCAB_SIZE) < generated/data.bin > vocabs/vocab_$(VOCAB_SIZE).h
+$(VOCAB_HEADER): generated bin/genvocab # generated/data.bin
+	./bin/genvocab --max-vocab=$(VOCAB_SIZE) < generated/data.bin > $(VOCAB_HEADER)
 
 $(BINDIR)/node: node.c nn.h node.h transformer.h | $(BINDIR)
 	cc $(CFLAGS_DEBUG) $< -o $@ $(LDFLAGS)
 
-$(BINDIR)/tokenizer-$(VOCAB_SIZE): tokenizer.c tokenizer.h vocabs/vocab_$(VOCAB_SIZE).h | $(BINDIR)
-	cc $(CFLAGS) $< -o $@ $(LDFLAGS) -DVOCAB_HEADER=vocabs/vocab_$(VOCAB_SIZE).h -DVOCAB_SIZE=$(VOCAB_SIZE)
+$(TOKENIZER_CMD): tokenizer.c tokenizer.h $(VOCAB_HEADER) | $(BINDIR)
+	cc $(CFLAGS) $< -o $@ $(LDFLAGS) -DVOCAB_HEADER=$(VOCAB_HEADER) -DVOCAB_SIZE=$(VOCAB_SIZE)
 
 $(BINDIR)/genvocab: genvocab.c tokenizer.h | $(BINDIR)
 	cc $(CFLAGS) $< -o $@ $(LDFLAGS)
@@ -55,8 +58,8 @@ $(BINDIR)/genvocab: genvocab.c tokenizer.h | $(BINDIR)
 $(BINDIR)/cnn-node: cnn-node.c
 	echo "cnn-node.c is broken"
 
-$(BINDIR)/%: %.c nn.h node.h game.h tokenizer.h transformer.h gpu.h vocabs/vocab_$(VOCAB_SIZE).h | $(BINDIR) raylib-5/libraylib.a
-	cc $(CFLAGS) $< -o $@ $(LDFLAGS) -DVOCAB_HEADER=vocabs/vocab_$(VOCAB_SIZE).h -DVOCAB_SIZE=$(VOCAB_SIZE)
+$(BINDIR)/%: %.c nn.h node.h game.h tokenizer.h transformer.h gpu.h $(VOCAB_HEADER) | $(BINDIR) raylib-5/libraylib.a
+	cc $(CFLAGS) $< -o $@ $(LDFLAGS) -DVOCAB_HEADER=$(VOCAB_HEADER) -DVOCAB_SIZE=$(VOCAB_SIZE)
 
 generated:
 	mkdir -p $@
@@ -72,16 +75,16 @@ corpus:
 # teacher generations, hours + 8GB download
 # 	uv run scripts/build_seqkd_data.py --split train
 
-export: bin/tokenizer-$(VOCAB_SIZE)
-	cd distill && rm -f cdata-$(VOCAB_SIZE)/*
-	cd distill && uv run scripts/export_seqkd_ids.py \
-		--jsonl data/seqkd_gold_dev.jsonl --out cdata-$(VOCAB_SIZE) \
+export: $(TOKENIZER_CMD)
+	# cd distill && rm -f $(CDATA_OUT)/*
+	cd distill && time uv run scripts/export_seqkd_ids.py \
+		--jsonl data/seqkd_gold_dev.jsonl --out $(CDATA_OUT) \
 		--vocab-size $(VOCAB_SIZE) --eos-id $(EOS_ID) --max-len 3072 \
-		--tokenizer-cmd '../bin/tokenizer-$(VOCAB_SIZE)'
-	cd distill && uv run scripts/export_seqkd_ids.py \
-		--jsonl data/seqkd_gold_train.jsonl --out cdata-$(VOCAB_SIZE) \
+		--tokenizer-cmd '../$(TOKENIZER_CMD)'
+	cd distill && time uv run scripts/export_seqkd_ids.py \
+		--jsonl data/seqkd_gold_train.jsonl --out $(CDATA_OUT) \
 		--vocab-size $(VOCAB_SIZE) --eos-id $(EOS_ID) --max-len 3072 \
-		--tokenizer-cmd '../bin/tokenizer-$(VOCAB_SIZE)'
+		--tokenizer-cmd '../$(TOKENIZER_CMD)'
 
 
 # $@  The target            The file name of the target of the rule.

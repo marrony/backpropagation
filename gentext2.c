@@ -543,8 +543,10 @@ int main(int argc, char* argv[]) {
   array_ensure(&start_indices, corpus.n_recs);
 
   size_t sum_tokens = 0;
+  size_t scored_tokens = 0;
   for (size_t i = 0; i < corpus.n_recs; ++i) {
     sum_tokens += corpus.recs[i].total_len;
+    scored_tokens += corpus.recs[i].total_len - corpus.recs[i].prompt_len;
     array_append(&start_indices, i);
   }
 
@@ -561,7 +563,7 @@ int main(int argc, char* argv[]) {
   //   const char* sep = "";
   //
   //   for (int j = 0; j < total_len; j++) {
-  //     if (j == prompt_len) printf(" -> ");
+  //     // if (j == prompt_len) printf(" -> ");
   //     printf("%s%s", vocabulary[ids[j]].token, sep);
   //   }
   //
@@ -667,11 +669,14 @@ int main(int argc, char* argv[]) {
   printf("corpus_size (train) = %zu\n", corpus.n_recs);
   printf("corpus_size (dev)   = %zu\n", corpus_dev.n_recs);
   printf("tokens_count = %zu\n", sum_tokens);
+  printf("scored_tokens = %zu (%.2f%%)\n", scored_tokens, (float)scored_tokens/(float)sum_tokens * 100.0f);
   printf("batch_size = %zu\n", batch_size);
   printf("steps_per_epoch = %zu\n", steps_per_epoch);
   printf("chinchilla target = %zu tokens\n", 20*params);
-  printf("ratio = %f tokens per parameter\n", sum_tokens / (float)params);
-  printf("epochs to get there = %zu\n", (20*params + sum_tokens - 1) / sum_tokens);
+  printf("ratio = %.2f (total) / %.2f (scored) tokens per parameter\n",
+      sum_tokens / (float)params, scored_tokens / (float)params);
+  printf("epochs to get there = %.2f (total) / %0.2f (scored)\n",
+      (20*params) / (float)sum_tokens, (20*params) / (float)scored_tokens);
   rst_color();
 
   // Muennighoff et al. (2023), Scaling Data-Constrained Language Models, is the empirical answer:
@@ -681,12 +686,20 @@ int main(int argc, char* argv[]) {
   //  - Past ~16: essentially zero value
   size_t epoch = 0;
   size_t optimizer_steps = 0;
+  size_t cursor = 0;
 
   bool loaded = load_model(&trans_in);
   load_optimizer(&optimizer, "models/gentext2.adam",
-      &epoch, &optimizer_steps, start_indices);
+      &epoch, &optimizer_steps, start_indices, &cursor);
 
-  Byte_Buffer prompt = from_cstring(&mallocator.alloc, "What is data science?");
+  // printf("cursor = %zu\n", cursor);
+  // for (size_t i = cursor; i < cursor+10; i++) {
+  //   printf("%zu ", start_indices.elems[i]);
+  // }
+  // printf("\n");
+  // return 0;
+
+  Byte_Buffer prompt = from_cstring(&mallocator.alloc, "Explain gravity");
   bool train = false;
   bool gen_text = false;
 
@@ -709,8 +722,12 @@ int main(int argc, char* argv[]) {
 
   if (prompt.len == 0) return -1;
 
-  Byte_Buffer prompt_fmt = ALLOC(&mallocator.alloc, prompt.len + 128);
-  snprintf(prompt_fmt.cptr, prompt_fmt.len, "User: %*sAssistant: ", (int)prompt.len, prompt.cptr);
+  size_t prompt_len = prompt.len;
+  while (prompt_len > 0 && prompt.cptr[prompt_len - 1] == '\n')
+    prompt_len -= 1;
+
+  Byte_Buffer prompt_fmt = ALLOC(&mallocator.alloc, prompt_len + 128);
+  snprintf(prompt_fmt.cptr, prompt_fmt.len, "User: %*s\nAssistant: ", (int)prompt_len, prompt.cptr);
   array_destroy(&buf);
 
   if ((loaded && !train) || gen_text) {
@@ -735,8 +752,6 @@ int main(int argc, char* argv[]) {
       peak_lr,
       peak_lr / 10.0f
   );
-
-  size_t cursor = 0;
 
   {
     size_t saved = SAVE(&arena.alloc);
@@ -766,7 +781,7 @@ int main(int argc, char* argv[]) {
         epoch += 1;
 
         save_model(&trans_in);
-        save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps, start_indices);
+        save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps, start_indices, cursor);
 
         size_t saved = SAVE(&arena.alloc);
         set_dropout(&trans_in, 0.0f);
@@ -904,8 +919,8 @@ int main(int argc, char* argv[]) {
 
     set_color(0, 255, 0);
     print_timestamp(stdout);
-    printf(" epoch=%zu/%zu step=%zu/%zu lr=%f loss=%f perp=%f tokens=%zu scored=%zu (avg %.1f/sample, %.1f%% scored)\n",
-        epoch+1, total_epochs, optimizer_steps+1, total_epochs*steps_per_epoch,
+    printf(" epoch=%zu/%zu step=%zu/%zu cursor=%zu lr=%f loss=%f perp=%f tokens=%zu scored=%zu (avg %.2f/sample, %.2f%% scored)\n",
+        epoch+1, total_epochs, optimizer_steps+1, total_epochs*steps_per_epoch, cursor,
         optimizer.learning_rate, loss, expf(loss), tokens_count, tokens_scored,
         (float)tokens_scored/(float)batch_size, (float)tokens_scored/(float)tokens_count * 100.0f);
     rst_color();
@@ -914,7 +929,7 @@ int main(int argc, char* argv[]) {
 
     if (optimizer_steps % 50 == 0) {
       save_model(&trans_in);
-      save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps, start_indices);
+      save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps, start_indices, cursor);
 
       size_t saved = SAVE(&arena.alloc);
       set_dropout(&trans_in, 0.0f);
@@ -936,7 +951,7 @@ int main(int argc, char* argv[]) {
   }
 
   save_model(&trans_in);
-  save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps, start_indices);
+  save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps, start_indices, cursor);
 
 generate_text:
   generate_text(&arena, &trans_in, prompt_fmt, &tokens, 2048);
