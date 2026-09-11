@@ -20,8 +20,22 @@
 
 #define CORPUS(x, y) "distill/cdata-" STR(MAX_VOCAB) "/" #x "." #y ".bin"
 
+Byte_Buffer model_name(Allocator* alloc, size_t V, size_t D, size_t F, size_t b, const char* ext) {
+  Byte_Buffer buf = NULL_BYTE_BUFFER;
+
+  int nbytes = -1;
+
+  for (int i = 0; i < 2; i++) {
+    nbytes = snprintf(buf.cptr, nbytes+1, "models/V=%zu-D=%zu-F=%zu-b=%zu.%s", V, D, F, b, ext);
+    if (nbytes < 0 || buf.cptr != NULL) break;
+    buf = ALLOC(alloc, nbytes+1);
+  }
+
+  return buf;
+}
+
 #ifdef VOCAB_HEADER
-#include STR(VOCAB_HEADER)
+#include VOCAB_HEADER
 #else
 #error VOCAB_HEADER not defined
 #endif
@@ -163,8 +177,8 @@ int32_t sample_topp(Arena_Allocator* arena, NMatrix probs, float topp) {
   return sampled;
 }
 
-void save_model(Transformer* trans_in) {
-  FILE* fp = fopen("models/gentext2.bin", "wb");
+void save_model(Transformer* trans_in, Byte_Buffer model_name) {
+  FILE* fp = fopen(model_name.cptr, "wb");
   mat_write(trans_in->tok_emb.value, fp);
   mat_write(trans_in->ln.gamma.value, fp);
   mat_write(trans_in->ln.beta.value, fp);
@@ -196,10 +210,14 @@ void save_model(Transformer* trans_in) {
   fclose(fp);
 }
 
-bool load_model(Transformer* trans_in) {
-  FILE* fp = fopen("models/gentext2.bin", "rb");
-  if (fp == NULL) return false;
+bool load_model(Transformer* trans_in, Byte_Buffer model_name) {
+  FILE* fp = fopen(model_name.cptr, "rb");
+  if (fp == NULL) {
+    printf("model %*s doesn't exists\n", (int)model_name.len, model_name.cptr);
+    return false;
+  }
 
+  printf("model %*s exists, reading\n", (int)model_name.len, model_name.cptr);
   mat_read(trans_in->tok_emb.value, fp);
   mat_read(trans_in->ln.gamma.value, fp);
   mat_read(trans_in->ln.beta.value, fp);
@@ -285,7 +303,7 @@ void generate_text(
     // 1.0 = normal
     // 1.5 = creative
     // 3.0 = nonsensical
-    transformer_forward(*tokens, &trans_out, trans_in, 1.1f, 0);
+    transformer_forward(*tokens, &trans_out, trans_in, 1.1f);
 
     NMatrix last_token = mat_row(trans_out.probs, N - 1);
 
@@ -419,26 +437,46 @@ const int32_t *example(const Corpus *c, size_t i, int *prompt_len, int *total_le
   return c->ids + r.offset;
 }
 
+// mean = 0 and variance = 1 over D components
+// Σ_d x_d² = D
+// ‖x‖ = √D
+//
+// σ is the standard deviation
+// σ² is the variance
+//
+// var(logits) = σ_E² · D
+// std(logits) = σ_E  · √D
+//
+// h is LayerNorm output, std = 1  ‖h‖ = √D
+// std_v(h · E[v]) = σ_E · ‖h‖ = σ_E · √D
+// std(logits) = σ_E · √D = ‖E[v]‖
+//
+// σ = √(2/(V+D))
 float logits_std(NMatrix logits) {
-  float acc = 0.0;
+  float std_acc = 0.0;
   for (uint32_t i = 0; i < logits.rows; i++) {
-    double mean = 0.0;
+    float mean = 0.0;
     for (uint32_t v = 0; v < logits.cols; v++) {
-        mean += MAT_AT(logits, i, v);
+      mean += MAT_AT(logits, i, v);
     }
     mean /= logits.cols;
 
     float var = 0.0;
     for (uint32_t v = 0; v < logits.cols; v++) {
-        float d = MAT_AT(logits, i, v) - mean;
-        var += d * d;
+      float d = MAT_AT(logits, i, v) - mean; // std
+      var += d * d;
     }
-    acc += sqrtf(var / logits.cols);
+    std_acc += sqrtf(var / logits.cols);
   }
-  return acc / logits.rows;
+  return std_acc / logits.rows;
 }
 
-static float evaluate(Arena_Allocator* arena, Transformer *trans_in, Corpus *dev, size_t nrecs) {
+float evaluate(
+  Arena_Allocator* arena,
+  Transformer *trans_in,
+  Corpus *dev,
+  size_t nrecs
+) {
   const float saved_p = trans_in->x0_p;
   set_dropout(trans_in, 0.0f);
 
@@ -482,7 +520,7 @@ static float evaluate(Arena_Allocator* arena, Transformer *trans_in, Corpus *dev
         .sequence_size = N,
     );
 
-    transformer_forward(tokens, &trans_out, trans_in, 1.0f, 0);
+    transformer_forward(tokens, &trans_out, trans_in, 1.0f);
 
     for (size_t i = (size_t)first; i < N; i++) {
       const int32_t target = targets.elems[i];
@@ -515,6 +553,14 @@ Byte_Array read_input(Allocator* alloc, FILE* input) {
   return buff;
 }
 
+static int cmp_size(const void *a, const void *b) {
+  size_t x = *(const size_t *)a, y = *(const size_t *)b;
+  return (x > y) - (x < y);          /* NOT x - y: size_t underflows */
+}
+
+size_t histogram[MAX_VOCAB] = {0};
+size_t histogram_sorted[MAX_VOCAB] = {0};
+
 int main(int argc, char* argv[]) {
   srand(getpid());
 
@@ -532,25 +578,41 @@ int main(int argc, char* argv[]) {
   // TokenID_Array sequence = ARRAY_CREATE(&mallocator.alloc);
   TokenID_Array tokens = ARRAY_CREATE(&mallocator.alloc);
   TokenID_Array targets = ARRAY_CREATE(&mallocator.alloc);
-  Index32_Array start_indices = ARRAY_CREATE(&mallocator.alloc);
+  Index32_Array order_indices = ARRAY_CREATE(&mallocator.alloc);
 
   // prepare_data(&sequence);
 
   Corpus corpus = corpus_load(CORPUS(train, ids), CORPUS(train, index));
   Corpus corpus_dev = corpus_load(CORPUS(dev, ids), CORPUS(dev, index));
 
-  // todo: save start_indices, so the order survices restart
-  array_ensure(&start_indices, corpus.n_recs);
+  array_ensure(&order_indices, corpus.n_recs);
 
   size_t sum_tokens = 0;
   size_t scored_tokens = 0;
   for (size_t i = 0; i < corpus.n_recs; ++i) {
     sum_tokens += corpus.recs[i].total_len;
     scored_tokens += corpus.recs[i].total_len - corpus.recs[i].prompt_len;
-    array_append(&start_indices, i);
+    array_append(&order_indices, i);
   }
 
-  shuffle_indices(start_indices);
+  shuffle_indices(order_indices);
+
+  for (size_t i = 0; i < corpus.n_ids; i++)
+    histogram[corpus.ids[i]] += 1;
+  memcpy(histogram_sorted, histogram, sizeof(histogram));
+  qsort(histogram_sorted, MAX_VOCAB, sizeof(size_t), cmp_size);
+
+  size_t dead = 0;
+  size_t rare = 0;
+  for (size_t v = 0; v < MAX_VOCAB; v++) {
+    if (histogram[v] == 0) {
+      dead += 1;
+    }
+
+    if (histogram[v] < 100) {
+      rare += 1;
+    }
+  }
 
   // for (size_t i = 0; i < corpus.n_recs; i++) {
   //   int prompt_len = 0;
@@ -577,11 +639,16 @@ int main(int argc, char* argv[]) {
   size_t V = MAX_VOCAB;
   size_t num_blocks = 4;
 
+  Byte_Buffer model_name_par = model_name(&mallocator.alloc, V, D, F, num_blocks, "adam");
+  Byte_Buffer model_name_bin = model_name(&mallocator.alloc, V, D, F, num_blocks, "bin");
+
   float peak_lr = 1e-3;
-  size_t batch_size = 8;
-  size_t steps_per_epoch = corpus.n_recs / batch_size;
   size_t total_epochs = 2;
-  size_t total_steps = total_epochs * steps_per_epoch;
+  size_t target_scored = 1638;
+  size_t total_steps = (scored_tokens * total_epochs + target_scored - 1) / target_scored;
+  // w0 = ~1/(1−β₂)
+  // w1 = epochs*(2%-5%)
+  // w = max(w0, w1)
   size_t warmup_steps = MAX(1000, (size_t)(total_epochs * 0.02f));
   float dropout_pct = 0.0;
 
@@ -670,8 +737,12 @@ int main(int argc, char* argv[]) {
   printf("corpus_size (dev)   = %zu\n", corpus_dev.n_recs);
   printf("tokens_count = %zu\n", sum_tokens);
   printf("scored_tokens = %zu (%.2f%%)\n", scored_tokens, (float)scored_tokens/(float)sum_tokens * 100.0f);
-  printf("batch_size = %zu\n", batch_size);
-  printf("steps_per_epoch = %zu\n", steps_per_epoch);
+  printf("target_scored = %zu\n", target_scored);
+  printf("total_steps = %zu\n", total_steps);
+  printf("type frequency: p1=%zu p10=%zu p50=%zu p90=%zu max=%zu\n",
+       histogram_sorted[V/100], histogram_sorted[V/10], histogram_sorted[V/2],
+       histogram_sorted[9*V/10], histogram_sorted[V-1]);
+  printf("  %zu never appear, %zu appear <100x (%.1f%%)\n", dead, rare, 100.0*rare/MAX_VOCAB);
   printf("chinchilla target = %zu tokens\n", 20*params);
   printf("ratio = %.2f (total) / %.2f (scored) tokens per parameter\n",
       sum_tokens / (float)params, scored_tokens / (float)params);
@@ -688,18 +759,17 @@ int main(int argc, char* argv[]) {
   size_t optimizer_steps = 0;
   size_t cursor = 0;
 
-  bool loaded = load_model(&trans_in);
-  load_optimizer(&optimizer, "models/gentext2.adam",
-      &epoch, &optimizer_steps, start_indices, &cursor);
+  bool loaded = load_model(&trans_in, model_name_bin);
+  load_optimizer(&optimizer, model_name_par, &epoch, &optimizer_steps, order_indices, &cursor);
 
   // printf("cursor = %zu\n", cursor);
   // for (size_t i = cursor; i < cursor+10; i++) {
-  //   printf("%zu ", start_indices.elems[i]);
+  //   printf("%zu ", order_indices.elems[i]);
   // }
   // printf("\n");
   // return 0;
 
-  Byte_Buffer prompt = from_cstring(&mallocator.alloc, "Explain gravity");
+  Byte_Buffer prompt = from_cstring(&mallocator.alloc, "What is data science?");
   bool train = false;
   bool gen_text = false;
 
@@ -766,22 +836,18 @@ int main(int argc, char* argv[]) {
   while (optimizer_steps < total_steps) {
     float loss_sum = 0;
     size_t tokens_scored = 0;
-
-    set_dropout(&trans_in, dropout_pct);
-    mat_zero(mat_row(trans_in.tok_emb.value, 0));
-
     size_t tokens_count = 0;
 
-    for (size_t sample = 0; sample < batch_size; sample++) {
-      if (cursor == start_indices.count) {
-        // todo: increment epoch here
-        shuffle_indices(start_indices);
-        cursor = 0;
+    set_dropout(&trans_in, dropout_pct);
 
+    while (tokens_scored < target_scored) {
+      if (cursor == order_indices.count) {
+        shuffle_indices(order_indices);
+        cursor = 0;
         epoch += 1;
 
-        save_model(&trans_in);
-        save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps, start_indices, cursor);
+        save_model(&trans_in, model_name_bin);
+        save_optimizer(&optimizer, model_name_par, epoch, optimizer_steps, order_indices, cursor);
 
         size_t saved = SAVE(&arena.alloc);
         set_dropout(&trans_in, 0.0f);
@@ -789,12 +855,10 @@ int main(int argc, char* argv[]) {
         RESTORE(&arena.alloc, saved);
       }
 
-      size_t start_index = start_indices.elems[cursor];
-      cursor += 1;
-
       int prompt_len = 0;
       int total_len = 0;
-      const int32_t *ids = example(&corpus, start_index, &prompt_len, &total_len);
+      const int32_t *ids = example(&corpus, order_indices.elems[cursor], &prompt_len, &total_len);
+      cursor += 1;
 
       const int first = prompt_len - 1;             /* first loss position */
       const int npos  = total_len - prompt_len;     /* how many */
@@ -812,8 +876,6 @@ int main(int argc, char* argv[]) {
 
       size_t N = tokens.count;
 
-      tokens_count += total_len;
-
       size_t saved = SAVE(&arena.alloc);
       {
         Transformer_Output trans_out = {0};
@@ -828,11 +890,16 @@ int main(int argc, char* argv[]) {
             .sequence_size = N,
         );
 
-        transformer_forward(tokens, &trans_out, &trans_in, 1.0f, 0);
+        transformer_forward(tokens, &trans_out, &trans_in, 1.0f);
 
         if (optimizer_steps == 0) {
           set_color(0, 0, 255);
-          printf("std(logits) = %.4f  (target ~0.11)\n", logits_std(trans_out.logits.value));
+          // σ = √(2/(V+D))
+          // std(logits) = σ · √D
+          float std = sqrtf(2.0f / (D+MAX_VOCAB));
+
+          printf("std(logits) = %.4f  (target ~%.4f)\n",
+              logits_std(trans_out.logits.value), std*sqrtf(D));
           rst_color();
 
           NMatrix x = trans_out.ln.out.value;     /* whatever the head reads */
@@ -883,13 +950,15 @@ int main(int argc, char* argv[]) {
         NMatrix dlogits = trans_out.logits.grad;
         mat_copy(dlogits, trans_out.probs);
 
+        tokens_count += total_len;
+        tokens_scored += npos;
+
         for (size_t i = 0; i < N; i++) {
           int32_t target = targets.elems[i];
 
           if (i >= (size_t)first) {
             MAT_AT(dlogits, i, target) -= 1.0f;
             loss_sum -= logf(MAT_AT(trans_out.probs, i, target) + 1e-10f);
-            tokens_scored += 1;
           } else {
             mat_zero(mat_row(dlogits, i));
           }
@@ -900,7 +969,6 @@ int main(int argc, char* argv[]) {
       RESTORE(&arena.alloc, saved);
     }
 
-    mat_zero(mat_row(trans_in.tok_emb.grad, 0));
     update_grads_adam(&optimizer, 1.0f / (float)tokens_scored);
 
     // cosine annealing
@@ -919,17 +987,16 @@ int main(int argc, char* argv[]) {
 
     set_color(0, 255, 0);
     print_timestamp(stdout);
-    printf(" epoch=%zu/%zu step=%zu/%zu cursor=%zu lr=%f loss=%f perp=%f tokens=%zu scored=%zu (avg %.2f/sample, %.2f%% scored)\n",
-        epoch+1, total_epochs, optimizer_steps+1, total_epochs*steps_per_epoch, cursor,
-        optimizer.learning_rate, loss, expf(loss), tokens_count, tokens_scored,
-        (float)tokens_scored/(float)batch_size, (float)tokens_scored/(float)tokens_count * 100.0f);
+    printf(" epoch=%zu/%zu step=%zu/%zu cursor=%zu lr=%f loss=%f perp=%f tokens=%zu scored=%zu (%.2f%% scored)\n",
+        epoch+1, total_epochs, optimizer_steps+1, total_steps, cursor, optimizer.learning_rate, loss, expf(loss),
+        tokens_count, tokens_scored, (float)tokens_scored/(float)tokens_count * 100.0f);
     rst_color();
 
     optimizer_steps += 1;
 
     if (optimizer_steps % 50 == 0) {
-      save_model(&trans_in);
-      save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps, start_indices, cursor);
+      save_model(&trans_in, model_name_bin);
+      save_optimizer(&optimizer, model_name_par, epoch, optimizer_steps, order_indices, cursor);
 
       size_t saved = SAVE(&arena.alloc);
       set_dropout(&trans_in, 0.0f);
@@ -950,8 +1017,8 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  save_model(&trans_in);
-  save_optimizer(&optimizer, "models/gentext2.adam", epoch, optimizer_steps, start_indices, cursor);
+  save_model(&trans_in, model_name_bin);
+  save_optimizer(&optimizer, model_name_par, epoch, optimizer_steps, order_indices, cursor);
 
 generate_text:
   generate_text(&arena, &trans_in, prompt_fmt, &tokens, 2048);

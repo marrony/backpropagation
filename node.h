@@ -171,8 +171,8 @@ void register_tensor(Optimizer* opt, Tensor tensor, bool decay) {
 
 DEFINE_ARRAY_ALIAS(Index32, size_t);
 
-void save_optimizer(Optimizer* optimizer, const char* file, size_t epochs, size_t optimizer_steps, Index32_Array order, size_t cursor) {
-  FILE* fp = fopen(file, "wb");
+void save_optimizer(Optimizer* optimizer, Byte_Buffer file, size_t epochs, size_t optimizer_steps, Index32_Array order, size_t cursor) {
+  FILE* fp = fopen(file.cptr, "wb");
   fwrite(&optimizer->updates, sizeof(size_t), 1, fp);
   fwrite(&optimizer->learning_rate, sizeof(float), 1, fp);
   fwrite(&epochs, sizeof(size_t), 1, fp);
@@ -188,33 +188,37 @@ void save_optimizer(Optimizer* optimizer, const char* file, size_t epochs, size_
   fclose(fp);
 }
 
-void load_optimizer(Optimizer* optimizer, const char* file, size_t* epochs, size_t* optimizer_steps, Index32_Array order, size_t* cursor) {
-  FILE* fp = fopen(file, "rb");
-  if (fp != NULL) {
-    printf("optimizer exists, reading\n");
-    fread(&optimizer->updates, sizeof(size_t), 1, fp);
-    fread(&optimizer->learning_rate, sizeof(float), 1, fp);
-    fread(epochs, sizeof(size_t), 1, fp);
-    fread(optimizer_steps, sizeof(size_t), 1, fp);
+void load_optimizer(Optimizer* optimizer, Byte_Buffer file, size_t* epochs, size_t* optimizer_steps, Index32_Array order, size_t* cursor) {
+  FILE* fp = fopen(file.cptr, "rb");
 
-    size_t tensors_count = 0;
-    fread(&tensors_count, sizeof(size_t), 1, fp);
-    assert(tensors_count == optimizer->tensors.count);
-
-    for (size_t i = 0; i < optimizer->tensors.count; i++) {
-      mat_read(optimizer->history.elems[i], fp); // 1st moment
-      mat_read(optimizer->second.elems[i], fp); // 2nd moment
-    }
-
-    size_t order_count = 0;
-    fread(&order_count, sizeof(size_t), 1, fp);
-    assert(order_count == order.count);
-    fread(order.elems, sizeof(size_t), order.count, fp);
-
-    fread(cursor, sizeof(size_t), 1, fp);
-
-    fclose(fp);
+  if (fp == NULL) {
+    printf("optimizer %*s doesn't exists\n", (int)file.len, file.cptr);
+    return;
   }
+
+  printf("optimizer %*s exists, reading\n", (int)file.len, file.cptr);
+  fread(&optimizer->updates, sizeof(size_t), 1, fp);
+  fread(&optimizer->learning_rate, sizeof(float), 1, fp);
+  fread(epochs, sizeof(size_t), 1, fp);
+  fread(optimizer_steps, sizeof(size_t), 1, fp);
+
+  size_t tensors_count = 0;
+  fread(&tensors_count, sizeof(size_t), 1, fp);
+  assert(tensors_count == optimizer->tensors.count);
+
+  for (size_t i = 0; i < optimizer->tensors.count; i++) {
+    mat_read(optimizer->history.elems[i], fp); // 1st moment
+    mat_read(optimizer->second.elems[i], fp); // 2nd moment
+  }
+
+  size_t order_count = 0;
+  fread(&order_count, sizeof(size_t), 1, fp);
+  assert(order_count == order.count);
+  fread(order.elems, sizeof(size_t), order.count, fp);
+
+  fread(cursor, sizeof(size_t), 1, fp);
+
+  fclose(fp);
 }
 
 Node* create_node(Node_Type type) {

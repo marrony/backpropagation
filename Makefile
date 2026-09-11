@@ -49,7 +49,7 @@ $(VOCAB_HEADER): generated bin/genvocab # generated/data.bin
 $(BINDIR)/node: node.c nn.h node.h transformer.h | $(BINDIR)
 	cc $(CFLAGS_DEBUG) $< -o $@ $(LDFLAGS)
 
-$(TOKENIZER_CMD): tokenizer.c tokenizer.h $(VOCAB_HEADER) | $(BINDIR)
+$(TOKENIZER_CMD): tokenizer.c tokenizer.h | $(BINDIR)
 	cc $(CFLAGS) $< -o $@ $(LDFLAGS) -DVOCAB_HEADER=$(VOCAB_HEADER) -DVOCAB_SIZE=$(VOCAB_SIZE)
 
 $(BINDIR)/genvocab: genvocab.c tokenizer.h | $(BINDIR)
@@ -58,8 +58,11 @@ $(BINDIR)/genvocab: genvocab.c tokenizer.h | $(BINDIR)
 $(BINDIR)/cnn-node: cnn-node.c
 	echo "cnn-node.c is broken"
 
-$(BINDIR)/%: %.c nn.h node.h game.h tokenizer.h transformer.h gpu.h $(VOCAB_HEADER) | $(BINDIR) raylib-5/libraylib.a
-	cc $(CFLAGS) $< -o $@ $(LDFLAGS) -DVOCAB_HEADER=$(VOCAB_HEADER) -DVOCAB_SIZE=$(VOCAB_SIZE)
+$(BINDIR)/%: %.c nn.h node.h game.h tokenizer.h transformer.h gpu.h | $(BINDIR) raylib-5/libraylib.a
+	cc $(CFLAGS) $< -o $@ $(LDFLAGS) -DVOCAB_HEADER='"$(VOCAB_HEADER)"' -DVOCAB_SIZE=$(VOCAB_SIZE)
+
+$(BINDIR)/gentext2.2: gentext2.c nn.h node.h game.h tokenizer.h transformer.h gpu.h | $(BINDIR) raylib-5/libraylib.a
+	cc $(CFLAGS) $< -o $@ $(LDFLAGS) -DVOCAB_HEADER='"$(VOCAB_HEADER)"' -DVOCAB_SIZE=$(VOCAB_SIZE)
 
 generated:
 	mkdir -p $@

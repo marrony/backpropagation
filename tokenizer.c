@@ -27,7 +27,7 @@ DEFINE_ARRAY_ALIAS(Byte, char);
 Byte_Array read_input(Allocator* alloc, FILE* input) {
   Byte_Array buff =  ARRAY_CREATE(alloc);
 
-  array_ensure(&buff, 10*1024);
+  array_ensure(&buff, 1024*1024);
 
   while (true) {
     int ch = fgetc(input);
@@ -58,6 +58,8 @@ int main(void) {
         vocabulary_by_size,
         MAX_VOCAB
     );
+
+    start = i + 1;
 
     for (size_t i = 0; i < tokens.count; i++) {
       printf("%d", tokens.elems[i]);

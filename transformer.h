@@ -80,6 +80,9 @@ struct Layer_Norm_Backward_Opts {
 #define layer_norm_backward(...) \
   layer_norm_backward_opts((struct Layer_Norm_Backward_Opts){ __VA_ARGS__ })
 
+// ensure means=0 and variance=1 over D components
+// Σ_d x_d² = D
+// ‖x‖ = √D
 void layer_norm_forward_opts(struct Layer_Norm_Forward_Opts opts) {
   NMatrix gamma = opts.ln_in->gamma.value;
   NMatrix beta = opts.ln_in->beta.value;
@@ -148,17 +151,33 @@ void layer_norm_backward_opts(struct Layer_Norm_Backward_Opts opts) {
   }
 }
 
-float xavier_glorot(size_t fan_in, size_t fan_out) {
+// Glorot's target:
+//
+// σ² = 2/f
+//
+// Normal = N(0, σ²)
+// σ² = 2/f
+// σ = √(2/f)
+//
+// Uniform = U(-a, +a)
+// w = 2a
+//
+// σ² = w²/12 = (2a)²/12 = a²/3
+// 
+// a²/3 = 2/f
+// a² = 6/f
+// a = √(6/f)
+float xavier_glorot_limit(size_t fan_in, size_t fan_out) {
   return sqrtf(6.0f / (float)(fan_in + fan_out));
 }
 
 void init_xavier_glorot(NMatrix mat, size_t fan_in, size_t fan_out) {
-  float std = xavier_glorot(fan_in, fan_out);
+  float std = xavier_glorot_limit(fan_in, fan_out);
   mat_rand_uniform(mat, -std, +std);
 }
 
 void init_transformer_output_projections(NMatrix mat, size_t fan_in, size_t fan_out, size_t num_layers) {
-  float std = xavier_glorot(fan_in, fan_out);
+  float std = xavier_glorot_limit(fan_in, fan_out);
   float depth_scale = 1.0f / sqrtf(2.0f * (float)num_layers);
   float final_std = std * depth_scale;
 
@@ -961,8 +980,7 @@ void transformer_forward(
   TokenID_Array tokens,
   Transformer_Output* out,
   Transformer* in,
-  float temperature,
-  size_t token_offset
+  float temperature
 ) {
   assert(tokens.count == out->sequence_size);
 
@@ -986,7 +1004,6 @@ void transformer_forward(
         .block_in  = &in->blocks[i],
         .in        = x,
         .scores    = out->scores,
-        .token_offset = token_offset,
     );
     x = out->blocks[i].out;
   }
