@@ -933,7 +933,7 @@ void init_transformer_opts(struct Init_Transformer_Opts opts) {
   init_linear_layer(alloc, &trans->H, D, V);
 
   trans->num_blocks = opts.num_blocks;
-  trans->blocks = ALLOC(alloc, sizeof(Block)*trans->num_blocks).void_ptr;
+  trans->blocks = ALLOC(alloc, sizeof(Block)*trans->num_blocks).ptr;
 
   for (size_t i = 0; i < trans->num_blocks; i++) {
     init_block(alloc, &trans->blocks[i], D, F, trans->num_blocks);
@@ -955,7 +955,7 @@ void init_transformer_output_opts(struct Init_Transformer_Output_Opts opts) {
   trans_out->x0_mask = mat_alloc2(&arena->alloc, N, V);
 
   trans_out->num_blocks = opts.num_blocks;
-  trans_out->blocks = ALLOC(&arena->alloc, sizeof(Block_Output)*trans_out->num_blocks).void_ptr;
+  trans_out->blocks = ALLOC(&arena->alloc, sizeof(Block_Output)*trans_out->num_blocks).ptr;
 
   for (size_t i = 0; i < trans_out->num_blocks; i++) {
     init_block_output(arena, &trans_out->blocks[i], N, D, H, F);

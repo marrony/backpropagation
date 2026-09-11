@@ -76,6 +76,8 @@ Byte_Buffer byte_buffer_set_int(Byte_Buffer buf, int32_t value) {
 typedef struct {
   int32_t id;
   char token[MAX_TOKEN];
+  int32_t a;
+  int32_t b;
 } Token;
 
 typedef struct {
@@ -307,6 +309,8 @@ int32_t gen_vocabulary(
 
   for (int i = 1; i < 256; i++) {
     vocabulary[vocabulary_count].id = vocabulary_count;
+    vocabulary[vocabulary_count].a = -1;
+    vocabulary[vocabulary_count].b = -1;
     vocabulary[vocabulary_count].token[0] = i;
     vocabulary_count += 1;
   }
@@ -315,6 +319,8 @@ int32_t gen_vocabulary(
   memset(token.token, 0, MAX_TOKEN);
   strcpy(token.token, "<EOS>");
   vocabulary[vocabulary_count] = token;
+  vocabulary[vocabulary_count].a = -1;
+  vocabulary[vocabulary_count].b = -1;
   vocabulary_count += 1;
 
   TokenID_Array ids = ARRAY_CREATE(global);
@@ -334,7 +340,7 @@ int32_t gen_vocabulary(
 
       // convert bytes to token id
       for (size_t i = 0; i < word.len; i++) {
-        array_append(&ids, vocabulary[word.ptr[i]].id);
+        array_append(&ids, word.uptr[i]);
       }
 
       array_append(&ids, 0);
@@ -342,33 +348,24 @@ int32_t gen_vocabulary(
   }
 
   size_t histogram_size = sizeof(int32_t)*max_vocab*max_vocab;
-  int32_t* histogram = ALLOC(global, histogram_size).void_ptr;
+  int32_t* histogram = ALLOC(global, histogram_size).ptr;
   memset(histogram, 0, histogram_size);
-
-  // print_timestamp(stderr);
-  // fprintf(stderr, " creating histogram\n");
 
   calculate_histogram(ids, histogram, max_vocab);
 
-  // print_timestamp(stderr);
-  // fprintf(stderr, " histogram created\n");
-
   for (size_t c = 256+1; c < max_vocab; c++) {
-    // print_timestamp(stderr);
-    // fprintf(stderr, " finding max\n");
-
     Token_Pair max_pair = {0};
     int32_t count = find_max(histogram, max_vocab, &max_pair);
 
     if (count <= 0) break;
 
     vocabulary[c].id = c;
+    vocabulary[c].a = max_pair.token0;
+    vocabulary[c].b = max_pair.token1;
     snprintf(vocabulary[c].token, MAX_TOKEN, "%s%s",
         vocabulary[max_pair.token0].token, vocabulary[max_pair.token1].token);
     vocabulary_count += 1;
 
-    // print_timestamp(stderr);
-    // fprintf(stderr, " merge ids, new token %zu\n", c);
     merge_ids(&ids, max_pair, c, histogram, max_vocab);
 
     assert(histogram[(size_t)max_pair.token0*max_vocab + max_pair.token1] == 0);
@@ -379,32 +376,69 @@ int32_t gen_vocabulary(
   return vocabulary_count;
 }
 
+void build_merge_to(int32_t* merge_to, Token* vocabulary, size_t max_vocab) {
+  for (size_t i = 0; i < max_vocab*max_vocab; i++)
+    merge_to[i] = -1;
+
+  for (size_t c = 257; c < max_vocab; c++) {
+    assert(vocabulary[c].a != -1 && vocabulary[c].b != -1);
+    merge_to[vocabulary[c].a*max_vocab + vocabulary[c].b] = c;
+  }
+}
+
+void bpe_word(TokenID_Array* ids, const int32_t *merge_to, int32_t V) {
+  for (;;) {
+    int32_t best_id = INT32_MAX;
+    size_t  best_pos = (size_t)-1;
+
+    for (size_t j = 0; j + 1 < ids->count; j++) {
+      int32_t m = merge_to[(size_t)ids->elems[j] * V + ids->elems[j + 1]];
+
+      if (m >= 0 && m < best_id) {
+        best_id = m;
+        best_pos = j;
+      }
+    }
+
+    if (best_pos == (size_t)-1)
+      break;
+
+    ids->elems[best_pos] = best_id;
+    memmove(&ids->elems[best_pos + 1], &ids->elems[best_pos + 2],
+            (ids->count - best_pos - 2) * sizeof(int32_t));
+    ids->count -= 1;
+  }
+}
+
 size_t tokenize(
   TokenID_Array* sequence,
-  const char* text,
-  size_t text_len,
-  Token* vocabulary,
-  Token_Sorted* vocabulary_by_size,
+  Byte_Buffer_Array* words,
+  TokenID_Array* buf,
+  Byte_Buffer text,
+  int32_t* merge_to,
   size_t max_vocab
 ) {
   size_t tokens_count = 0;
 
-  size_t i = 0;
-  while (i < text_len) {
-    bool found = false;
-    for (size_t ii = 0; ii < max_vocab; ii++) {
-      int32_t token = vocabulary_by_size[ii].id;
-      size_t size = vocabulary_by_size[ii].size;
+  words->count = 0;
+  pre_split(text, words);
 
-      if (strncmp(text+i, vocabulary[token].token, size) == 0) {
-        array_append(sequence, token);
-        tokens_count += 1;
-        i += size;
-        found = true;
-        break;
-      }
+  for (size_t w = 0; w < words->count; w++) {
+    Byte_Buffer word = words->elems[w];
+
+    buf->count = 0;
+
+    for (size_t i = 0; i < word.len; i++) {
+      array_append(buf, word.uptr[i]);
     }
-    assert(found && "vocab not found");
+
+    bpe_word(buf, merge_to, max_vocab);
+
+    for (size_t i = 0; i < buf->count; i++) {
+      array_append(sequence, buf->elems[i]);
+    }
+
+    tokens_count += buf->count;
   }
 
   return tokens_count;

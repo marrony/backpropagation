@@ -211,6 +211,7 @@ void load_optimizer(Optimizer* optimizer, Byte_Buffer file, size_t* epochs, size
     mat_read(optimizer->second.elems[i], fp); // 2nd moment
   }
 
+  // fixme: order array change whenever the input train change
   size_t order_count = 0;
   fread(&order_count, sizeof(size_t), 1, fp);
   assert(order_count == order.count);
@@ -479,7 +480,7 @@ void node_dconv1d(
 Tensor* node_forward(Arena_Allocator* arena, Node* node, Tape_Node_Array* tape) {
   size_t saved = SAVE(&arena->alloc);
 
-  Tensor* out = ALLOC(&arena->alloc, sizeof(Tensor)).void_ptr;
+  Tensor* out = ALLOC(&arena->alloc, sizeof(Tensor)).ptr;
   memset(out, 0, sizeof(Tensor));
   out->value = NULL_MATRIX;
   out->grad = NULL_MATRIX;
@@ -523,7 +524,7 @@ Tensor* node_forward(Arena_Allocator* arena, Node* node, Tape_Node_Array* tape) 
       int rows_out_1 = node->as_embedding.context_size - kern_size + 1;
       int rows_out_2 = rows_out_1 - kern_size + 1;
 
-      Tensor* layer1_out = ALLOC(&arena->alloc, sizeof(Tensor)).void_ptr;
+      Tensor* layer1_out = ALLOC(&arena->alloc, sizeof(Tensor)).ptr;
       layer1_out->value = mat_alloc2(&arena->alloc, rows_out_1, filter_count);
       layer1_out->grad = mat_alloc2(&arena->alloc, rows_out_1, filter_count);
       mat_zero(layer1_out->value);
@@ -587,8 +588,8 @@ Tensor* node_forward(Arena_Allocator* arena, Node* node, Tape_Node_Array* tape) 
 
     case NODE_SOFTMAX_CROSS_ENTROPY: {
       Tensor* logits_tensor = node_forward(arena, node->as_softmax.input, tape);
-      Tensor* target_tensor = ALLOC(&arena->alloc, sizeof(Tensor)).void_ptr;
-      Tensor* probs_tensor = ALLOC(&arena->alloc, sizeof(Tensor)).void_ptr;
+      Tensor* target_tensor = ALLOC(&arena->alloc, sizeof(Tensor)).ptr;
+      Tensor* probs_tensor = ALLOC(&arena->alloc, sizeof(Tensor)).ptr;
 
       target_tensor->value = mat_alloc2(&arena->alloc, logits_tensor->value.rows, logits_tensor->value.cols);
       target_tensor->grad = NULL_MATRIX;

@@ -143,7 +143,7 @@ void malloc_free(Malloc_Allocator* alloc, Byte_Buffer buffer, const char* file, 
   (void)file;
   (void)line;
 
-  void* ptr = buffer.ptr - sizeof(Malloc_Entry);
+  void* ptr = buffer.uptr - sizeof(Malloc_Entry);
   Malloc_Entry* entry = (Malloc_Entry*)ptr;
 
   size_t nbytes = entry->nbytes;
@@ -198,7 +198,7 @@ Byte_Buffer arena_alloc(Arena_Allocator* alloc, size_t nbytes, const char* file,
   if (nbytes > remaining)
     return NULL_BYTE_BUFFER;
 
-  void* ptr = alloc->buffer.ptr + alloc->allocated;
+  void* ptr = alloc->buffer.uptr + alloc->allocated;
 
   memset(ptr, 0, nbytes);
 

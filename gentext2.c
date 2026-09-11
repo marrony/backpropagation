@@ -263,15 +263,20 @@ void generate_text(
   Transformer* trans_in,
   Byte_Buffer prompt,
   TokenID_Array* tokens,
+  Byte_Buffer_Array* words,
+  TokenID_Array* buf,
+  int32_t* merge_to,
   size_t max_tokens
 ) {
   tokens->count = 0;
+  words->count = 0;
+  buf->count = 0;
   tokenize(
       tokens,
-      prompt.cptr,
-      strlen(prompt.cptr),
-      vocabulary,
-      vocabulary_by_size,
+      words,
+      buf,
+      prompt,
+      merge_to,
       MAX_VOCAB
   );
 
@@ -577,10 +582,14 @@ int main(int argc, char* argv[]) {
   Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, arena_size + 2L*1024*1024*1024);
   // TokenID_Array sequence = ARRAY_CREATE(&mallocator.alloc);
   TokenID_Array tokens = ARRAY_CREATE(&mallocator.alloc);
+  TokenID_Array buff = ARRAY_CREATE(&mallocator.alloc);
+  Byte_Buffer_Array words = ARRAY_CREATE(&mallocator.alloc);
   TokenID_Array targets = ARRAY_CREATE(&mallocator.alloc);
   Index32_Array order_indices = ARRAY_CREATE(&mallocator.alloc);
 
-  // prepare_data(&sequence);
+  int32_t* merge_to = ALLOC(&mallocator.alloc, sizeof(int32_t)*MAX_VOCAB*MAX_VOCAB).ptr;
+
+  build_merge_to(merge_to, vocabulary, MAX_VOCAB);
 
   Corpus corpus = corpus_load(CORPUS(train, ids), CORPUS(train, index));
   Corpus corpus_dev = corpus_load(CORPUS(dev, ids), CORPUS(dev, index));
@@ -621,7 +630,7 @@ int main(int argc, char* argv[]) {
   //
   //   printf("prompt_len = %d | total_len = %d\n", prompt_len, total_len);
   //
-  //   //const char* sep = "\u22c5";
+  //   // const char* sep = "\u22c5";
   //   const char* sep = "";
   //
   //   for (int j = 0; j < total_len; j++) {
@@ -826,7 +835,7 @@ int main(int argc, char* argv[]) {
   {
     size_t saved = SAVE(&arena.alloc);
     set_dropout(&trans_in, 0.0f);
-    generate_text(&arena, &trans_in, prompt_fmt, &tokens, 100);
+    generate_text(&arena, &trans_in, prompt_fmt, &tokens, &words, &buff, merge_to, 100);
     RESTORE(&arena.alloc, saved);
   }
 
@@ -851,7 +860,7 @@ int main(int argc, char* argv[]) {
 
         size_t saved = SAVE(&arena.alloc);
         set_dropout(&trans_in, 0.0f);
-        generate_text(&arena, &trans_in, prompt_fmt, &tokens, 100);
+        generate_text(&arena, &trans_in, prompt_fmt, &tokens, &words, &buff, merge_to, 100);
         RESTORE(&arena.alloc, saved);
       }
 
@@ -1000,7 +1009,7 @@ int main(int argc, char* argv[]) {
 
       size_t saved = SAVE(&arena.alloc);
       set_dropout(&trans_in, 0.0f);
-      generate_text(&arena, &trans_in, prompt_fmt, &tokens, 100);
+      generate_text(&arena, &trans_in, prompt_fmt, &tokens, &words, &buff, merge_to, 100);
       RESTORE(&arena.alloc, saved);
     }
 
@@ -1021,7 +1030,7 @@ int main(int argc, char* argv[]) {
   save_optimizer(&optimizer, model_name_par, epoch, optimizer_steps, order_indices, cursor);
 
 generate_text:
-  generate_text(&arena, &trans_in, prompt_fmt, &tokens, 2048);
+  generate_text(&arena, &trans_in, prompt_fmt, &tokens, &words, &buff, merge_to, 2048);
 
   return 0;
 }

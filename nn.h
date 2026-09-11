@@ -121,7 +121,7 @@ NMatrix mat_init(int rows, int cols, float* data) {
 
 NMatrix mat_alloc2(Allocator* alloc, int rows, int cols) {
   Byte_Buffer buf = ALLOC(alloc, rows*cols*sizeof(float));
-  return mat_init(rows, cols, buf.void_ptr);
+  return mat_init(rows, cols, buf.ptr);
 }
 
 void mat_fprint(FILE* fp, NMatrix m, int precision) {

@@ -12,9 +12,9 @@
 
 typedef struct {
   union {
-    uint8_t* ptr;
+    void* ptr;
+    uint8_t* uptr;
     char* cptr;
-    void* void_ptr;
   };
   size_t len;
 } Byte_Buffer;
@@ -72,7 +72,7 @@ Byte_Buffer byte_buffer_slice(Byte_Buffer buffer, size_t offset, size_t len) {
     len -= end - buffer.len;
   }
 
-  return byte_buffer_from_parts(buffer.ptr + offset, len);
+  return byte_buffer_from_parts(buffer.uptr + offset, len);
 }
 
 uint8_t* assert_bounds(Byte_Buffer b, size_t n, const char* file, int line) {
@@ -80,7 +80,7 @@ uint8_t* assert_bounds(Byte_Buffer b, size_t n, const char* file, int line) {
     fprintf(stderr, "%s:%d: Array index out of bounds. %zu >= %zu\n", file, line, n, b.len);
     exit(1);
   }
-  return b.ptr+n;
+  return b.uptr+n;
 }
 
 void byte_buffer_print(Byte_Buffer buff, size_t nbytes) {
@@ -91,7 +91,7 @@ void byte_buffer_print(Byte_Buffer buff, size_t nbytes) {
 }
 
 bool byte_buffer_null(Byte_Buffer buffer) {
-  return buffer.ptr == NULL && buffer.len == 0;
+  return buffer.uptr == NULL && buffer.len == 0;
 }
 
 bool byte_buffer_empty(Byte_Buffer buffer) {
@@ -100,28 +100,28 @@ bool byte_buffer_empty(Byte_Buffer buffer) {
 
 bool byte_buffer_split(Byte_Buffer content, Byte_Buffer* cursor, bool (*predicate)(int)) {
   if (byte_buffer_empty(*cursor)) {
-    cursor->ptr = content.ptr;
+    cursor->ptr = content.uptr;
     cursor->len = 0;
   }
 
-  if (cursor->ptr < content.ptr || cursor->ptr >= content.ptr+content.len)
+  if (cursor->uptr < content.uptr || cursor->uptr >= content.uptr+content.len)
     return false;
 
-  if (cursor->ptr+cursor->len < content.ptr || cursor->ptr+cursor->len >= content.ptr+content.len)
+  if (cursor->uptr+cursor->len < content.uptr || cursor->uptr+cursor->len >= content.uptr+content.len)
     return false;
 
-  size_t start = cursor->ptr + cursor->len - content.ptr;
+  size_t start = cursor->uptr + cursor->len - content.uptr;
 
   if (start >= content.len) return false;
 
-  while (start < content.len && predicate(content.ptr[start]))
+  while (start < content.len && predicate(content.uptr[start]))
     start += 1;
 
-  cursor->ptr = content.ptr + start;
+  cursor->ptr = content.uptr + start;
 
   size_t end = start;
 
-  while (end < content.len && !predicate(content.ptr[end]))
+  while (end < content.len && !predicate(content.uptr[end]))
     end += 1;
 
   cursor->len = end - start;
@@ -138,17 +138,17 @@ bool byte_buffer_line(Byte_Buffer content, Byte_Buffer* cursor) {
 }
 
 Byte_Buffer byte_buffer_memset(Byte_Buffer buffer, int b) {
-  memset(buffer.ptr, b, buffer.len);
+  memset(buffer.uptr, b, buffer.len);
   return buffer;
 }
 
 Byte_Buffer byte_buffer_copy(Byte_Buffer dst, Byte_Buffer src) {
-  memcpy(dst.ptr, src.ptr, dst.len < src.len ? dst.len : src.len);
+  memcpy(dst.uptr, src.uptr, dst.len < src.len ? dst.len : src.len);
   return dst;
 }
 
 int byte_buffer_cmp(Byte_Buffer a, Byte_Buffer b) {
-  return memcmp(a.ptr, b.ptr, a.len < b.len ? a.len : b.len);
+  return memcmp(a.uptr, b.uptr, a.len < b.len ? a.len : b.len);
 }
 
 int byte_buffer_strcmp(Byte_Buffer buf, const char* str) {
@@ -161,7 +161,7 @@ Byte_Buffer from_cstring(Allocator* alloc, const char* cstr) {
 
   Byte_Buffer buffer = ALLOC(alloc, length);
 
-  if (buffer.ptr != NULL) {
+  if (buffer.uptr != NULL) {
     strncpy(buffer.cptr, cstr, length);
   }
 
@@ -170,14 +170,14 @@ Byte_Buffer from_cstring(Allocator* alloc, const char* cstr) {
 
 Byte_Buffer byte_buffer_filled(Allocator* alloc, size_t size, uint8_t byte) {
   Byte_Buffer bytes = ALLOC(alloc, size);
-  memset(bytes.ptr, byte, size);
+  memset(bytes.uptr, byte, size);
   return bytes;
 }
 
 Byte_Buffer byte_buffer_concat(Allocator* alloc, Byte_Buffer a, Byte_Buffer b) {
   Byte_Buffer data = ALLOC(alloc, a.len + b.len);
-  memcpy(data.ptr, a.ptr, a.len);
-  memcpy(data.ptr+a.len, b.ptr, b.len);
+  memcpy(data.uptr, a.uptr, a.len);
+  memcpy(data.uptr+a.len, b.uptr, b.len);
   return data;
 }
 
