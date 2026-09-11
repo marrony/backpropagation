@@ -213,11 +213,11 @@ void save_model(Transformer* trans_in, Byte_Buffer model_name) {
 bool load_model(Transformer* trans_in, Byte_Buffer model_name) {
   FILE* fp = fopen(model_name.cptr, "rb");
   if (fp == NULL) {
-    printf("model %*s doesn't exists\n", (int)model_name.len, model_name.cptr);
+    printf("model %.*s doesn't exists\n", (int)model_name.len, model_name.cptr);
     return false;
   }
 
-  printf("model %*s exists, reading\n", (int)model_name.len, model_name.cptr);
+  printf("model %.*s exists, reading\n", (int)model_name.len, model_name.cptr);
   mat_read(trans_in->tok_emb.value, fp);
   mat_read(trans_in->ln.gamma.value, fp);
   mat_read(trans_in->ln.beta.value, fp);
@@ -308,13 +308,13 @@ void generate_text(
     // 1.0 = normal
     // 1.5 = creative
     // 3.0 = nonsensical
-    transformer_forward(*tokens, &trans_out, trans_in, 1.1f);
+    transformer_forward(*tokens, &trans_out, trans_in, 1.0f);
 
     NMatrix last_token = mat_row(trans_out.probs, N - 1);
 
-    // int32_t next = mat_row_argmax(last_token);
+    int32_t next = mat_row_argmax(last_token);
     // int32_t next = sample(last_token);
-    int32_t next = sample_topp(arena, last_token, 0.9f);
+    // int32_t next = sample_topp(arena, last_token, 0.9f);
 
     if (next == '\r') next = '\n';
 
@@ -805,8 +805,13 @@ int main(int argc, char* argv[]) {
   while (prompt_len > 0 && prompt.cptr[prompt_len - 1] == '\n')
     prompt_len -= 1;
 
-  Byte_Buffer prompt_fmt = ALLOC(&mallocator.alloc, prompt_len + 128);
-  snprintf(prompt_fmt.cptr, prompt_fmt.len, "User: %*s\nAssistant: ", (int)prompt_len, prompt.cptr);
+  Byte_Buffer prompt_fmt = NULL_BYTE_BUFFER;
+  int nbytes = -1;
+  for (int i = 0; i < 2; i++) {
+    nbytes = snprintf(prompt_fmt.cptr, nbytes+1, "User: %.*s\nAssistant: ", (int)prompt_len, prompt.cptr);
+    if (nbytes < 0 || prompt_fmt.cptr != NULL) break;
+    prompt_fmt = ALLOC(&mallocator.alloc, nbytes);
+  }
   array_destroy(&buf);
 
   if ((loaded && !train) || gen_text) {
