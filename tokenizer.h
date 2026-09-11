@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "array.h"
 #include "bytebuffer.h"
@@ -442,6 +443,52 @@ size_t tokenize(
   }
 
   return tokens_count;
+}
+
+typedef struct {
+  double bpc;
+  double cpt;
+} BPC;
+
+BPC bpc(
+  TokenID_Array train_ids,
+  TokenID_Array dev_ids,
+  size_t* pairs,
+  size_t* ctx,
+  size_t max_vocab,
+  size_t dev_chars
+) {
+  for (size_t i = 0; i + 1 < train_ids.count; i++) {
+    int32_t a = train_ids.elems[i+0];
+    int32_t b = train_ids.elems[i+1];
+
+    if (a >= (int32_t)max_vocab || b >= (int32_t)max_vocab) {
+      printf("a=%d b=%d\n", a, b);
+    }
+    assert(a < (int32_t)max_vocab && b < (int32_t)max_vocab);
+
+    pairs[a*max_vocab + b] += 1;
+    ctx[a] += 1;
+  }
+
+  double total_nats = 0.0;
+  size_t n_tok = 0;
+
+  for (size_t i = 0; i + 1 < dev_ids.count; i++) {
+    int32_t a = dev_ids.elems[i+0];
+    int32_t b = dev_ids.elems[i+1];
+
+    assert(a < (int32_t)max_vocab && b < (int32_t)max_vocab);
+
+    int32_t p = pairs[a*max_vocab + b];
+    total_nats -= log((double)(p + 1) / (double)(ctx[a] + max_vocab));
+    n_tok += 1;
+  }
+
+  return (BPC) {
+    .bpc = total_nats * 1.4142135624 / (double)dev_chars,
+    .cpt = (double)dev_chars / (double)n_tok,
+  };
 }
 
 #endif // TOKENIZER_H

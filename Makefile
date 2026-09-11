@@ -80,11 +80,11 @@ corpus:
 
 export: $(TOKENIZER_CMD)
 	# cd distill && rm -f $(CDATA_OUT)/*
-	cd distill && time uv run scripts/export_seqkd_ids.py \
+	cd distill && uv run scripts/export_seqkd_ids.py \
 		--jsonl data/seqkd_gold_dev.jsonl --out $(CDATA_OUT) \
 		--vocab-size $(VOCAB_SIZE) --eos-id $(EOS_ID) --max-len 3072 \
 		--tokenizer-cmd '../$(TOKENIZER_CMD)'
-	cd distill && time uv run scripts/export_seqkd_ids.py \
+	cd distill && uv run scripts/export_seqkd_ids.py \
 		--jsonl data/seqkd_gold_train.jsonl --out $(CDATA_OUT) \
 		--vocab-size $(VOCAB_SIZE) --eos-id $(EOS_ID) --max-len 3072 \
 		--tokenizer-cmd '../$(TOKENIZER_CMD)'
