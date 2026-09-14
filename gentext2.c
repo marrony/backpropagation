@@ -1,5 +1,6 @@
 #include "array.h"
 #include "nn.h"
+#include <string.h>
 #include <time.h>
 #include <math.h>
 #include <stdio.h>
@@ -179,6 +180,11 @@ int32_t sample_topp(Arena_Allocator* arena, NMatrix probs, float topp) {
 
 void save_model(Transformer* trans_in, Byte_Buffer model_name) {
   FILE* fp = fopen(model_name.cptr, "wb");
+
+  if (fp == NULL) {
+    exit(1);
+  }
+
   mat_write(trans_in->tok_emb.value, fp);
   mat_write(trans_in->ln.gamma.value, fp);
   mat_write(trans_in->ln.beta.value, fp);
@@ -225,7 +231,9 @@ bool load_model(Transformer* trans_in, Byte_Buffer model_name) {
     mat_read(trans_in->H.weight.value, fp);
   mat_read(trans_in->H.bias.value, fp);
 
-  fread(&trans_in->num_blocks, sizeof(size_t), 1, fp);
+  size_t num_blocks;
+  fread(&num_blocks, sizeof(size_t), 1, fp);
+  assert(num_blocks == trans_in->num_blocks);
 
   for (size_t i = 0; i < trans_in->num_blocks; i++) {
     mat_read(trans_in->blocks[i].ln1.gamma.value, fp);
@@ -251,12 +259,55 @@ bool load_model(Transformer* trans_in, Byte_Buffer model_name) {
   return true;
 }
 
-void set_dropout(Transformer* trans_in, float p) {
-  trans_in->x0_p = p;
-  for (size_t i = 0; i < trans_in->num_blocks; i++) {
-    trans_in->blocks[i].attn.p = p;
-  }
+bool compare_matrix(NMatrix a, NMatrix b) {
+  if (a.rows != b.rows) return false;
+  if (a.cols != b.cols) return false;
+  if (a.stride != b.stride) return false;
+  return memcmp(a.elems, b.elems, sizeof(float)*a.rows*a.stride) == 0;
 }
+
+bool compare_model(Transformer* trans0, Transformer* trans1) {
+  if (!compare_matrix(trans0->tok_emb.value, trans1->tok_emb.value)) return false;
+  if (!compare_matrix(trans0->ln.gamma.value, trans1->ln.gamma.value)) return false;
+  if (!compare_matrix(trans0->ln.beta.value, trans1->ln.beta.value)) return false;
+  if (trans0->tie_embeddings != trans1->tie_embeddings) return false;
+
+  if (!trans0->tie_embeddings) {
+    if (!compare_matrix(trans0->H.weight.value, trans1->H.weight.value)) return false;
+  }
+
+  if (!compare_matrix(trans0->H.bias.value, trans1->H.bias.value)) return false;
+
+  if (trans0->num_blocks != trans1->num_blocks) return false;
+
+  for (size_t i = 0; i < trans0->num_blocks; i++) {
+    if (!compare_matrix(trans0->blocks[i].ln1.gamma.value,     trans1->blocks[i].ln1.gamma.value    )) return false;
+    if (!compare_matrix(trans0->blocks[i].ln1.beta.value,      trans1->blocks[i].ln1.beta.value     )) return false;
+    if (!compare_matrix(trans0->blocks[i].ln2.gamma.value,     trans1->blocks[i].ln2.gamma.value    )) return false;
+    if (!compare_matrix(trans0->blocks[i].ln2.beta.value,      trans1->blocks[i].ln2.beta.value     )) return false;
+    if (!compare_matrix(trans0->blocks[i].ff1.weight.value,    trans1->blocks[i].ff1.weight.value   )) return false;
+    if (!compare_matrix(trans0->blocks[i].ff1.bias.value,      trans1->blocks[i].ff1.bias.value     )) return false;
+    if (!compare_matrix(trans0->blocks[i].ff2.weight.value,    trans1->blocks[i].ff2.weight.value   )) return false;
+    if (!compare_matrix(trans0->blocks[i].ff2.bias.value,      trans1->blocks[i].ff2.bias.value     )) return false;
+    if (!compare_matrix(trans0->blocks[i].attn.K.weight.value, trans1->blocks[i].attn.K.weight.value)) return false;
+    if (!compare_matrix(trans0->blocks[i].attn.K.bias.value,   trans1->blocks[i].attn.K.bias.value  )) return false;
+    if (!compare_matrix(trans0->blocks[i].attn.Q.weight.value, trans1->blocks[i].attn.Q.weight.value)) return false;
+    if (!compare_matrix(trans0->blocks[i].attn.Q.bias.value,   trans1->blocks[i].attn.Q.bias.value  )) return false;
+    if (!compare_matrix(trans0->blocks[i].attn.V.weight.value, trans1->blocks[i].attn.V.weight.value)) return false;
+    if (!compare_matrix(trans0->blocks[i].attn.V.bias.value,   trans1->blocks[i].attn.V.bias.value  )) return false;
+    if (!compare_matrix(trans0->blocks[i].attn.O.weight.value, trans1->blocks[i].attn.O.weight.value)) return false;
+    if (!compare_matrix(trans0->blocks[i].attn.O.bias.value,   trans1->blocks[i].attn.O.bias.value  )) return false;
+  }
+
+  return true;
+}
+
+// void set_dropout(Transformer* trans_in, float p) {
+//   trans_in->x0_p = p;
+//   for (size_t i = 0; i < trans_in->num_blocks; i++) {
+//     trans_in->blocks[i].attn.p = p;
+//   }
+// }
 
 void generate_text(
   Arena_Allocator* arena,
@@ -482,9 +533,6 @@ float evaluate(
   Corpus *dev,
   size_t nrecs
 ) {
-  const float saved_p = trans_in->x0_p;
-  set_dropout(trans_in, 0.0f);
-
   double loss_sum = 0.0;
   long   tokens_scored = 0;
 
@@ -538,7 +586,6 @@ float evaluate(
 
   RESTORE(&arena->alloc, saved);
 
-  set_dropout(trans_in, saved_p);
   return loss_sum / (double)tokens_scored;
 }
 
@@ -567,7 +614,7 @@ size_t histogram[MAX_VOCAB] = {0};
 size_t histogram_sorted[MAX_VOCAB] = {0};
 
 int main(int argc, char* argv[]) {
-  srand(getpid());
+  // srand(getpid());
 
   Optimizer optimizer = (Optimizer) {
     .tensors = ARRAY_CREATE(&mallocator.alloc),
@@ -580,7 +627,6 @@ int main(int argc, char* argv[]) {
   };
   size_t arena_size = MAX_VOCAB*MAX_VOCAB*sizeof(float);
   Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, arena_size + 2L*1024*1024*1024);
-  // TokenID_Array sequence = ARRAY_CREATE(&mallocator.alloc);
   TokenID_Array tokens = ARRAY_CREATE(&mallocator.alloc);
   TokenID_Array buff = ARRAY_CREATE(&mallocator.alloc);
   Byte_Buffer_Array words = ARRAY_CREATE(&mallocator.alloc);
@@ -659,7 +705,7 @@ int main(int argc, char* argv[]) {
   // w1 = epochs*(2%-5%)
   // w = max(w0, w1)
   size_t warmup_steps = MAX(1000, (size_t)(total_epochs * 0.02f));
-  float dropout_pct = 0.0;
+  // float dropout_pct = 0.0;
 
   // optimize learning rate
   // int patience = 100;
@@ -771,7 +817,6 @@ int main(int argc, char* argv[]) {
   bool loaded = load_model(&trans_in, model_name_bin);
   load_optimizer(&optimizer, model_name_par, &epoch, &optimizer_steps, order_indices, &cursor);
 
-  // printf("cursor = %zu\n", cursor);
   // for (size_t i = cursor; i < cursor+10; i++) {
   //   printf("%zu ", order_indices.elems[i]);
   // }
@@ -821,7 +866,6 @@ int main(int argc, char* argv[]) {
   init_opencl();
   ensure_buffer_size(sizeof(float)*MAX_VOCAB*MAX_VOCAB);
 
-  mat_zero(mat_row(trans_in.tok_emb.value, 0));
   print_tokens(&trans_in);
 
   set_color(0, 255, 0);
@@ -839,7 +883,6 @@ int main(int argc, char* argv[]) {
 
   {
     size_t saved = SAVE(&arena.alloc);
-    set_dropout(&trans_in, 0.0f);
     generate_text(&arena, &trans_in, prompt_fmt, &tokens, &words, &buff, merge_to, 100);
     RESTORE(&arena.alloc, saved);
   }
@@ -852,8 +895,6 @@ int main(int argc, char* argv[]) {
     size_t tokens_scored = 0;
     size_t tokens_count = 0;
 
-    set_dropout(&trans_in, dropout_pct);
-
     while (tokens_scored < target_scored) {
       if (cursor == order_indices.count) {
         shuffle_indices(order_indices);
@@ -864,7 +905,6 @@ int main(int argc, char* argv[]) {
         save_optimizer(&optimizer, model_name_par, epoch, optimizer_steps, order_indices, cursor);
 
         size_t saved = SAVE(&arena.alloc);
-        set_dropout(&trans_in, 0.0f);
         generate_text(&arena, &trans_in, prompt_fmt, &tokens, &words, &buff, merge_to, 100);
         RESTORE(&arena.alloc, saved);
       }
@@ -906,60 +946,6 @@ int main(int argc, char* argv[]) {
 
         transformer_forward(tokens, &trans_out, &trans_in, 1.0f);
 
-        if (optimizer_steps == 0) {
-          set_color(0, 0, 255);
-          // σ = √(2/(V+D))
-          // std(logits) = σ · √D
-          float std = sqrtf(2.0f / (D+MAX_VOCAB));
-
-          printf("std(logits) = %.4f  (target ~%.4f)\n",
-              logits_std(trans_out.logits.value), std*sqrtf(D));
-          rst_color();
-
-          NMatrix x = trans_out.ln.out.value;     /* whatever the head reads */
-          double n2 = 0.0;
-          for (uint32_t d = 0; d < x.cols; d++) {
-              double t = MAT_AT(x, 0, d);
-              n2 += t * t;
-          }
-          printf("||x[0]|| = %.4f  (expect %.4f)   gamma[0]=%.3f beta[0]=%.3f\n",
-                 sqrt(n2), sqrt((double)x.cols),
-                 VEC_AT(trans_in.ln.gamma.value, 0), VEC_AT(trans_in.ln.beta.value, 0));        
-        }
-
-        if (optimizer_steps == 0) {
-            NMatrix z = trans_out.logits.value;
-            int zero_rows = 0;
-            double lo = 1e9, hi = -1e9;
-            for (uint32_t i = 0; i < z.rows; i++) {
-                double mean = 0.0;
-                for (uint32_t d = 0; d < z.cols; d++) mean += MAT_AT(z, i, d);
-                mean /= z.cols;
-                double var = 0.0;
-                for (uint32_t d = 0; d < z.cols; d++) {
-                    double t = MAT_AT(z, i, d) - mean; var += t * t;
-                }
-                double s = sqrt(var / z.cols);
-                if (s < 0.01) zero_rows++;
-                if (s < lo) lo = s;
-                if (s > hi) hi = s;
-            }
-            printf("N=%zu rows=%u  row_std range [%.4f, %.4f]  zero_rows=%d\n",
-                   N, z.rows, lo, hi, zero_rows);
-        }
-
-        if (optimizer_steps == 0) {
-            NMatrix x = trans_out.ln.out.value;
-            uint32_t rows[3] = { 0, x.rows/2, x.rows-1 };
-            for (int k = 0; k < 3; k++) {
-                double n2 = 0.0;
-                for (uint32_t d = 0; d < x.cols; d++) {
-                    double t = MAT_AT(x, rows[k], d); n2 += t*t;
-                }
-                printf("||x[%u]|| = %.4f\n", rows[k], sqrt(n2));
-            }
-        }
-
         // dLoss/dlogits = softmax(logits) - onehot(target).
         NMatrix dlogits = trans_out.logits.grad;
         mat_copy(dlogits, trans_out.probs);
@@ -983,7 +969,9 @@ int main(int argc, char* argv[]) {
       RESTORE(&arena.alloc, saved);
     }
 
-    update_grads_adam(&optimizer, 1.0f / (float)tokens_scored);
+    optimizer_steps += 1;
+
+    optimizer.updates = optimizer_steps;
 
     // cosine annealing
     optimizer.learning_rate = cosine_learning_rate(
@@ -994,6 +982,8 @@ int main(int argc, char* argv[]) {
         peak_lr / 10.0f
     );
 
+    update_grads_adam(&optimizer, 1.0f / (float)tokens_scored);
+
     win_loss += loss_sum;
     win_tok += tokens_scored;
 
@@ -1001,19 +991,16 @@ int main(int argc, char* argv[]) {
 
     set_color(0, 255, 0);
     print_timestamp(stdout);
-    printf(" epoch=%zu/%zu step=%zu/%zu cursor=%zu lr=%f loss=%f perp=%f tokens=%zu scored=%zu (%.2f%% scored)\n",
-        epoch+1, total_epochs, optimizer_steps+1, total_steps, cursor, optimizer.learning_rate, loss, expf(loss),
+    printf(" epoch=%zu/%zu step=%zu/%zu cursor=%zu lr=%.10f loss=%.5f perp=%.3f tokens=%zu scored=%zu (%.2f%% scored)\n",
+        epoch+1, total_epochs, optimizer_steps, total_steps, cursor, optimizer.learning_rate, loss, expf(loss),
         tokens_count, tokens_scored, (float)tokens_scored/(float)tokens_count * 100.0f);
     rst_color();
-
-    optimizer_steps += 1;
 
     if (optimizer_steps % 50 == 0) {
       save_model(&trans_in, model_name_bin);
       save_optimizer(&optimizer, model_name_par, epoch, optimizer_steps, order_indices, cursor);
 
       size_t saved = SAVE(&arena.alloc);
-      set_dropout(&trans_in, 0.0f);
       generate_text(&arena, &trans_in, prompt_fmt, &tokens, &words, &buff, merge_to, 100);
       RESTORE(&arena.alloc, saved);
     }

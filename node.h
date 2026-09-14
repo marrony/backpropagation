@@ -173,18 +173,18 @@ DEFINE_ARRAY_ALIAS(Index32, size_t);
 
 void save_optimizer(Optimizer* optimizer, Byte_Buffer file, size_t epochs, size_t optimizer_steps, Index32_Array order, size_t cursor) {
   FILE* fp = fopen(file.cptr, "wb");
-  fwrite(&optimizer->updates, sizeof(size_t), 1, fp);
-  fwrite(&optimizer->learning_rate, sizeof(float), 1, fp);
-  fwrite(&epochs, sizeof(size_t), 1, fp);
-  fwrite(&optimizer_steps, sizeof(size_t), 1, fp);
-  fwrite(&optimizer->tensors.count, sizeof(size_t), 1, fp);
+  assert(fwrite(&optimizer->updates, sizeof(size_t), 1, fp) == 1);
+  assert(fwrite(&optimizer->learning_rate, sizeof(float), 1, fp) == 1);
+  assert(fwrite(&epochs, sizeof(size_t), 1, fp) == 1);
+  assert(fwrite(&optimizer_steps, sizeof(size_t), 1, fp) == 1);
+  assert(fwrite(&optimizer->tensors.count, sizeof(size_t), 1, fp) == 1);
   for (size_t i = 0; i < optimizer->tensors.count; i++) {
     mat_write(optimizer->history.elems[i], fp); // 1st moment
     mat_write(optimizer->second.elems[i], fp); // 2nd moment
   }
-  fwrite(&order.count, sizeof(size_t), 1, fp);
-  fwrite(order.elems, sizeof(size_t), order.count, fp);
-  fwrite(&cursor, sizeof(size_t), 1, fp);
+  assert(fwrite(&order.count, sizeof(size_t), 1, fp) == 1);
+  assert(fwrite(order.elems, sizeof(size_t), order.count, fp) == order.count);
+  assert(fwrite(&cursor, sizeof(size_t), 1, fp) == 1);
   fclose(fp);
 }
 
@@ -192,18 +192,18 @@ void load_optimizer(Optimizer* optimizer, Byte_Buffer file, size_t* epochs, size
   FILE* fp = fopen(file.cptr, "rb");
 
   if (fp == NULL) {
-    printf("optimizer %*s doesn't exists\n", (int)file.len, file.cptr);
+    printf("optimizer %.*s doesn't exists\n", (int)file.len, file.cptr);
     return;
   }
 
   printf("optimizer %*s exists, reading\n", (int)file.len, file.cptr);
-  fread(&optimizer->updates, sizeof(size_t), 1, fp);
-  fread(&optimizer->learning_rate, sizeof(float), 1, fp);
-  fread(epochs, sizeof(size_t), 1, fp);
-  fread(optimizer_steps, sizeof(size_t), 1, fp);
+  assert(fread(&optimizer->updates, sizeof(size_t), 1, fp) == 1);
+  assert(fread(&optimizer->learning_rate, sizeof(float), 1, fp) == 1);
+  assert(fread(epochs, sizeof(size_t), 1, fp) == 1);
+  assert(fread(optimizer_steps, sizeof(size_t), 1, fp) == 1);
 
   size_t tensors_count = 0;
-  fread(&tensors_count, sizeof(size_t), 1, fp);
+  assert(fread(&tensors_count, sizeof(size_t), 1, fp) == 1);
   assert(tensors_count == optimizer->tensors.count);
 
   for (size_t i = 0; i < optimizer->tensors.count; i++) {
@@ -213,11 +213,11 @@ void load_optimizer(Optimizer* optimizer, Byte_Buffer file, size_t* epochs, size
 
   // fixme: order array change whenever the input train change
   size_t order_count = 0;
-  fread(&order_count, sizeof(size_t), 1, fp);
+  assert(fread(&order_count, sizeof(size_t), 1, fp) == 1);
   assert(order_count == order.count);
-  fread(order.elems, sizeof(size_t), order.count, fp);
+  assert(fread(order.elems, sizeof(size_t), order.count, fp) == order.count);
 
-  fread(cursor, sizeof(size_t), 1, fp);
+  assert(fread(cursor, sizeof(size_t), 1, fp) == 1);
 
   fclose(fp);
 }
@@ -1162,8 +1162,6 @@ void update_grads_adam(Optimizer* optimizer, float scale) {
   float eps = 1e-7f;
   float beta1 = 0.900f;
   float beta2 = 0.999f;
-
-  optimizer->updates += 1;
 
   float beta1_correct = 1.0f - powf(beta1, optimizer->updates);
   float beta2_correct = 1.0f - powf(beta2, optimizer->updates);

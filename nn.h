@@ -1178,7 +1178,7 @@ float mat_row_similarity(NMatrix a, NMatrix b) {
 void mat_ident(NMatrix m) {
   assert(m.rows == m.cols);
 
-  memset(m.elems, 0, sizeof(float) * m.rows * m.cols);
+  mat_zero(m);
 
   for (uint32_t i = 0; i < m.rows; i++) {
     MAT_AT(m, i, i) = 1.0f;
@@ -1908,19 +1908,19 @@ int64_t get_system_micros(void) {
 }
 
 void mat_write(NMatrix mat, FILE* fp) {
-  fwrite(&mat.rows, sizeof(uint32_t), 1, fp);
-  fwrite(&mat.cols, sizeof(uint32_t), 1, fp);
-  fwrite(mat.elems, sizeof(float), mat.rows*mat.cols, fp);
+  assert(fwrite(&mat.rows, sizeof(uint32_t), 1, fp) == 1);
+  assert(fwrite(&mat.cols, sizeof(uint32_t), 1, fp) == 1);
+  assert(fwrite(mat.elems, sizeof(float), mat.rows*mat.cols, fp) == mat.rows*mat.cols);
 }
 
 void mat_read(NMatrix mat, FILE* fp) {
   uint32_t rows = 0;
   uint32_t cols = 0;
-  fread(&rows, sizeof(uint32_t), 1, fp);
-  fread(&cols, sizeof(uint32_t), 1, fp);
+  assert(fread(&rows, sizeof(uint32_t), 1, fp) == 1);
+  assert(fread(&cols, sizeof(uint32_t), 1, fp) == 1);
   assert(rows == mat.rows);
   assert(cols == mat.cols);
-  fread(mat.elems, sizeof(float), mat.rows*mat.cols, fp);
+  assert(fread(mat.elems, sizeof(float), mat.rows*mat.cols, fp) == mat.rows*mat.cols);
 }
 
 #endif //NN_H
