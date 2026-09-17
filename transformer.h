@@ -9,6 +9,12 @@
 #include <stdint.h>
 
 typedef struct {
+    NMatrix*  k;   /* each: rows = CTX, cols = D */
+    NMatrix*  v;
+    uint32_t len;  /* positions filled so far */
+} KVCache;
+
+typedef struct {
   Tensor gamma;
   Tensor beta;
 } Layer_Norm;
@@ -365,12 +371,21 @@ void dropout_backward(NMatrix dx, NMatrix mask, float p) {
   }
 }
 
-void rope(NMatrix tensor, size_t d) {
-  float inv_d = 1.0f / (float)d;
+// tensor = [NxD]
+// d_head = D/H
+//
+// R(θ) = [ cos θ   −sin θ ]
+//        [ sin θ    cos θ ]
+//
+// (R(mθ)·q)ᵀ (R(nθ)·k)  =  qᵀ · R(mθ)ᵀ · R(nθ) · k
+//                       =  qᵀ · R(−mθ) · R(nθ) · k
+//                       =  qᵀ · R((n−m)θ) · k
+void rope(NMatrix tensor, size_t d_head) {
+  float inv_d = 1.0f / (float)d_head;
 
   for (uint32_t m = 0; m < tensor.rows; m++) {
     for (uint32_t i = 0; i < tensor.cols; i += 2) {
-      size_t local_i = i % d;
+      size_t local_i = i % d_head;
       float theta = powf(10000, -(float)local_i * inv_d);
       float phi = m * theta;
 
@@ -383,12 +398,15 @@ void rope(NMatrix tensor, size_t d) {
   }
 }
 
-void drope(NMatrix dtensor, size_t d, NMatrix dout) {
-  float inv_d = 1.0f / (float)d;
+// tensor = [NxD]
+// d_head = D/H
+// dout = [NxD]
+void drope(NMatrix dtensor, size_t d_head, NMatrix dout) {
+  float inv_d = 1.0f / (float)d_head;
 
   for (uint32_t m = 0; m < dout.rows; m++) {
     for (uint32_t i = 0; i < dout.cols; i += 2) {
-      size_t local_i = i % d;
+      size_t local_i = i % d_head;
       float theta = powf(10000, -(float)local_i * inv_d);
       float phi = m * theta;
 
@@ -402,6 +420,7 @@ void drope(NMatrix dtensor, size_t d, NMatrix dout) {
 }
 
 struct Attention_Forward_Opts {
+  KVCache* kv_cache;
   Attention_Output* attn_out;
   NMatrix scores;
   Attention* attn_in;
@@ -419,6 +438,26 @@ struct Attention_Backward_Opts {
 #define attention_forward(...) attention_forward_opts((struct Attention_Forward_Opts){ __VA_ARGS__ })
 #define attention_backward(...) attention_backward_opts((struct Attention_Backward_Opts){ __VA_ARGS__ })
 
+// /* first n rows — same storage, fewer rows */
+// static inline NMatrix mat_head(NMatrix m, uint32_t n) {
+//     return (NMatrix){ m.elems, n, m.cols, m.stride };
+// }
+//
+// /* columns [c0, c0+n) — same storage, shifted origin, SAME stride */
+// static inline NMatrix mat_cols(NMatrix m, uint32_t c0, uint32_t n) {
+//     return (NMatrix){ m.elems + c0, m.rows, n, m.stride };
+// }
+//
+// static inline float *mat_row_ptr(NMatrix m, uint32_t i) {
+//     return m.elems + (size_t)i * m.stride;
+// }
+//
+// NMatrix Kh = mat_cols(mat_head(cache->k[b], cache->len), 48 * h, 48);
+//
+// NMatrix x_new = mat_rows(input, N - 1, 1);          /* just the new token  */
+// float  *k_dst = mat_row_ptr(cache->k[b], cache->len);
+// gemm_nn(x_new, Wk, k_dst);                          /* + bk */
+
 void attention_forward_opts(struct Attention_Forward_Opts opts) {
   Attention_Output* attn_out = opts.attn_out;
   NMatrix scores = opts.scores;
@@ -428,7 +467,7 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
   int32_t N = in.value.rows;
   int32_t D = in.value.cols;
   int32_t H = attn_out->weights.value.rows;
-  int32_t head_dim = D / H;
+  int32_t d_head = D / H;
 
   // Q = input*wQ + bQ
   project(
@@ -437,6 +476,9 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
       .W   = attn_in->Q.weight,
       .b   = attn_in->Q.bias,
   );
+
+  // NMatrix k_dst = mat_rows(cache->k[b], cache->len, input.rows);
+  // NMatrix v_dst = mat_rows(cache->v[b], cache->len, input.rows);
 
   // K = input*wK + bK
   project(
@@ -454,20 +496,19 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
       .b   = attn_in->V.bias
   );
 
-  rope(attn_out->Q.value, head_dim);
-  rope(attn_out->K.value, head_dim);
+  rope(attn_out->Q.value, d_head);
+  rope(attn_out->K.value, d_head);
 
-  float scale = 1.0f / sqrtf(head_dim);
+  float scale = 1.0f / sqrtf(d_head);
 
   for (int32_t h = 0; h < H; h++) {      // 0..H
-    int head_start = h*head_dim;
-    int head_end = h*head_dim + head_dim;
+    int head_start = h*d_head;
 
     // scores = Q[h] * K[h]^T
     mat_mult_A_and_B_transposed(
         scores,
-        mat_cols(attn_out->Q.value, head_start, head_end),
-        mat_cols(attn_out->K.value, head_start, head_end)
+        mat_cols(attn_out->Q.value, head_start, d_head),
+        mat_cols(attn_out->K.value, head_start, d_head)
     );
 
     // scores = scores / sqrt(h_dim)
@@ -491,9 +532,9 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
 
     // attn_vals = attn_weitghts * V
     mat_mult(
-        mat_cols(attn_out->vals.value, head_start, head_end),
+        mat_cols(attn_out->vals.value, head_start, d_head),
         attn_weights,
-        mat_cols(attn_out->V.value,    head_start, head_end)
+        mat_cols(attn_out->V.value,    head_start, d_head)
     );
   }
 
@@ -516,7 +557,7 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
   int32_t N = in.value.rows;
   int32_t D = in.value.cols;
   int32_t H = attn_out->weights.value.rows;
-  int32_t head_dim = D / H;
+  int32_t d_head = D / H;
 
   // attn_out = attn_vals*wO + bO
   dproject(
@@ -526,11 +567,10 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
       .dout = dout,
   );
 
-  float scale = 1.0f / sqrtf(head_dim);
+  float scale = 1.0f / sqrtf(d_head);
 
   for (int32_t h = 0; h < H; h++) {      // 0..H
-    int head_start = h*head_dim;
-    int head_end = h*head_dim + head_dim;
+    int head_start = h*d_head;
 
     // [NxN]
     NMatrix attn_weights = mat_row_as(attn_out->weights.value, h, N, N);
@@ -543,15 +583,15 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
 
     mat_mult_A_and_B_transposed_acc(
         dweights,
-        mat_cols(attn_out->vals.grad, head_start, head_end),
-        mat_cols(attn_out->V.value,   head_start, head_end)
+        mat_cols(attn_out->vals.grad, head_start, d_head),
+        mat_cols(attn_out->V.value,   head_start, d_head)
     );
 
     // [NxHdim] = [NxN] * [NxHdim]
     mat_mult_A_transposed_and_B_acc(
-        mat_cols(attn_out->V.grad,    head_start, head_end),
+        mat_cols(attn_out->V.grad,    head_start, d_head),
         attn_weights,
-        mat_cols(attn_out->vals.grad, head_start, head_end)
+        mat_cols(attn_out->vals.grad, head_start, d_head)
     );
 
     // attn_weights = softmax(scores)
@@ -575,20 +615,20 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
     // dK[h] = dScore^T * Q[h]
 
     mat_mult_acc(
-        mat_cols(attn_out->Q.grad,  head_start, head_end),
+        mat_cols(attn_out->Q.grad,  head_start, d_head),
         dscores,
-        mat_cols(attn_out->K.value, head_start, head_end)
+        mat_cols(attn_out->K.value, head_start, d_head)
     );
 
     mat_mult_A_transposed_and_B_acc(
-        mat_cols(attn_out->K.grad, head_start, head_end),
+        mat_cols(attn_out->K.grad, head_start, d_head),
         dscores,
-        mat_cols(attn_out->Q.value, head_start, head_end)
+        mat_cols(attn_out->Q.value, head_start, d_head)
     );
   }
 
-  drope(attn_out->Q.grad, head_dim, attn_out->Q.grad);
-  drope(attn_out->K.grad, head_dim, attn_out->K.grad);
+  drope(attn_out->Q.grad, d_head, attn_out->Q.grad);
+  drope(attn_out->K.grad, d_head, attn_out->K.grad);
 
   // V = input*wV + bV
   dproject(
@@ -710,6 +750,9 @@ struct Block_Backward_Opts {
 #define block_forward(...) block_forward_opts((struct Block_Forward_Opts){ __VA_ARGS__ })
 #define block_backward(...) block_backward_opts((struct Block_Backward_Opts){ __VA_ARGS__ })
 
+// x = x + attn(ln1(x))
+// x = x + ff(ln2(x))
+//
 // ln1_out  = norm(x0)
 // attn_out = attention(ln1_out)
 // x1       = x0 + attn_out

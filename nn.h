@@ -47,9 +47,17 @@ Tensor tensor(NMatrix value, NMatrix grad) {
 
 #define VEC_AT(v, idx) MAT_AT((v), 0, (idx))
 
+static uint64_t rng_state = 0xffffffff;
+static uint32_t rng_next(void) {
+  rng_state ^= rng_state << 13;
+  rng_state ^= rng_state >> 7;
+  rng_state ^= rng_state << 17;
+  return (uint32_t)(rng_state >> 32);
+}
+
 // Uniform random in [0, 1)
 float rand_uniform(void) {
-  return rand() / (float)RAND_MAX;
+  return (rng_next() >> 9) / 8388608.0f;
 }
 
 float rand_uniform2(float min, float max) {
@@ -374,6 +382,90 @@ void mat_sum_row(NMatrix dst, NMatrix src) {
   }
 }
 
+/*
+ * y[0..N) = x[0..K) * W + b, W is [K, N].
+ * Decode path: M == 1, so this is bandwidth-bound.
+ * W is read once, contiguously; unrolling k by 4 amortises
+ * the read-modify-write of y across four rows of W.
+ **/
+static void gemv_nn(
+  NMatrix out,
+  NMatrix x,
+  NMatrix W,
+  const float *restrict bias,
+  const bool acc
+) {
+  assert(out.rows == 1 && x.rows == 1);
+  assert(x.cols == W.rows && out.cols == W.cols);
+
+  const uint32_t K = W.rows, N = W.cols, sw = W.stride;
+  float       *restrict y  = out.elems;
+  const float *restrict xv = x.elems;
+
+  if (!acc) {
+    if (bias) memcpy(y, bias, (size_t)N * sizeof *y);
+    else      memset(y, 0,    (size_t)N * sizeof *y);
+  } else if (bias) {
+    for (uint32_t n = 0; n < N; n++) y[n] += bias[n];
+  }
+
+  uint32_t k = 0;
+  for (; k + 4 <= K; k += 4) {
+    const float a0 = xv[k], a1 = xv[k+1], a2 = xv[k+2], a3 = xv[k+3];
+    const float *restrict w0 = W.elems + (size_t)(k    ) * sw;
+    const float *restrict w1 = W.elems + (size_t)(k + 1) * sw;
+    const float *restrict w2 = W.elems + (size_t)(k + 2) * sw;
+    const float *restrict w3 = W.elems + (size_t)(k + 3) * sw;
+    for (uint32_t n = 0; n < N; n++)
+      y[n] += a0 * w0[n] + a1 * w1[n] + a2 * w2[n] + a3 * w3[n];
+  }
+
+  for (; k < K; k++) {
+    const float a = xv[k];
+    const float *restrict w = W.elems + (size_t)k * sw;
+    for (uint32_t n = 0; n < N; n++)
+      y[n] += a * w[n];
+  }
+}
+
+/*
+ * y[0..N) = x[0..K) * Wt^T + b, Wt is [N, K].
+ * Four accumulators break the floating-point dependency
+ * chain so the adds pipeline.
+ **/
+static void gemv_nt(
+  NMatrix out,
+  NMatrix x,
+  NMatrix Wt,
+  const float *restrict bias,
+  const bool acc
+) {
+  assert(out.rows == 1 && x.rows == 1);
+  assert(x.cols == Wt.cols && out.cols == Wt.rows);
+
+  const uint32_t N = Wt.rows, K = Wt.cols, sw = Wt.stride;
+  float       *restrict y  = out.elems;
+  const float *restrict xv = x.elems;
+
+  for (uint32_t n = 0; n < N; n++) {
+    const float *restrict w = Wt.elems + (size_t)n * sw;
+    float s0 = 0.f, s1 = 0.f, s2 = 0.f, s3 = 0.f;
+    uint32_t k = 0;
+    for (; k + 4 <= K; k += 4) {
+      s0 += xv[k]     * w[k];
+      s1 += xv[k + 1] * w[k + 1];
+      s2 += xv[k + 2] * w[k + 2];
+      s3 += xv[k + 3] * w[k + 3];
+    }
+    float s = (s0 + s1) + (s2 + s3);
+    for (; k < K; k++) s += xv[k] * w[k];
+
+    if (acc)  y[n] += s;
+    else      y[n]  = s;
+    if (bias) y[n] += bias[n];
+  }
+}
+
 /* ---------------------------------------------------------------------------
  * GEMM cores.  Naming follows BLAS: N = normal, T = transposed.
  *
@@ -393,17 +485,30 @@ void mat_sum_row(NMatrix dst, NMatrix src) {
  * `restrict` asserts dst does not overlap a or b. Violating it is UB, not a
  * slowdown -- see mats_overlap() in the debug asserts.
  * ------------------------------------------------------------------------ */
-static inline void gemm_nn(NMatrix dst, NMatrix a, NMatrix b,
-                           const float *bias, const bool acc) {
-  assert(dst.rows == a.rows && dst.cols == b.cols && a.cols == b.rows);
-  assert(dst.stride >= dst.cols && a.stride >= a.cols && b.stride >= b.cols);
+static inline void gemm_nn(
+  NMatrix out,
+  NMatrix x,
+  NMatrix W,
+  const float *bias,
+  const bool acc
+) {
+
+  if (out.rows == 1) {
+    gemv_nn(out, x, W, bias, acc);
+    return;
+  }
+
+  assert(out.rows == x.rows && out.cols == W.cols && x.cols == W.rows);
+  assert(out.stride >= out.cols && x.stride >= x.cols && W.stride >= W.cols);
   assert(!(acc && bias));
 
-  const uint32_t M = dst.rows, N = dst.cols, K = a.cols;
+  const uint32_t M = out.rows;
+  const uint32_t N = out.cols;
+  const uint32_t K = x.cols;
 
   for (uint32_t i = 0; i < M; i++) {
-    float       * restrict d  = dst.elems + (size_t)i * dst.stride;
-    const float * restrict ai = a.elems   + (size_t)i * a.stride;
+    float       * restrict d  = out.elems + (size_t)i * out.stride;
+    const float * restrict ai = x.elems   + (size_t)i * x.stride;
 
     if (!acc) {
       for (uint32_t j = 0; j < N; j++) {
@@ -415,10 +520,10 @@ static inline void gemm_nn(NMatrix dst, NMatrix a, NMatrix b,
     for (; k + 4 <= K; k += 4) {
       const float a0 = ai[k + 0], a1 = ai[k + 1];
       const float a2 = ai[k + 2], a3 = ai[k + 3];
-      const float * restrict b0 = b.elems + (size_t)(k + 0) * b.stride;
-      const float * restrict b1 = b.elems + (size_t)(k + 1) * b.stride;
-      const float * restrict b2 = b.elems + (size_t)(k + 2) * b.stride;
-      const float * restrict b3 = b.elems + (size_t)(k + 3) * b.stride;
+      const float * restrict b0 = W.elems + (size_t)(k + 0) * W.stride;
+      const float * restrict b1 = W.elems + (size_t)(k + 1) * W.stride;
+      const float * restrict b2 = W.elems + (size_t)(k + 2) * W.stride;
+      const float * restrict b3 = W.elems + (size_t)(k + 3) * W.stride;
 
       for (uint32_t j = 0; j < N; j++) {
         d[j] += a0 * b0[j] + a1 * b1[j] + a2 * b2[j] + a3 * b3[j];
@@ -426,7 +531,7 @@ static inline void gemm_nn(NMatrix dst, NMatrix a, NMatrix b,
     }
     for (; k < K; k++) {
       const float ak = ai[k];
-      const float * restrict bk = b.elems + (size_t)k * b.stride;
+      const float * restrict bk = W.elems + (size_t)k * W.stride;
       for (uint32_t j = 0; j < N; j++) {
         d[j] += ak * bk[j];
       }
@@ -434,51 +539,36 @@ static inline void gemm_nn(NMatrix dst, NMatrix a, NMatrix b,
   }
 }
 
-static inline void gemm_tn(NMatrix dst, NMatrix a, NMatrix b, const bool acc) {
-  assert(dst.rows == a.cols && dst.cols == b.cols && a.rows == b.rows);
-  assert(dst.stride >= dst.cols && a.stride >= a.cols && b.stride >= b.cols);
-
-  const uint32_t M = dst.rows, N = dst.cols, K = a.rows;
-
-  if (!acc) {
-    mat_zero(dst);
+static inline void gemm_nt(
+  NMatrix out,
+  NMatrix x,
+  NMatrix Wt,
+  const float *bias,
+  const bool acc
+) {
+  if (out.rows == 1) {
+    gemv_nt(out, x, Wt, bias, acc);
+    return;
   }
 
-  /* k outermost: each step is a rank-1 update, so both inner reads are
-   * contiguous. b's row stays in L1 and is reused across all M. */
-  for (uint32_t k = 0; k < K; k++) {
-    const float * restrict ak = a.elems + (size_t)k * a.stride;  /* len M */
-    const float * restrict bk = b.elems + (size_t)k * b.stride;  /* len N */
-
-    for (uint32_t i = 0; i < M; i++) {
-      const float aki = ak[i];
-      float * restrict di = dst.elems + (size_t)i * dst.stride;
-
-      for (uint32_t j = 0; j < N; j++) {
-        di[j] += aki * bk[j];
-      }
-    }
-  }
-}
-
-static inline void gemm_nt(NMatrix dst, NMatrix a, NMatrix b,
-                           const float *bias, const bool acc) {
-  assert(dst.rows == a.rows && dst.cols == b.rows && a.cols == b.cols);
-  assert(dst.stride >= dst.cols && a.stride >= a.cols && b.stride >= b.cols);
+  assert(out.rows == x.rows && out.cols == Wt.rows && x.cols == Wt.cols);
+  assert(out.stride >= out.cols && x.stride >= x.cols && Wt.stride >= Wt.cols);
   assert(!(acc && bias));
 
-  const uint32_t P = dst.rows, R = dst.cols, Q = a.cols;
+  const uint32_t P = out.rows;
+  const uint32_t R = out.cols;
+  const uint32_t Q = x.cols;
 
   for (uint32_t i = 0; i < P; i++) {
-    const float * restrict ai = a.elems   + (size_t)i * a.stride;
-    float       * restrict di = dst.elems + (size_t)i * dst.stride;
+    const float * restrict ai = x.elems   + (size_t)i * x.stride;
+    float       * restrict di = out.elems + (size_t)i * out.stride;
 
     uint32_t j = 0;
     for (; j + 4 <= R; j += 4) {
-      const float * restrict b0 = b.elems + (size_t)(j + 0) * b.stride;
-      const float * restrict b1 = b.elems + (size_t)(j + 1) * b.stride;
-      const float * restrict b2 = b.elems + (size_t)(j + 2) * b.stride;
-      const float * restrict b3 = b.elems + (size_t)(j + 3) * b.stride;
+      const float * restrict b0 = Wt.elems + (size_t)(j + 0) * Wt.stride;
+      const float * restrict b1 = Wt.elems + (size_t)(j + 1) * Wt.stride;
+      const float * restrict b2 = Wt.elems + (size_t)(j + 2) * Wt.stride;
+      const float * restrict b3 = Wt.elems + (size_t)(j + 3) * Wt.stride;
 
       float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
       for (uint32_t q = 0; q < Q; q++) {
@@ -501,7 +591,7 @@ static inline void gemm_nt(NMatrix dst, NMatrix a, NMatrix b,
       }
     }
     for (; j < R; j++) {
-      const float * restrict bj = b.elems + (size_t)j * b.stride;
+      const float * restrict bj = Wt.elems + (size_t)j * Wt.stride;
       float s = 0.0f;
       for (uint32_t q = 0; q < Q; q++) {
         s += ai[q] * bj[q];
@@ -509,6 +599,40 @@ static inline void gemm_nt(NMatrix dst, NMatrix a, NMatrix b,
       if (acc)       { di[j] += s; }
       else if (bias) { di[j]  = s + bias[j]; }
       else           { di[j]  = s; }
+    }
+  }
+}
+
+static inline void gemm_tn(
+  NMatrix dst,
+  NMatrix a,
+  NMatrix b,
+  const bool acc
+) {
+  assert(dst.rows == a.cols && dst.cols == b.cols && a.rows == b.rows);
+  assert(dst.stride >= dst.cols && a.stride >= a.cols && b.stride >= b.cols);
+
+  const uint32_t M = dst.rows;
+  const uint32_t N = dst.cols;
+  const uint32_t K = a.rows;
+
+  if (!acc) {
+    mat_zero(dst);
+  }
+
+  /* k outermost: each step is a rank-1 update, so both inner reads are
+   * contiguous. b's row stays in L1 and is reused across all M. */
+  for (uint32_t k = 0; k < K; k++) {
+    const float * restrict ak = a.elems + (size_t)k * a.stride;  /* len M */
+    const float * restrict bk = b.elems + (size_t)k * b.stride;  /* len N */
+
+    for (uint32_t i = 0; i < M; i++) {
+      const float aki = ak[i];
+      float * restrict di = dst.elems + (size_t)i * dst.stride;
+
+      for (uint32_t j = 0; j < N; j++) {
+        di[j] += aki * bk[j];
+      }
     }
   }
 }
@@ -1094,8 +1218,12 @@ NMatrix mat_sub_matrix(NMatrix m, uint32_t start_row, uint32_t start_col, uint32
   };
 }
 
-NMatrix mat_cols(NMatrix m, uint32_t start_col, uint32_t end_col) {
-  return mat_sub_matrix(m, 0, start_col, m.rows, end_col);
+NMatrix mat_cols(NMatrix m, uint32_t start_col, uint32_t count) {
+  return mat_sub_matrix(m, 0, start_col, m.rows, start_col + count);
+}
+
+NMatrix mat_rows(NMatrix m, uint32_t start_row, uint32_t count) {
+  return mat_sub_matrix(m, start_row, 0, start_row + count, m.cols);
 }
 
 /**
@@ -1189,14 +1317,13 @@ void mat_ident(NMatrix m) {
  * Fill matrix with random values in [-1, 1].
  * 
  * Each element is sampled uniformly from [-1, 1].
- * Uses rand() - requires srand() to be called first for reproducibility.
  * 
  * @param m       Input/output matrix to fill with random values
  */
 void mat_rand(NMatrix m) {
   for (uint32_t i = 0; i < m.rows; i++) {
     for (uint32_t j = 0; j < m.cols; j++) {
-      float r = rand() / (float)RAND_MAX;
+      float r = rand_uniform();
       MAT_AT(m, i, j) = r * 2.0f - 1.0f;
     }
   }

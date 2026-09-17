@@ -412,34 +412,35 @@ void bpe_word(TokenID_Array* ids, const int32_t *merge_to, int32_t V) {
 }
 
 size_t tokenize(
+  Arena_Allocator* arena,
   TokenID_Array* sequence,
-  Byte_Buffer_Array* words,
-  TokenID_Array* buf,
   Byte_Buffer text,
   int32_t* merge_to,
   size_t max_vocab
 ) {
   size_t tokens_count = 0;
 
-  words->count = 0;
-  pre_split(text, words);
+  Byte_Buffer_Array words = ARRAY_CREATE(&arena->alloc);
+  TokenID_Array buf = ARRAY_CREATE(&arena->alloc);
 
-  for (size_t w = 0; w < words->count; w++) {
-    Byte_Buffer word = words->elems[w];
+  pre_split(text, &words);
 
-    buf->count = 0;
+  for (size_t w = 0; w < words.count; w++) {
+    Byte_Buffer word = words.elems[w];
+
+    buf.count = 0;
 
     for (size_t i = 0; i < word.len; i++) {
-      array_append(buf, word.uptr[i]);
+      array_append(&buf, word.uptr[i]);
     }
 
-    bpe_word(buf, merge_to, max_vocab);
+    bpe_word(&buf, merge_to, max_vocab);
 
-    for (size_t i = 0; i < buf->count; i++) {
-      array_append(sequence, buf->elems[i]);
+    for (size_t i = 0; i < buf.count; i++) {
+      array_append(sequence, buf.elems[i]);
     }
 
-    tokens_count += buf->count;
+    tokens_count += buf.count;
   }
 
   return tokens_count;

@@ -39,18 +39,13 @@ Byte_Array read_input(Allocator* alloc, FILE* input) {
 }
 
 int main(void) {
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, 5L*1024*1024*1024);
   TokenID_Array tokens = ARRAY_CREATE(&mallocator.alloc);
   TokenID_Array buff = ARRAY_CREATE(&mallocator.alloc);
   Byte_Buffer_Array words = ARRAY_CREATE(&mallocator.alloc);
   int32_t* merge_to = ALLOC(&mallocator.alloc, sizeof(int32_t)*MAX_VOCAB*MAX_VOCAB).ptr;
 
-  for (size_t i = 0; i < MAX_VOCAB*MAX_VOCAB; i++)
-    merge_to[i] = -1;
-
-  for (size_t c = 257; c < MAX_VOCAB; c++) {
-    assert(vocabulary[c].a != -1 && vocabulary[c].b != -1);
-    merge_to[vocabulary[c].a*MAX_VOCAB + vocabulary[c].b] = c;
-  }
+  build_merge_to(merge_to, vocabulary, MAX_VOCAB);
 
   Byte_Array prompt =  read_input(&mallocator.alloc, stdin);
 
@@ -66,9 +61,8 @@ int main(void) {
     buff.count = 0;
 
     tokenize(
+        &arena,
         &tokens,
-        &words,
-        &buff,
         byte_buffer_from_parts(prompt.elems + start, i - start),
         merge_to,
         MAX_VOCAB

@@ -37,6 +37,7 @@ generated/alice.h: generated books/alice.txt
 VOCAB_SIZE=2048
 EOS_ID=256
 CDATA_OUT=cdata-$(VOCAB_SIZE)
+TS_CDATA_OUT=ts-cdata-$(VOCAB_SIZE)
 TOKENIZER_CMD=$(BINDIR)/tokenizer-$(VOCAB_SIZE)
 VOCAB_HEADER=vocabs/vocab_$(VOCAB_SIZE).h
 
@@ -71,7 +72,7 @@ bin:
 	mkdir -p $@
 
 corpus:
-	cd distill && rm -f data/*
+	cd distill && rm -rf data/instruct
 	cd distill && uv run scripts/build_seqkd_data.py --split dev --gold
 	cd distill && uv run scripts/build_seqkd_data.py --split train --gold
 
@@ -81,14 +82,29 @@ corpus:
 export: $(TOKENIZER_CMD)
 	# cd distill && rm -f $(CDATA_OUT)/*
 	cd distill && uv run scripts/export_seqkd_ids.py \
-		--jsonl data/seqkd_gold_dev.jsonl --out $(CDATA_OUT) \
+		--jsonl data/instruct/seqkd_gold_dev.jsonl --out $(CDATA_OUT) \
 		--vocab-size $(VOCAB_SIZE) --eos-id $(EOS_ID) --max-len 3072 \
 		--tokenizer-cmd '../$(TOKENIZER_CMD)'
 	cd distill && uv run scripts/export_seqkd_ids.py \
-		--jsonl data/seqkd_gold_train.jsonl --out $(CDATA_OUT) \
+		--jsonl data/instruct/seqkd_gold_train.jsonl --out $(CDATA_OUT) \
 		--vocab-size $(VOCAB_SIZE) --eos-id $(EOS_ID) --max-len 3072 \
 		--tokenizer-cmd '../$(TOKENIZER_CMD)'
 
+corpus-ts:
+	cd distill && rm -rf data/tinystories
+	cd distill && uv run scripts/build_seqkd_data.py --config configs/tinystories.yaml --split dev --gold
+	cd distill && uv run scripts/build_seqkd_data.py --config configs/tinystories.yaml --split train --gold
+
+export-ts: $(TOKENIZER_CMD)
+	# cd distill && rm -f $(TS_CDATA_OUT)/*
+	cd distill && uv run scripts/export_seqkd_ids.py \
+		--jsonl data/tinystories/seqkd_gold_dev.jsonl --out $(TS_CDATA_OUT) \
+		--vocab-size $(VOCAB_SIZE) --eos-id $(EOS_ID) --bos-id $(EOS_ID) \
+		--max-len 3072 --tokenizer-cmd '../$(TOKENIZER_CMD)'
+	cd distill && uv run scripts/export_seqkd_ids.py \
+		--jsonl data/tinystories/seqkd_gold_train.jsonl --out $(TS_CDATA_OUT) \
+		--vocab-size $(VOCAB_SIZE) --eos-id $(EOS_ID) --bos-id $(EOS_ID) \
+		--max-len 3072 --tokenizer-cmd '../$(TOKENIZER_CMD)'
 
 # $@  The target            The file name of the target of the rule.
 # $<  The first dependency  The name of the first dependency (prerequisite).

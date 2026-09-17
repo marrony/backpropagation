@@ -204,9 +204,9 @@ void load_optimizer(Optimizer* optimizer, Byte_Buffer file, size_t* epochs, size
 
   size_t tensors_count = 0;
   assert(fread(&tensors_count, sizeof(size_t), 1, fp) == 1);
-  assert(tensors_count == optimizer->tensors.count);
+  assert(tensors_count <= optimizer->tensors.count);
 
-  for (size_t i = 0; i < optimizer->tensors.count; i++) {
+  for (size_t i = 0; i < tensors_count; i++) {
     mat_read(optimizer->history.elems[i], fp); // 1st moment
     mat_read(optimizer->second.elems[i], fp); // 2nd moment
   }
@@ -214,10 +214,10 @@ void load_optimizer(Optimizer* optimizer, Byte_Buffer file, size_t* epochs, size
   // fixme: order array change whenever the input train change
   size_t order_count = 0;
   assert(fread(&order_count, sizeof(size_t), 1, fp) == 1);
-  assert(order_count == order.count);
-  assert(fread(order.elems, sizeof(size_t), order.count, fp) == order.count);
-
-  assert(fread(cursor, sizeof(size_t), 1, fp) == 1);
+  if (order_count == order.count) {
+    assert(fread(order.elems, sizeof(size_t), order.count, fp) == order.count);
+    assert(fread(cursor, sizeof(size_t), 1, fp) == 1);
+  }
 
   fclose(fp);
 }
