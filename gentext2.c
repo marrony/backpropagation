@@ -334,6 +334,9 @@ void generate_text(
   float temperature,
   float topp
 ) {
+  uint64_t state = rng_state;
+  rng_state = (uint64_t)getpid() << (uint64_t)32;
+
   tokens->count = 0;
   tokenize(
       arena,
@@ -343,13 +346,16 @@ void generate_text(
       MAX_VOCAB
   );
 
-  size_t lines_count = 0;
+  size_t input_tokens = tokens->count;
+  size_t output_tokens = 0;
 
   //const char* separator = "\u22c5";
   const char* separator = "";
 
   for (size_t i = 0; i < tokens->count; i++)
       printf("%s%s", vocabulary[tokens->elems[i]].token, separator);
+
+  trans_in->kv_cache->len = 0;
 
   for (size_t i = 0; i < max_tokens; i++) {
     size_t saved = SAVE(&arena->alloc);
@@ -359,6 +365,7 @@ void generate_text(
     init_transformer_output(
         .arena = arena,
         .trans_out = &trans_out,
+        .kv_cache = trans_in->kv_cache,
         .num_blocks = trans_in->num_blocks,
         .vocab_size = trans_in->vocab_size,
         .heads_count = trans_in->heads_count,
@@ -378,9 +385,8 @@ void generate_text(
     //One alternative that is worth knowing: the Gumbel-max trick — add −log(−log(u)) to each logit and take the argmax.
     //Same distribution, and it never needs the softmax at all, so it's handy if you ever want to sample straight off logits.
 
-    int32_t next = 0; //mat_row_argmax(last_token);
-    // int32_t next = sample(last_token);
-    // int32_t next = sample_topp(arena, last_token, topp);
+    int32_t next = 0;
+
     switch (sampling_type) {
       case SAMPLING_GREEDY:
         next = mat_row_argmax(last_token);
@@ -406,6 +412,10 @@ void generate_text(
     printf("%s%s", vocabulary[print].token, separator);
     fflush(stdout);
 
+    output_tokens += 1;
+
+    tokens->count = 0;
+
 #if 0
     size_t C = 512;
     if (tokens->count >= C) {
@@ -421,16 +431,14 @@ void generate_text(
 
     if (next == EOS_TOKEN)
       break;
-
-    if (print == '\n')
-      lines_count += 1;
-
-    if (lines_count >= 50)
-      break;
   }
 
   rst_color();
   printf("\n");
+  rng_state = state;
+
+  printf("input tokens = %zu\n", input_tokens);
+  printf("output tokens = %zu\n", output_tokens);
 }
 
 // Helper function to shuffle an array of indices (Fisher-Yates)
@@ -590,11 +598,13 @@ float evaluate(
     size_t saved = SAVE(&arena->alloc);
 
     size_t N = tokens.count;
+    trans_in->kv_cache->len = 0;
 
     Transformer_Output trans_out = {0};
     init_transformer_output(
         .arena = arena,
         .trans_out = &trans_out,
+        .kv_cache = trans_in->kv_cache,
         .num_blocks = trans_in->num_blocks,
         .vocab_size = trans_in->vocab_size,
         .heads_count = trans_in->heads_count,
@@ -653,10 +663,11 @@ int main(int argc, char* argv[]) {
     .decay = ARRAY_CREATE(&mallocator.alloc),
     .learning_rate = 0.05f,
     .decay_factor = 0.00001f,
-    .updates = 0,
   };
   size_t arena_size = MAX_VOCAB*MAX_VOCAB*sizeof(float);
-  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, arena_size + 2L*1024*1024*1024);
+  size_t work_size = 2L*1024*1024*1024;
+  size_t cache_size = 10*1024*1024;
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, arena_size + work_size + cache_size);
   TokenID_Array tokens = ARRAY_CREATE(&mallocator.alloc);
   TokenID_Array targets = ARRAY_CREATE(&mallocator.alloc);
   Index32_Array order_indices = ARRAY_CREATE(&mallocator.alloc);
@@ -726,31 +737,113 @@ int main(int argc, char* argv[]) {
   Byte_Buffer model_name_bin = model_name(&mallocator.alloc, V, D, F, 4, "bin");
 
   float peak_lr = 1e-3 * 0.2;
+  float min_lr = peak_lr / 10.0f;
   size_t total_epochs = 1;
   size_t target_scored = 1638;
   size_t total_steps = (scored_tokens * total_epochs + target_scored - 1) / target_scored;
+  float adam_beta1 = 0.900f;
+  float adam_beta2 = 0.999f;
   // w0 = ~1/(1−β₂)
+  size_t w0 = (size_t)(1.0f / (1.0f - adam_beta2));
   // w1 = epochs*(2%-5%)
+  size_t w1 = (size_t)(total_steps * 0.02f);
   // w = max(w0, w1)
-  size_t warmup_steps = 300;//MAX(1000, (size_t)(total_steps * 0.02f));
-  // float dropout_pct = 0.0;
+  size_t warmup_steps = MAX(w0, w1);
+  warmup_steps = 300;
 
-  // optimize learning rate
-  // int patience = 100;
-  // float decay_factor = 0.9f;
-  // float min_lr = 0.0001f;
-  // float min_delta = 0.0005f;
-  // float best_epoch_loss = INFINITY;
-  // int plateau_epochs = 0;
+  // Muennighoff et al. (2023), Scaling Data-Constrained Language Models, is the empirical answer:
+  //
+  //  - Up to ~4 epochs: repeated tokens are worth nearly as much as fresh ones
+  //  - 4 to ~16 epochs: returns decay steadily
+  //  - Past ~16: essentially zero value
+  size_t epoch = 0;
+  size_t optimizer_steps = 0;
+  size_t cursor = 0;
+  Sampling_Type sampling_type = SAMPLING_GREEDY;
+  float temperature = 1.0f;
+  float topp = 0.95f;
+  size_t ctx_size = 10*1024;
+  size_t max_tokens = ctx_size;
 
-  // array_ensure(&tokens, C);
-  // array_ensure(&targets, C);
+  Byte_Buffer prompt = from_cstring(
+      &mallocator.alloc,
+      "Given the sentence \"A man prepares morning coffee in a steel mug.\" can we conclude that \"A man vacuums the floor.\"?\n"
+      "  Options:\n"
+      "  - yes\n"
+      "  - it is not possible to tell\n"
+      "  - no Stream of thoughts\n"
+  );
+  bool train = false;
+  bool gen_text = false;
+
+  Byte_Array buf = {0};
+  for (int i = 1; i < argc; i++) {
+    if (strncmp(argv[i], "--train", 7) == 0)
+      train = true;
+
+    if (strncmp(argv[i], "--epoch=", 8) == 0) {
+      sscanf(argv[i], "--epoch=%zu", &epoch);
+    }
+    if (strncmp(argv[i], "--cursor=", 9) == 0) {
+      sscanf(argv[i], "--cursor=%zu", &cursor);
+      shuffle_indices(order_indices);
+    }
+    if (strncmp(argv[i], "--step=", 7) == 0) {
+      sscanf(argv[i], "--step=%zu", &optimizer_steps);
+    }
+
+    if (strncmp(argv[i], "--prompt", 8) == 0) {
+      FREE(&mallocator.alloc, prompt);
+      buf = read_input(&mallocator.alloc, stdin);
+      prompt = byte_buffer_from_parts(buf.elems, buf.count);
+      gen_text = true;
+
+      if (prompt.len == 0) {
+        printf("invalid prompt\n");
+        return -1;
+      }
+    }
+    if (strncmp(argv[i], "--sampling=", 11) == 0) {
+      if (strncmp(argv[i], "--sampling=greedy", 17) == 0) {
+        sampling_type = SAMPLING_GREEDY;
+      } else if (strncmp(argv[i], "--sampling=inverse-cdf", 22) == 0) {
+        sampling_type = SAMPLING_INVERSE_CDF;
+      } else if (strncmp(argv[i], "--sampling=top-p", 16) == 0) {
+        sampling_type = SAMPLING_TOPP;
+      } else {
+        printf("invalid argument: %s\n", argv[i]);
+        exit(1);
+      }
+    }
+    if (strncmp(argv[i], "--temp=", 7) == 0) {
+      sscanf(argv[i], "--temp=%f", &temperature);
+    }
+    if (strncmp(argv[i], "--top-p=", 8) == 0) {
+      sscanf(argv[i], "--top-p=%f", &topp);
+    }
+    if (strncmp(argv[i], "--max-tokens=", 13) == 0) {
+      sscanf(argv[i], "--max-tokens=%zu", &max_tokens);
+    }
+  }
+
+  max_tokens = MIN(max_tokens, ctx_size);
+
+  KVCache kv_cache = {0};
+
+  init_kv_cache(
+      &arena.alloc,
+      &kv_cache,
+      num_blocks,
+      ctx_size,
+      D
+  );
 
   Transformer trans_in = {0};
 
   init_transformer(
       .alloc = &arena.alloc,
       .trans = &trans_in,
+      .kv_cache = &kv_cache,
       .tie_embeddings = true,
       .num_blocks = num_blocks,
       .heads_count = heads_count,
@@ -822,6 +915,11 @@ int main(int argc, char* argv[]) {
   printf("scored_tokens = %zu (%.2f%%)\n", scored_tokens, (float)scored_tokens/(float)sum_tokens * 100.0f);
   printf("target_scored = %zu\n", target_scored);
   printf("total_steps = %zu\n", total_steps);
+  printf("warmup_steps = %zu\n", warmup_steps);
+  printf("adam_beta1 = %.4f\n", adam_beta1);
+  printf("adam_beta2 = %.4f\n", adam_beta2);
+  printf("peak_lr = %.5e\n", peak_lr);
+  printf("min_lr = %.5e\n", min_lr);
   printf("type frequency: p1=%zu p10=%zu p50=%zu p90=%zu max=%zu\n",
        histogram_sorted[V/100], histogram_sorted[V/10], histogram_sorted[V/2],
        histogram_sorted[9*V/10], histogram_sorted[V-1]);
@@ -831,87 +929,12 @@ int main(int argc, char* argv[]) {
       sum_tokens / (float)params, scored_tokens / (float)params);
   printf("epochs to get there = %.2f (total) / %0.2f (scored)\n",
       (20*params) / (float)sum_tokens, (20*params) / (float)scored_tokens);
+  printf("ctx_size = %zu\n", ctx_size);
+  printf("max_tokens = %zu\n", max_tokens);
   rst_color();
-
-  // Muennighoff et al. (2023), Scaling Data-Constrained Language Models, is the empirical answer:
-  //
-  //  - Up to ~4 epochs: repeated tokens are worth nearly as much as fresh ones
-  //  - 4 to ~16 epochs: returns decay steadily
-  //  - Past ~16: essentially zero value
-  size_t epoch = 0;
-  size_t optimizer_steps = 0;
-  size_t cursor = 0;
-  Sampling_Type sampling_type = SAMPLING_GREEDY;
-  float temperature = 1.0f;
-  float topp = 0.9f;
-  size_t max_tokens = 10*1024;
 
   bool loaded = load_model(&trans_in, model_name_bin);
   load_optimizer(&optimizer, model_name_par, &epoch, &optimizer_steps, order_indices, &cursor);
-
-  // for (size_t i = cursor; i < cursor+10; i++) {
-  //   printf("%zu ", order_indices.elems[i]);
-  // }
-  // printf("\n");
-  // return 0;
-
-  Byte_Buffer prompt = from_cstring(
-      &mallocator.alloc,
-      "Given the sentence \"A man prepares morning coffee in a steel mug.\" can we conclude that \"A man vacuums the floor.\"?\n"
-      "  Options:\n"
-      "  - yes\n"
-      "  - it is not possible to tell\n"
-      "  - no Stream of thoughts\n"
-  );
-  bool train = false;
-  bool gen_text = false;
-
-  Byte_Array buf = {0};
-  for (int i = 1; i < argc; i++) {
-    if (strncmp(argv[i], "--train", 7) == 0)
-      train = true;
-
-    if (strncmp(argv[i], "--epoch=", 8) == 0) {
-      sscanf(argv[i], "--epoch=%zu", &epoch);
-    }
-    if (strncmp(argv[i], "--cursor=", 9) == 0) {
-      sscanf(argv[i], "--cursor=%zu", &cursor);
-      shuffle_indices(order_indices);
-    }
-    if (strncmp(argv[i], "--step=", 7) == 0) {
-      sscanf(argv[i], "--step=%zu", &optimizer_steps);
-    }
-
-    if (strncmp(argv[i], "--prompt", 8) == 0) {
-      FREE(&mallocator.alloc, prompt);
-      buf = read_input(&mallocator.alloc, stdin);
-      prompt = byte_buffer_from_parts(buf.elems, buf.count);
-      gen_text = true;
-    }
-    if (strncmp(argv[i], "--sampling=", 11) == 0) {
-      if (strncmp(argv[i], "--sampling=greedy", 17) == 0) {
-        sampling_type = SAMPLING_GREEDY;
-      } else if (strncmp(argv[i], "--sampling=inverse-cdf", 22) == 0) {
-        sampling_type = SAMPLING_INVERSE_CDF;
-      } else if (strncmp(argv[i], "--sampling=topp", 15) == 0) {
-        sampling_type = SAMPLING_TOPP;
-      } else {
-        printf("invalid argument: %s\n", argv[i]);
-        exit(1);
-      }
-    }
-    if (strncmp(argv[i], "--temp=", 7) == 0) {
-      sscanf(argv[i], "--temp=%f", &temperature);
-    }
-    if (strncmp(argv[i], "--topp=", 7) == 0) {
-      sscanf(argv[i], "--topp=%f", &topp);
-    }
-    if (strncmp(argv[i], "--max-tokens=", 13) == 0) {
-      sscanf(argv[i], "--max-tokens=%zu", &max_tokens);
-    }
-  }
-
-  if (prompt.len == 0) return -1;
 
   size_t prompt_len = prompt.len;
   while (prompt_len > 0 && prompt.cptr[prompt_len - 1] == '\n')
@@ -945,7 +968,7 @@ int main(int argc, char* argv[]) {
       warmup_steps,
       total_steps,
       peak_lr,
-      peak_lr / 10.0f
+      min_lr
   );
 
   {
@@ -995,6 +1018,7 @@ int main(int argc, char* argv[]) {
         array_append(&targets, ids[c+1]);
       }
 
+      kv_cache.len = 0;
       size_t N = tokens.count;
 
       size_t saved = SAVE(&arena.alloc);
@@ -1003,6 +1027,7 @@ int main(int argc, char* argv[]) {
         init_transformer_output(
             .arena = &arena,
             .trans_out = &trans_out,
+            .kv_cache = &kv_cache,
             .num_blocks = trans_in.num_blocks,
             .vocab_size = trans_in.vocab_size,
             .heads_count = trans_in.heads_count,
@@ -1038,23 +1063,29 @@ int main(int argc, char* argv[]) {
 
     optimizer_steps += 1;
 
-    optimizer.updates = optimizer_steps;
-
     // cosine annealing
     optimizer.learning_rate = cosine_learning_rate(
         optimizer_steps,
         warmup_steps,
         total_steps,
         peak_lr,
-        peak_lr / 10.0f
+        min_lr
     );
 
-    update_grads_adam(&optimizer, 1.0f / (float)tokens_scored);
+    float scale = 1.0f / (float)tokens_scored;
+
+    update_grads_adam(
+        &optimizer,
+        optimizer_steps,
+        adam_beta1,
+        adam_beta2,
+        scale
+    );
 
     win_loss += loss_sum;
     win_tok += tokens_scored;
 
-    float loss = loss_sum / tokens_scored;
+    float loss = loss_sum * scale;
 
     set_color(0, 255, 0);
     print_timestamp(stdout);

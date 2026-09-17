@@ -154,7 +154,6 @@ typedef struct {
   Bool_Array decay;
   float learning_rate;
   float decay_factor;
-  size_t updates;
 } Optimizer;
 
 void register_tensor(Optimizer* opt, Tensor tensor, bool decay) {
@@ -173,7 +172,8 @@ DEFINE_ARRAY_ALIAS(Index32, size_t);
 
 void save_optimizer(Optimizer* optimizer, Byte_Buffer file, size_t epochs, size_t optimizer_steps, Index32_Array order, size_t cursor) {
   FILE* fp = fopen(file.cptr, "wb");
-  assert(fwrite(&optimizer->updates, sizeof(size_t), 1, fp) == 1);
+  size_t updates = 0;
+  assert(fwrite(&updates, sizeof(size_t), 1, fp) == 1);
   assert(fwrite(&optimizer->learning_rate, sizeof(float), 1, fp) == 1);
   assert(fwrite(&epochs, sizeof(size_t), 1, fp) == 1);
   assert(fwrite(&optimizer_steps, sizeof(size_t), 1, fp) == 1);
@@ -197,7 +197,7 @@ void load_optimizer(Optimizer* optimizer, Byte_Buffer file, size_t* epochs, size
   }
 
   printf("optimizer %*s exists, reading\n", (int)file.len, file.cptr);
-  assert(fread(&optimizer->updates, sizeof(size_t), 1, fp) == 1);
+  assert(fread(optimizer_steps, sizeof(size_t), 1, fp) == 1);
   assert(fread(&optimizer->learning_rate, sizeof(float), 1, fp) == 1);
   assert(fread(epochs, sizeof(size_t), 1, fp) == 1);
   assert(fread(optimizer_steps, sizeof(size_t), 1, fp) == 1);
@@ -217,6 +217,8 @@ void load_optimizer(Optimizer* optimizer, Byte_Buffer file, size_t* epochs, size
   if (order_count == order.count) {
     assert(fread(order.elems, sizeof(size_t), order.count, fp) == order.count);
     assert(fread(cursor, sizeof(size_t), 1, fp) == 1);
+  } else {
+    // todo: skip order_count*sizeof(size_t) + sizeof(size_t) bytes
   }
 
   fclose(fp);
@@ -1158,13 +1160,17 @@ void update_grads_sgd(Optimizer* optimizer, size_t batch_size) {
 // Set decay = true on Q/K/V/O, the FF matrices, and the embedding table;
 // false on LN gains and all biases.
 
-void update_grads_adam(Optimizer* optimizer, float scale) {
+void update_grads_adam(
+  Optimizer* optimizer,
+  size_t steps,
+  float beta1,
+  float beta2,
+  float scale
+) {
   float eps = 1e-7f;
-  float beta1 = 0.900f;
-  float beta2 = 0.999f;
 
-  float beta1_correct = 1.0f - powf(beta1, optimizer->updates);
-  float beta2_correct = 1.0f - powf(beta2, optimizer->updates);
+  float beta1_correct = 1.0f - powf(beta1, steps);
+  float beta2_correct = 1.0f - powf(beta2, steps);
 
   for (size_t t = 0; t < optimizer->tensors.count; t++) {
     Tensor tensor = optimizer->tensors.elems[t];
