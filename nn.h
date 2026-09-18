@@ -55,6 +55,11 @@ static uint32_t rng_next(void) {
   return (uint32_t)(rng_state >> 32);
 }
 
+// random number between [start, end] (inclusive)
+size_t rand_between(size_t start, size_t end) {
+  return rng_next() % (end - start + 1) + start;
+}
+
 // Uniform random in [0, 1)
 float rand_uniform(void) {
   return (rng_next() >> 9) / 8388608.0f;

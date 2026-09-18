@@ -323,29 +323,15 @@ typedef enum {
   SAMPLING_TOPP,
 } Sampling_Type;
 
-void generate_text(
+void generate_text_from_prompt(
   Arena_Allocator* arena,
   Transformer* trans_in,
-  Byte_Buffer prompt,
   TokenID_Array* tokens,
-  int32_t* merge_to,
   size_t max_tokens,
   Sampling_Type sampling_type,
   float temperature,
   float topp
 ) {
-  uint64_t state = rng_state;
-  rng_state = (uint64_t)getpid() << (uint64_t)32;
-
-  tokens->count = 0;
-  tokenize(
-      arena,
-      tokens,
-      prompt,
-      merge_to,
-      MAX_VOCAB
-  );
-
   size_t input_tokens = tokens->count;
   size_t output_tokens = 0;
 
@@ -353,7 +339,7 @@ void generate_text(
   const char* separator = "";
 
   for (size_t i = 0; i < tokens->count; i++)
-      printf("%s%s", vocabulary[tokens->elems[i]].token, separator);
+    printf("%s%s", vocabulary[tokens->elems[i]].token, separator);
 
   trans_in->kv_cache->len = 0;
 
@@ -435,10 +421,34 @@ void generate_text(
 
   rst_color();
   printf("\n");
-  rng_state = state;
 
   printf("input tokens = %zu\n", input_tokens);
   printf("output tokens = %zu\n", output_tokens);
+}
+
+void generate_text(
+  Arena_Allocator* arena,
+  Transformer* trans_in,
+  Byte_Buffer prompt,
+  TokenID_Array* tokens,
+  int32_t* merge_to,
+  size_t max_tokens,
+  Sampling_Type sampling_type,
+  float temperature,
+  float topp
+) {
+  tokens->count = 0;
+  tokenize(arena, tokens, prompt, merge_to, MAX_VOCAB);
+
+  generate_text_from_prompt(
+      arena,
+      trans_in,
+      tokens,
+      max_tokens,
+      sampling_type,
+      temperature,
+      topp
+  );
 }
 
 // Helper function to shuffle an array of indices (Fisher-Yates)
@@ -529,6 +539,46 @@ const int32_t *example(const Corpus *c, size_t i, int *prompt_len, int *total_le
   *prompt_len = r.prompt_len;
   *total_len  = r.total_len;
   return c->ids + r.offset;
+}
+
+void generate_text_from_dev(
+  Arena_Allocator* arena,
+  Transformer *trans_in,
+  const Corpus* dev,
+  size_t max_tokens,
+  Sampling_Type sampling_type,
+  float temperature,
+  float topp
+) {
+  int prompt_len;
+  int total_len;
+  const int32_t *ids = example(
+      dev,
+      rand_between(0, dev->n_recs - 1),
+      &prompt_len,
+      &total_len
+  );
+
+  size_t saved = SAVE(&arena->alloc);
+  TokenID_Array tokens = ARRAY_CREATE(&arena->alloc);
+
+  array_ensure(&tokens, prompt_len);
+
+  for (int i = 0; i < prompt_len; i++) {
+    array_append(&tokens, ids[i]);
+  }
+
+  generate_text_from_prompt(
+      arena,
+      trans_in,
+      &tokens,
+      max_tokens,
+      sampling_type,
+      temperature,
+      topp
+  );
+
+  RESTORE(&arena->alloc, saved);
 }
 
 // mean = 0 and variance = 1 over D components
@@ -654,20 +704,105 @@ size_t histogram[MAX_VOCAB] = {0};
 size_t histogram_sorted[MAX_VOCAB] = {0};
 
 int main(int argc, char* argv[]) {
-  // srand(getpid());
+  rng_state = (uint64_t)getpid() << (uint64_t)32;
+
+  // Muennighoff et al. (2023), Scaling Data-Constrained Language Models, is the empirical answer:
+  //
+  //  - Up to ~4 epochs: repeated tokens are worth nearly as much as fresh ones
+  //  - 4 to ~16 epochs: returns decay steadily
+  //  - Past ~16: essentially zero value
+  size_t epoch = 0;
+  size_t optimizer_steps = 0;
+  size_t cursor = 0;
+  Sampling_Type sampling_type = SAMPLING_GREEDY;
+  float temperature = 1.0f;
+  float topp = 0.95f;
+  size_t ctx_size = 10*1024;
+  size_t max_tokens = ctx_size;
+  size_t arena_size = 2L*1024*1024*1024;
+
+  Byte_Buffer prompt = from_cstring(
+      &mallocator.alloc,
+      "Given the sentence \"A man prepares morning coffee in a steel mug.\" can we conclude that \"A man vacuums the floor.\"?\n"
+      "  Options:\n"
+      "  - yes\n"
+      "  - it is not possible to tell\n"
+      "  - no Stream of thoughts\n"
+  );
+  bool train = false;
+  bool gen_text = false;
+
+  Byte_Array buf = {0};
+  for (int i = 1; i < argc; i++) {
+    if (strncmp(argv[i], "--train", 7) == 0)
+      train = true;
+
+    if (strncmp(argv[i], "--epoch=", 8) == 0) {
+      sscanf(argv[i], "--epoch=%zu", &epoch);
+    }
+    if (strncmp(argv[i], "--cursor=", 9) == 0) {
+      sscanf(argv[i], "--cursor=%zu", &cursor);
+    }
+    if (strncmp(argv[i], "--step=", 7) == 0) {
+      sscanf(argv[i], "--step=%zu", &optimizer_steps);
+    }
+
+    if (strncmp(argv[i], "--prompt", 8) == 0) {
+      FREE(&mallocator.alloc, prompt);
+      buf = read_input(&mallocator.alloc, stdin);
+      prompt = byte_buffer_from_parts(buf.elems, buf.count);
+      gen_text = true;
+
+      if (prompt.len == 0) {
+        printf("invalid prompt\n");
+        return -1;
+      }
+    }
+    if (strncmp(argv[i], "--sampling=", 11) == 0) {
+      if (strncmp(argv[i], "--sampling=greedy", 17) == 0) {
+        sampling_type = SAMPLING_GREEDY;
+      } else if (strncmp(argv[i], "--sampling=inverse-cdf", 22) == 0) {
+        sampling_type = SAMPLING_INVERSE_CDF;
+      } else if (strncmp(argv[i], "--sampling=top-p", 16) == 0) {
+        sampling_type = SAMPLING_TOPP;
+      } else {
+        printf("invalid argument: %s\n", argv[i]);
+        exit(1);
+      }
+    }
+    if (strncmp(argv[i], "--temp=", 7) == 0) {
+      sscanf(argv[i], "--temp=%f", &temperature);
+    }
+    if (strncmp(argv[i], "--top-p=", 8) == 0) {
+      sscanf(argv[i], "--top-p=%f", &topp);
+    }
+    if (strncmp(argv[i], "--max-tokens=", 13) == 0) {
+      sscanf(argv[i], "--max-tokens=%zu", &max_tokens);
+    }
+    if (strncmp(argv[i], "--arena-size=", 13) == 0) {
+      sscanf(argv[i], "--arena-size=%zu", &arena_size);
+
+      size_t len = strlen(argv[i]);
+      char last_ch = argv[i][len-1];
+      if (last_ch == 'K') arena_size = arena_size * 1024;
+      if (last_ch == 'M') arena_size = arena_size * 1024 * 1024;
+      if (last_ch == 'G') arena_size = arena_size * 1024 * 1024 * 1024;
+      if (last_ch == 'T') arena_size = arena_size * 1024 * 1024 * 1024 * 1024;
+      if (last_ch == 'P') arena_size = arena_size * 1024 * 1024 * 1024 * 1024 * 1024;
+    }
+  }
+
+  max_tokens = MIN(max_tokens, ctx_size);
 
   Optimizer optimizer = (Optimizer) {
     .tensors = ARRAY_CREATE(&mallocator.alloc),
     .history = ARRAY_CREATE(&mallocator.alloc),
     .second = ARRAY_CREATE(&mallocator.alloc),
     .decay = ARRAY_CREATE(&mallocator.alloc),
-    .learning_rate = 0.05f,
+    .learning_rate = 0.0f,
     .decay_factor = 0.00001f,
   };
-  size_t arena_size = MAX_VOCAB*MAX_VOCAB*sizeof(float);
-  size_t work_size = 2L*1024*1024*1024;
-  size_t cache_size = 10*1024*1024;
-  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, arena_size + work_size + cache_size);
+  Arena_Allocator arena = ARENA_CREATE(&mallocator.alloc, arena_size);
   TokenID_Array tokens = ARRAY_CREATE(&mallocator.alloc);
   TokenID_Array targets = ARRAY_CREATE(&mallocator.alloc);
   Index32_Array order_indices = ARRAY_CREATE(&mallocator.alloc);
@@ -750,83 +885,6 @@ int main(int argc, char* argv[]) {
   // w = max(w0, w1)
   size_t warmup_steps = MAX(w0, w1);
   warmup_steps = 300;
-
-  // Muennighoff et al. (2023), Scaling Data-Constrained Language Models, is the empirical answer:
-  //
-  //  - Up to ~4 epochs: repeated tokens are worth nearly as much as fresh ones
-  //  - 4 to ~16 epochs: returns decay steadily
-  //  - Past ~16: essentially zero value
-  size_t epoch = 0;
-  size_t optimizer_steps = 0;
-  size_t cursor = 0;
-  Sampling_Type sampling_type = SAMPLING_GREEDY;
-  float temperature = 1.0f;
-  float topp = 0.95f;
-  size_t ctx_size = 10*1024;
-  size_t max_tokens = ctx_size;
-
-  Byte_Buffer prompt = from_cstring(
-      &mallocator.alloc,
-      "Given the sentence \"A man prepares morning coffee in a steel mug.\" can we conclude that \"A man vacuums the floor.\"?\n"
-      "  Options:\n"
-      "  - yes\n"
-      "  - it is not possible to tell\n"
-      "  - no Stream of thoughts\n"
-  );
-  bool train = false;
-  bool gen_text = false;
-
-  Byte_Array buf = {0};
-  for (int i = 1; i < argc; i++) {
-    if (strncmp(argv[i], "--train", 7) == 0)
-      train = true;
-
-    if (strncmp(argv[i], "--epoch=", 8) == 0) {
-      sscanf(argv[i], "--epoch=%zu", &epoch);
-    }
-    if (strncmp(argv[i], "--cursor=", 9) == 0) {
-      sscanf(argv[i], "--cursor=%zu", &cursor);
-      shuffle_indices(order_indices);
-    }
-    if (strncmp(argv[i], "--step=", 7) == 0) {
-      sscanf(argv[i], "--step=%zu", &optimizer_steps);
-    }
-
-    if (strncmp(argv[i], "--prompt", 8) == 0) {
-      FREE(&mallocator.alloc, prompt);
-      buf = read_input(&mallocator.alloc, stdin);
-      prompt = byte_buffer_from_parts(buf.elems, buf.count);
-      gen_text = true;
-
-      if (prompt.len == 0) {
-        printf("invalid prompt\n");
-        return -1;
-      }
-    }
-    if (strncmp(argv[i], "--sampling=", 11) == 0) {
-      if (strncmp(argv[i], "--sampling=greedy", 17) == 0) {
-        sampling_type = SAMPLING_GREEDY;
-      } else if (strncmp(argv[i], "--sampling=inverse-cdf", 22) == 0) {
-        sampling_type = SAMPLING_INVERSE_CDF;
-      } else if (strncmp(argv[i], "--sampling=top-p", 16) == 0) {
-        sampling_type = SAMPLING_TOPP;
-      } else {
-        printf("invalid argument: %s\n", argv[i]);
-        exit(1);
-      }
-    }
-    if (strncmp(argv[i], "--temp=", 7) == 0) {
-      sscanf(argv[i], "--temp=%f", &temperature);
-    }
-    if (strncmp(argv[i], "--top-p=", 8) == 0) {
-      sscanf(argv[i], "--top-p=%f", &topp);
-    }
-    if (strncmp(argv[i], "--max-tokens=", 13) == 0) {
-      sscanf(argv[i], "--max-tokens=%zu", &max_tokens);
-    }
-  }
-
-  max_tokens = MIN(max_tokens, ctx_size);
 
   KVCache kv_cache = {0};
 
@@ -931,10 +989,28 @@ int main(int argc, char* argv[]) {
       (20*params) / (float)sum_tokens, (20*params) / (float)scored_tokens);
   printf("ctx_size = %zu\n", ctx_size);
   printf("max_tokens = %zu\n", max_tokens);
+  printf("arena_size = %zu\n", arena_size);
   rst_color();
 
   bool loaded = load_model(&trans_in, model_name_bin);
   load_optimizer(&optimizer, model_name_par, &epoch, &optimizer_steps, order_indices, &cursor);
+
+  // //tokens=3926 scored=3324
+  // sum_tokens = 0;
+  // scored_tokens = 0;
+  // for (size_t i = 151832; i < 151840; i++) {
+  //   size_t j = order_indices.elems[i];
+  //
+  //   // if ((size_t)corpus.recs[j].total_len >= target_scored)
+  //   //   break;
+  //
+  //   sum_tokens += corpus.recs[j].total_len;
+  //   scored_tokens += corpus.recs[j].total_len - corpus.recs[j].prompt_len;
+  //   printf("cursor=%zu, j=%zu, prompt=%d, total=%d\n", i, j, corpus.recs[j].prompt_len, corpus.recs[j].total_len);
+  // }
+  // printf("sum=%zu, scored=%zu\n", sum_tokens, scored_tokens);
+  //
+  // return 0;
 
   size_t prompt_len = prompt.len;
   while (prompt_len > 0 && prompt.cptr[prompt_len - 1] == '\n')
@@ -973,7 +1049,8 @@ int main(int argc, char* argv[]) {
 
   {
     size_t saved = SAVE(&arena.alloc);
-    generate_text(&arena, &trans_in, prompt_fmt, &tokens, merge_to, 100, sampling_type, temperature, topp);
+    generate_text_from_dev(&arena, &trans_in, &corpus_dev, 100, sampling_type, temperature, topp);
+    // generate_text(&arena, &trans_in, prompt_fmt, &tokens, merge_to, 100, sampling_type, temperature, topp);
     RESTORE(&arena.alloc, saved);
   }
 
@@ -985,6 +1062,7 @@ int main(int argc, char* argv[]) {
     size_t tokens_scored = 0;
     size_t tokens_count = 0;
 
+    size_t arena_to_show = 0;
     while (tokens_scored < target_scored) {
       if (cursor == order_indices.count) {
         shuffle_indices(order_indices);
@@ -995,7 +1073,8 @@ int main(int argc, char* argv[]) {
         save_optimizer(&optimizer, model_name_par, epoch, optimizer_steps, order_indices, cursor);
 
         size_t saved = SAVE(&arena.alloc);
-        generate_text(&arena, &trans_in, prompt_fmt, &tokens, merge_to, 100, sampling_type, temperature, topp);
+        // generate_text(&arena, &trans_in, prompt_fmt, &tokens, merge_to, 100, sampling_type, temperature, topp);
+        generate_text_from_dev(&arena, &trans_in, &corpus_dev, 100, sampling_type, temperature, topp);
         RESTORE(&arena.alloc, saved);
       }
 
@@ -1058,6 +1137,10 @@ int main(int argc, char* argv[]) {
 
         transformer_backward(tokens, &trans_out, &trans_in);
       }
+
+      size_t arena_used = SAVE(&arena.alloc);
+      arena_to_show = MAX(arena_to_show, arena_used);
+
       RESTORE(&arena.alloc, saved);
     }
 
@@ -1090,9 +1173,11 @@ int main(int argc, char* argv[]) {
     set_color(0, 255, 0);
     print_timestamp(stdout);
     float completion = (float)optimizer_steps / (float)total_steps;
-    printf(" %.2f%% step=%zu/%zu cursor=%zu lr=%.10f loss=%.5f perp=%.3f tokens=%zu scored=%zu (%.2f%% scored)\n",
+    float arena_usage = (float)arena_to_show / (float)arena_size;
+    printf(" %.2f%% step=%zu/%zu cursor=%zu lr=%.10f loss=%.5f perp=%.3f tokens=%zu scored=%zu (%.2f%% scored) arena=%.2f%%\n",
         completion * 100.0f, optimizer_steps, total_steps, cursor, optimizer.learning_rate, loss, expf(loss),
-        tokens_count, tokens_scored, (float)tokens_scored/(float)tokens_count * 100.0f);
+        tokens_count, tokens_scored, (float)tokens_scored/(float)tokens_count * 100.0f,
+        arena_usage * 100.0f);
     rst_color();
 
     if (optimizer_steps % 50 == 0) {
@@ -1100,7 +1185,8 @@ int main(int argc, char* argv[]) {
       save_optimizer(&optimizer, model_name_par, epoch, optimizer_steps, order_indices, cursor);
 
       size_t saved = SAVE(&arena.alloc);
-      generate_text(&arena, &trans_in, prompt_fmt, &tokens, merge_to, 100, sampling_type, temperature, topp);
+      // generate_text(&arena, &trans_in, prompt_fmt, &tokens, merge_to, 100, sampling_type, temperature, topp);
+      generate_text_from_dev(&arena, &trans_in, &corpus_dev, 100, sampling_type, temperature, topp);
       RESTORE(&arena.alloc, saved);
     }
 

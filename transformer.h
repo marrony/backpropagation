@@ -1017,7 +1017,6 @@ void init_transformer_output_opts(struct Init_Transformer_Output_Opts opts) {
   trans_out->sequence_size = opts.sequence_size;
 
   alloc_tensor(&arena->alloc, &trans_out->x0, N, D);
-  // trans_out->x0_mask = mat_alloc2(&arena->alloc, N, V);
 
   trans_out->num_blocks = opts.num_blocks;
   trans_out->blocks = ALLOC(&arena->alloc, sizeof(Block_Output)*trans_out->num_blocks).ptr;

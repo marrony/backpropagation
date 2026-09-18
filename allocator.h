@@ -10,6 +10,8 @@
 
 #include "bytebuffer.h"
 
+#define OOM_RETURN_CODE (137)
+
 struct Allocator;
 
 typedef Byte_Buffer (*Alloc_Fn)(struct Allocator*, size_t, const char*, size_t);
@@ -114,8 +116,10 @@ void arena_restore(Arena_Allocator* alloc, size_t allocated, const char* file, s
 
 Byte_Buffer malloc_alloc(Malloc_Allocator* alloc, size_t nbytes, const char* file, size_t line) {
   uint8_t* ptr = malloc(nbytes + sizeof(Malloc_Entry));
-  if (ptr == NULL)
-    return NULL_BYTE_BUFFER;
+  if (ptr == NULL) {
+    fprintf(stderr, "malloc error: tried to allocate %zu bytes\n", nbytes + sizeof(Malloc_Entry));
+    exit(OOM_RETURN_CODE);
+  }
 
   memset(ptr, 0, nbytes + sizeof(Malloc_Entry));
 
@@ -195,8 +199,11 @@ Byte_Buffer arena_alloc(Arena_Allocator* alloc, size_t nbytes, const char* file,
 
   size_t remaining = alloc->buffer.len - alloc->allocated;
 
-  if (nbytes > remaining)
-    return NULL_BYTE_BUFFER;
+  if (nbytes > remaining) {
+    fprintf(stderr, "arena error: tried to allocate %zu bytes, remaining %zu\n", nbytes, remaining);
+    fprintf(stderr, "arena error: total=%zu allocated=%zu\n", alloc->buffer.len, alloc->allocated+nbytes);
+    exit(OOM_RETURN_CODE);
+  }
 
   void* ptr = alloc->buffer.uptr + alloc->allocated;
 
