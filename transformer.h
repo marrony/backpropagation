@@ -531,7 +531,11 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
     }
 
     // Aw[h] = softmax(scores)
-    softmax_by_row(Awh, scores, 1.0f);
+    softmax_by_row(
+        .out = Awh,
+        .x = scores,
+        .temperature = 1.0f,
+    );
 
     // A[h] = Aw[h] * V[h]
     mat_mult(Ah, Awh, Vh);
@@ -604,7 +608,12 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
     //
     // dscores = dsoftmax(attn_weights, dweights)
     mat_zero(dscores);
-    dsoftmax_by_row(dscores, Awh, dAwh, 1.0f);
+    dsoftmax_by_row(
+        .dx = dscores,
+        .y = Awh,
+        .dy = dAwh,
+        .temperature = 1.0f,
+    );
 
     for (int32_t i = 0; i < N; i++) {
       for (int32_t j = i+1; j < N; j++) {
@@ -925,8 +934,6 @@ typedef struct {
   Layer_Norm ln;
   Linear_Layer H;
 
-  // float x0_p;
-
   // configs
   bool tie_embeddings;
   size_t vocab_size;
@@ -937,7 +944,6 @@ typedef struct {
 
 typedef struct {
   Tensor x0;
-  // NMatrix x0_mask;
   Block_Output* blocks;
   size_t num_blocks;
   Layer_Norm_Output ln;
@@ -1109,7 +1115,11 @@ void transformer_forward(
   );
 
   // probs = softmax(logits)
-  softmax_by_row(out->probs, out->logits.value, temperature);
+  softmax_by_row(
+      .out = out->probs,
+      .x = out->logits.value,
+      .temperature = temperature
+  );
 }
 
 void transformer_backward(

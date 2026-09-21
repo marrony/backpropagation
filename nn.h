@@ -1579,18 +1579,43 @@ void dsoftmax_temperature(NMatrix dLdz, NMatrix h, NMatrix dLdh, float t) {
     VEC_AT(dLdz, i) += inv_t * VEC_AT(h, i) * (VEC_AT(dLdh, i) - dot);
 }
 
-void softmax_by_row(NMatrix out, NMatrix logits, float temperature) {
-  assert(out.rows == logits.rows);
-  assert(out.cols == logits.cols);
+struct Softmax_Forward_Opts {
+  NMatrix out;
+  NMatrix x;
+  float temperature;
+};
 
-  for (uint32_t i = 0; i < out.rows; i++) {
-    softmax_temperature(mat_row(out, i), mat_row(logits, i), temperature);
+struct Softmax_Backward_Opts {
+  NMatrix dx;
+  NMatrix y;
+  NMatrix dy;
+  float temperature;
+};
+
+#define softmax_by_row(...) softmax_opts((struct Softmax_Forward_Opts) { __VA_ARGS__ })
+#define dsoftmax_by_row(...) dsoftmax_opts((struct Softmax_Backward_Opts) { __VA_ARGS__ })
+
+void softmax_opts(struct Softmax_Forward_Opts opts) {
+  assert(opts.out.rows == opts.x.rows);
+  assert(opts.out.cols == opts.x.cols);
+
+  for (uint32_t i = 0; i < opts.out.rows; i++) {
+    softmax_temperature(
+        mat_row(opts.out, i),
+        mat_row(opts.x, i),
+        opts.temperature
+    );
   }
 }
 
-void dsoftmax_by_row(NMatrix dLdz, NMatrix h, NMatrix dLdh, float t) {
-  for (uint32_t i = 0; i < dLdz.rows; i++) {
-    dsoftmax_temperature(mat_row(dLdz, i), mat_row(h, i), mat_row(dLdh, i), t);
+void dsoftmax_opts(struct Softmax_Backward_Opts opts) {
+  for (uint32_t i = 0; i < opts.dx.rows; i++) {
+    dsoftmax_temperature(
+        mat_row(opts.dx, i),
+        mat_row(opts.y, i),
+        mat_row(opts.dy, i),
+        opts.temperature
+    );
   }
 }
 
