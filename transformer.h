@@ -435,11 +435,15 @@ struct Attention_Forward_Opts {
   size_t base;
   size_t total;
   NMatrix scores;
-  Tensor in;
+  Tensor in_q;
+  Tensor in_k;
+  Tensor in_v;
 };
 
 struct Attention_Backward_Opts {
-  Tensor in;
+  Tensor in_q;
+  Tensor in_k;
+  Tensor in_v;
   Attention_Output* attn_out;
   Attention* attn_in;
   KVCache* kv_cache;
@@ -456,21 +460,23 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
   Attention_Output* attn_out = opts.attn_out;
   NMatrix scores = opts.scores;
   Attention* attn_in = opts.attn_in;
-  Tensor in = opts.in;
+  Tensor in_q = opts.in_q;
+  Tensor in_k = opts.in_k;
+  Tensor in_v = opts.in_v;
   size_t base = opts.base;
   size_t block = opts.block;
   size_t total = opts.total;
   KVCache* cache = opts.kv_cache;
 
-  size_t N = in.value.rows;
-  int32_t D = in.value.cols;
+  size_t N = in_q.value.rows;
+  int32_t D = in_q.value.cols;
   int32_t H = attn_out->weights.rows;
   int32_t d_head = D / H;
 
   // Q = input*wQ + bQ
   project(
       .out = attn_out->Q,
-      .x   = in,
+      .x   = in_q,
       .W   = attn_in->Q.weight,
       .b   = attn_in->Q.bias,
   );
@@ -485,7 +491,7 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
   // K = input*wK + bK
   project(
       .out = Kwrite,
-      .x   = in,
+      .x   = in_k,
       .W   = attn_in->K.weight,
       .b   = attn_in->K.bias
   );
@@ -493,7 +499,7 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
   // V = input*wV + bV
   project(
       .out = Vwrite,
-      .x   = in,
+      .x   = in_v,
       .W   = attn_in->V.weight,
       .b   = attn_in->V.bias
   );
@@ -551,7 +557,9 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
 }
 
 void attention_backward_opts(struct Attention_Backward_Opts opts) {
-  Tensor in = opts.in;
+  Tensor in_q = opts.in_q;
+  Tensor in_k = opts.in_k;
+  Tensor in_v = opts.in_v;
   Attention_Output* attn_out = opts.attn_out;
   Attention* attn_in = opts.attn_in;
   NMatrix dout = opts.dout;
@@ -560,8 +568,8 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
   size_t block = opts.block;
   size_t total = opts.total;
 
-  int32_t N = in.value.rows;
-  int32_t D = in.value.cols;
+  int32_t N = in_q.value.rows;
+  int32_t D = in_q.value.cols;
   int32_t H = attn_out->weights.rows;
   int32_t d_head = D / H;
 
@@ -637,7 +645,7 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
 
   // V = input*wV + bV
   dproject(
-      .x    = in,
+      .x    = in_v,
       .W    = attn_in->V.weight,
       .b    = attn_in->V.bias,
       .dout = attn_out->dV,
@@ -645,7 +653,7 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
 
   // K = input*wK + bK
   dproject(
-      .x    = in,
+      .x    = in_k,
       .W    = attn_in->K.weight,
       .b    = attn_in->K.bias,
       .dout = attn_out->dK,
@@ -653,7 +661,7 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
 
   // Q = input*wQ + bQ
   dproject(
-      .x    = in,
+      .x    = in_q,
       .W    = attn_in->Q.weight,
       .b    = attn_in->Q.bias,
       .dout = attn_out->dQ,
@@ -799,7 +807,9 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
       .attn_out = &block_out->attn,
       .attn_in  = &block_in->attn,
       .scores   = scores,
-      .in       = block_out->ln1.out,
+      .in_q     = block_out->ln1.out,
+      .in_k     = block_out->ln1.out,
+      .in_v     = block_out->ln1.out,
   );
 
   // mask = dropout(attn_out)
@@ -892,7 +902,9 @@ void block_backward_opts(struct Block_Backward_Opts opts) {
       .kv_cache = opts.kv_cache,
       .block    = opts.block,
       .total    = opts.total,
-      .in       = block_out->ln1.out,
+      .in_q     = block_out->ln1.out,
+      .in_k     = block_out->ln1.out,
+      .in_v     = block_out->ln1.out,
       .attn_out = &block_out->attn,
       .attn_in  = &block_in->attn,
       .dscores  = dscores,
