@@ -1,5 +1,6 @@
 #include "array.h"
 #include "nn.h"
+#include <OpenCL/cl.h>
 #include <string.h>
 #include <time.h>
 #include <math.h>
@@ -323,6 +324,172 @@ typedef enum {
   SAMPLING_TOPP,
 } Sampling_Type;
 
+#define NUM_BLOCKS ((size_t)6)
+
+#if GPU_COMPUTATION
+cl_mem trans_out_opencl_buffer = NULL;
+cl_mem trans_out_blocks_opencl_buffer[NUM_BLOCKS] = {0};
+size_t trans_out_blocks_opencl_buffer_size[NUM_BLOCKS] = {0};
+
+void init_block_opencl(Block* block) {
+  size_t offset = 0;
+
+  from_matrix2(block->opencl_buffer, &block->ln1.gamma.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->ln1.gamma.grad, &offset);
+  from_matrix2(block->opencl_buffer, &block->ln1.beta.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->ln1.beta.grad, &offset);
+
+  from_matrix2(block->opencl_buffer, &block->attn.Q.weight.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.Q.weight.grad, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.Q.bias.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.Q.bias.grad, &offset);
+
+  from_matrix2(block->opencl_buffer, &block->attn.K.weight.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.K.weight.grad, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.K.bias.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.K.bias.grad, &offset);
+
+  from_matrix2(block->opencl_buffer, &block->attn.V.weight.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.V.weight.grad, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.V.bias.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.V.bias.grad, &offset);
+
+  from_matrix2(block->opencl_buffer, &block->attn.O.weight.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.O.weight.grad, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.O.bias.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.O.bias.grad, &offset);
+
+  from_matrix2(block->opencl_buffer, &block->ln2.gamma.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->ln2.gamma.grad, &offset);
+  from_matrix2(block->opencl_buffer, &block->ln2.beta.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->ln2.beta.grad, &offset);
+
+  from_matrix2(block->opencl_buffer, &block->ff1.weight.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->ff1.weight.grad, &offset);
+  from_matrix2(block->opencl_buffer, &block->ff1.bias.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->ff1.bias.grad, &offset);
+
+  from_matrix2(block->opencl_buffer, &block->ff2.weight.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->ff2.weight.grad, &offset);
+  from_matrix2(block->opencl_buffer, &block->ff2.bias.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->ff2.bias.grad, &offset);
+
+  assert(sizeof(float)*offset == block->opencl_buffer_size);
+}
+
+void init_transformer_opencl(Transformer* trans_in) {
+  cl_int err = 0;
+  trans_in->opencl_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, trans_in->opencl_buffer_size, NULL, &err);
+  assert(err == CL_SUCCESS);
+
+  size_t offset = 0;
+  from_matrix2(trans_in->opencl_buffer, &trans_in->tok_emb.value, &offset);
+  from_matrix2(trans_in->opencl_buffer, &trans_in->tok_emb.grad, &offset);
+
+  from_matrix2(trans_in->opencl_buffer, &trans_in->ln.gamma.value, &offset);
+  from_matrix2(trans_in->opencl_buffer, &trans_in->ln.gamma.grad, &offset);
+  from_matrix2(trans_in->opencl_buffer, &trans_in->ln.beta.value, &offset);
+  from_matrix2(trans_in->opencl_buffer, &trans_in->ln.beta.grad, &offset);
+
+  if (!trans_in->tie_embeddings) {
+    from_matrix2(trans_in->opencl_buffer, &trans_in->H.weight.value, &offset);
+    from_matrix2(trans_in->opencl_buffer, &trans_in->H.weight.grad, &offset);
+  }
+
+  from_matrix2(trans_in->opencl_buffer, &trans_in->H.bias.value, &offset);
+  from_matrix2(trans_in->opencl_buffer, &trans_in->H.bias.grad, &offset);
+
+  assert(sizeof(float)*offset == trans_in->opencl_buffer_size);
+
+  for (size_t i = 0; i < trans_in->num_blocks; i++) {
+    trans_in->blocks[i].opencl_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, trans_in->blocks[i].opencl_buffer_size, NULL, &err);
+    assert(err == CL_SUCCESS);
+
+    init_block_opencl(&trans_in->blocks[i]);
+  }
+}
+
+void init_block_output_opencl(Block_Output* block_out) {
+  size_t offset = 0;
+
+  from_matrix2(block_out->opencl_buffer, &block_out->ln1.out.value, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ln1.out.grad, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ln1.mean, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ln1.rstd, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ln1.xhat, &offset);
+
+  from_matrix2(block_out->opencl_buffer, &block_out->attn.Q, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->attn.dQ, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->attn.dK, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->attn.dV, &offset);
+
+  for (size_t h = 0; h <block_out->attn.heads_count; h++) {
+    from_matrix2(block_out->opencl_buffer, &block_out->attn.weights[h], &offset);
+    from_matrix2(block_out->opencl_buffer, &block_out->attn.dweights[h], &offset);
+  }
+  from_matrix2(block_out->opencl_buffer, &block_out->attn.vals, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->attn.dvals, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->attn.out, &offset);
+
+  from_matrix2(block_out->opencl_buffer, &block_out->x1, &offset);
+
+  from_matrix2(block_out->opencl_buffer, &block_out->ln2.out.value, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ln2.out.grad, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ln2.mean, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ln2.rstd, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ln2.xhat, &offset);
+
+  from_matrix2(block_out->opencl_buffer, &block_out->ff1_out.value, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ff1_out.grad, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->relu_out.value, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->relu_out.grad, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ff2_out, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->out.value, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->out.grad, &offset);
+
+  assert(sizeof(float)*offset == block_out->opencl_buffer_size);
+}
+
+void init_transformer_output_opencl(Transformer_Output* trans_out) {
+  size_t offset = 0;
+
+  from_matrix2(trans_out->opencl_buffer, &trans_out->x0.value, &offset);
+  from_matrix2(trans_out->opencl_buffer, &trans_out->x0.grad, &offset);
+
+  from_matrix2(trans_out->opencl_buffer, &trans_out->ln.out.value, &offset);
+  from_matrix2(trans_out->opencl_buffer, &trans_out->ln.out.grad, &offset);
+  from_matrix2(trans_out->opencl_buffer, &trans_out->ln.rstd, &offset);
+  from_matrix2(trans_out->opencl_buffer, &trans_out->ln.mean, &offset);
+  from_matrix2(trans_out->opencl_buffer, &trans_out->ln.xhat, &offset);
+
+  from_matrix2(trans_out->opencl_buffer, &trans_out->logits.value, &offset);
+  from_matrix2(trans_out->opencl_buffer, &trans_out->logits.grad, &offset);
+
+  from_matrix2(trans_out->opencl_buffer, &trans_out->probs, &offset);
+  from_matrix2(trans_out->opencl_buffer, &trans_out->scores, &offset);
+
+  assert(sizeof(float)*offset == trans_out->opencl_buffer_size);
+
+  for (size_t i = 0; i < trans_out->num_blocks; i++) {
+    init_block_output_opencl(&trans_out->blocks[i]);
+  }
+}
+
+void init_kv_cache_opencl(KVCache* kv_cache, size_t num_blocks) {
+  cl_int err = 0;
+  kv_cache->opencl_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, kv_cache->opencl_buffer_size, NULL, &err);
+  assert(err == CL_SUCCESS);
+
+  size_t offset = 0;
+  for (size_t i = 0; i < num_blocks; i++) {
+    from_matrix2(kv_cache->opencl_buffer, &kv_cache->k[i], &offset);
+    from_matrix2(kv_cache->opencl_buffer, &kv_cache->v[i], &offset);
+  }
+
+  assert(sizeof(float)*offset == kv_cache->opencl_buffer_size);
+}
+#endif
+
 void generate_text_from_prompt(
   Arena_Allocator* arena,
   Transformer* trans_in,
@@ -358,7 +525,17 @@ void generate_text_from_prompt(
         .emb_size = trans_in->emb_size,
         .ff_size = trans_in->ff_size,
         .sequence_size = N,
+        .clean_data = true,
     );
+
+#if GPU_COMPUTATION
+    trans_out.opencl_buffer = trans_out_opencl_buffer;
+    for (size_t b = 0; b < trans_out.num_blocks; b++) {
+      trans_out.blocks[b].opencl_buffer = trans_out_blocks_opencl_buffer[b];
+    }
+
+    init_transformer_output_opencl(&trans_out);
+#endif
 
     // 0.5 = deterministic
     // 1.0 = normal
@@ -483,18 +660,6 @@ float cosine_learning_rate(
   float alpha = (float)(t - t_warmup) / (float)(t_total - t_warmup);
   if (alpha > 1.0f) alpha = 1.0f;
   return lr_min + 0.5f*(lr_max - lr_min) * (1.0f + cosf(alpha * M_PI));
-}
-
-void print_tokens(Transformer* trans_in) {
-  (void)trans_in;
-  // printf("\033[38;5;130m");
-  // printf("desert  = %.5f\n",
-  //   mat_row_similarity(
-  //     mat_row(trans_in->tok_emb.value, find_token("desert")),
-  //     mat_row(trans_in->tok_emb.value, find_token(" desert"))
-  //   )
-  // );
-  // printf("\033[0m");
 }
 
 typedef struct {
@@ -661,6 +826,7 @@ float evaluate(
         .emb_size = trans_in->emb_size,
         .ff_size = trans_in->ff_size,
         .sequence_size = N,
+        .clean_data = true,
     );
 
     transformer_forward(tokens, &trans_out, trans_in, 1.0f);
@@ -704,6 +870,13 @@ size_t histogram[MAX_VOCAB] = {0};
 size_t histogram_sorted[MAX_VOCAB] = {0};
 
 int main(int argc, char* argv[]) {
+#if GPU_COMPUTATION
+  if (!init_opencl()) {
+    printf("Failed to init OpenCL\n");
+    return 1;
+  }
+#endif
+
   rng_state = (uint64_t)getpid() << (uint64_t)32;
 
   // Muennighoff et al. (2023), Scaling Data-Constrained Language Models, is the empirical answer:
@@ -717,18 +890,11 @@ int main(int argc, char* argv[]) {
   Sampling_Type sampling_type = SAMPLING_GREEDY;
   float temperature = 1.0f;
   float topp = 0.95f;
-  size_t ctx_size = 10*1024;
+  size_t ctx_size = 3*1024;
   size_t max_tokens = ctx_size;
-  size_t arena_size = 2L*1024*1024*1024;
+  size_t arena_size = 5L*1024*1024*1024;
+  Byte_Buffer prompt = NULL_BYTE_BUFFER;
 
-  Byte_Buffer prompt = from_cstring(
-      &mallocator.alloc,
-      "Given the sentence \"A man prepares morning coffee in a steel mug.\" can we conclude that \"A man vacuums the floor.\"?\n"
-      "  Options:\n"
-      "  - yes\n"
-      "  - it is not possible to tell\n"
-      "  - no Stream of thoughts\n"
-  );
   bool train = false;
   bool gen_text = false;
 
@@ -748,15 +914,15 @@ int main(int argc, char* argv[]) {
     }
 
     if (strncmp(argv[i], "--prompt", 8) == 0) {
-      FREE(&mallocator.alloc, prompt);
       buf = read_input(&mallocator.alloc, stdin);
-      prompt = byte_buffer_from_parts(buf.elems, buf.count);
-      gen_text = true;
 
-      if (prompt.len == 0) {
+      if (buf.count == 0) {
         printf("invalid prompt\n");
         return -1;
       }
+
+      prompt = byte_buffer_from_parts(buf.elems, buf.count);
+      gen_text = true;
     }
     if (strncmp(argv[i], "--sampling=", 11) == 0) {
       if (strncmp(argv[i], "--sampling=greedy", 17) == 0) {
@@ -866,7 +1032,6 @@ int main(int argc, char* argv[]) {
   size_t heads_count = 4;
   size_t F = D*heads_count;
   size_t V = MAX_VOCAB;
-  size_t num_blocks = 6;
 
   Byte_Buffer model_name_par = model_name(&mallocator.alloc, V, D, F, 4, "adam");
   Byte_Buffer model_name_bin = model_name(&mallocator.alloc, V, D, F, 4, "bin");
@@ -891,7 +1056,7 @@ int main(int argc, char* argv[]) {
   init_kv_cache(
       &arena.alloc,
       &kv_cache,
-      num_blocks,
+      NUM_BLOCKS,
       ctx_size,
       D
   );
@@ -903,21 +1068,70 @@ int main(int argc, char* argv[]) {
       .trans = &trans_in,
       .kv_cache = &kv_cache,
       .tie_embeddings = true,
-      .num_blocks = num_blocks,
+      .num_blocks = NUM_BLOCKS,
       .heads_count = heads_count,
       .vocab_size = V,
       .emb_size = D,
       .ff_size = F,
   );
 
+#if GPU_COMPUTATION
+  init_kv_cache_opencl(&kv_cache, NUM_BLOCKS);
+  init_transformer_opencl(&trans_in);
+
+  cl_int err = 0;
+  trans_in.opencl_tokens_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(cl_int)*max_tokens, NULL, &err);
+  assert(err == CL_SUCCESS);
+#endif
+
+  size_t max_transformer_out_size = 0;
+
+#if GPU_COMPUTATION
+  {
+    size_t saved = SAVE(&arena.alloc);
+
+    kv_cache.len = ctx_size;
+
+    Transformer_Output trans_out = {0};
+    max_transformer_out_size = init_transformer_output(
+        .arena = &arena,
+        .trans_out = &trans_out,
+        .kv_cache = &kv_cache,
+        .num_blocks = trans_in.num_blocks,
+        .vocab_size = trans_in.vocab_size,
+        .heads_count = trans_in.heads_count,
+        .emb_size = trans_in.emb_size,
+        .ff_size = trans_in.ff_size,
+        .sequence_size = ctx_size,
+        .clean_data = false,
+    );
+
+    kv_cache.len = 0;
+
+    RESTORE(&arena.alloc, saved);
+
+    cl_int err = 0;
+    trans_out_opencl_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, trans_out.opencl_buffer_size, NULL, &err);
+    assert(err == CL_SUCCESS);
+
+    for (size_t i = 0; i < trans_in.num_blocks; i++) {
+      trans_out_blocks_opencl_buffer_size[i] = trans_out.blocks[i].opencl_buffer_size;
+      trans_out_blocks_opencl_buffer[i] = clCreateBuffer(context, CL_MEM_READ_WRITE, trans_out_blocks_opencl_buffer_size[i], NULL, &err);
+      assert(err == CL_SUCCESS);
+    }
+  }
+#endif
+
   set_color(255, 165, 0);
+
+  printf("max_transformer_out_size = %zu\n", max_transformer_out_size);
   printf("D = %zu\n", D);
   printf("V = %zu\n", V);
   printf("F = %zu\n", F);
   printf("tie_embeddings = %s\n", trans_in.tie_embeddings ? "yes" : "no");
   printf("heads_count = %zu\n", heads_count);
   printf("head_dim = %zu\n", D / heads_count);
-  printf("block_count = %zu\n", num_blocks);
+  printf("block_count = %zu\n", NUM_BLOCKS);
   {
     size_t params = count_parameters(&optimizer);
     register_tensor(&optimizer, trans_in.tok_emb, true);
@@ -935,7 +1149,7 @@ int main(int argc, char* argv[]) {
 
   {
     size_t params = count_parameters(&optimizer);
-    for (size_t i = 0; i < num_blocks; i++) {
+    for (size_t i = 0; i < NUM_BLOCKS; i++) {
       register_tensor(&optimizer, trans_in.blocks[i].ln1.gamma, false);
       register_tensor(&optimizer, trans_in.blocks[i].ln1.beta, false);
       register_tensor(&optimizer, trans_in.blocks[i].ln2.gamma, false);
@@ -955,7 +1169,7 @@ int main(int argc, char* argv[]) {
       register_tensor(&optimizer, trans_in.blocks[i].attn.O.weight, true);
       register_tensor(&optimizer, trans_in.blocks[i].attn.O.bias, false);
     }
-    printf("transformer_block = %zu\n", (count_parameters(&optimizer) - params) / num_blocks);
+    printf("transformer_block = %zu\n", (count_parameters(&optimizer) - params) / NUM_BLOCKS);
   }
 
   {
@@ -1021,18 +1235,16 @@ int main(int argc, char* argv[]) {
   for (int i = 0; i < 2; i++) {
     nbytes = snprintf(prompt_fmt.cptr, nbytes+1, "User: %.*s\nAssistant: ", (int)prompt_len, prompt.cptr);
     if (nbytes < 0 || prompt_fmt.cptr != NULL) break;
-    prompt_fmt = ALLOC(&mallocator.alloc, nbytes);
+    prompt_fmt = ALLOC(&mallocator.alloc, nbytes+1);
   }
   array_destroy(&buf);
+
+  // remove \0 from prompt_fmt
+  prompt_fmt.len -= 1;
 
   if ((loaded && !train) || gen_text) {
     goto generate_text;
   }
-
-  init_opencl();
-  ensure_buffer_size(sizeof(float)*MAX_VOCAB*MAX_VOCAB);
-
-  print_tokens(&trans_in);
 
   set_color(0, 255, 0);
   print_timestamp(stdout);
@@ -1113,6 +1325,7 @@ int main(int argc, char* argv[]) {
             .emb_size = trans_in.emb_size,
             .ff_size = trans_in.ff_size,
             .sequence_size = N,
+            .clean_data = true,
         );
 
         transformer_forward(tokens, &trans_out, &trans_in, 1.0f);
@@ -1212,6 +1425,10 @@ generate_text:
     generate_text(&arena, &trans_in, prompt_fmt, &tokens, merge_to, max_tokens, sampling_type, temperature, topp);
     RESTORE(&arena.alloc, saved);
   }
+
+#if GPU_COMPUTATION
+  destoy_opencl();
+#endif
   return 0;
 }
 

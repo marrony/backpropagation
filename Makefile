@@ -8,10 +8,10 @@ PROGS := $(addprefix $(BINDIR)/, $(SOURCES:.c=))
 raylib-5/libraylib.a:
 	make -C raylib-5 RAYLIB_SRC_PATH=.
 
-CFLAGS_COMMON=-std=c17 -Werror -Wall -Wextra \
+CFLAGS_COMMON=-std=c23 -Werror -Wall -Wextra \
 		-Wno-initializer-overrides -pedantic -I ./raylib-5 \
 		-DPCRE2_CODE_UNIT_WIDTH=8 $(shell pkg-config --cflags libpcre2-8) \
-		-march=armv8-a
+		-march=armv8-a -DGPU_COMPUTATION=1
 
 CFLAGS_DEBUG=$(CFLAGS_COMMON) -g \
     -fsanitize=signed-integer-overflow \
@@ -22,7 +22,7 @@ CFLAGS_RELEASE=$(CFLAGS_COMMON) -O3
     # -mcpu=native -Rpass=loop-vectorize -Rpass-missed=loop-vectorize \
     # -Rpass-analysis=loop-vectorize
 
-CFLAGS=$(CFLAGS_RELEASE)
+CFLAGS=$(CFLAGS_DEBUG)
 
 LDFLAGS=-L ./raylib-5 -lraylib -framework Foundation \
     -framework CoreServices -framework CoreGraphics \
@@ -62,8 +62,11 @@ $(BINDIR)/cnn-node: cnn-node.c
 $(BINDIR)/%: %.c nn.h node.h game.h tokenizer.h transformer.h gpu.h | $(BINDIR) raylib-5/libraylib.a
 	cc $(CFLAGS) $< -o $@ $(LDFLAGS) -DVOCAB_HEADER='"$(VOCAB_HEADER)"' -DVOCAB_SIZE=$(VOCAB_SIZE)
 
-$(BINDIR)/gentext2.2: gentext2.c nn.h node.h game.h tokenizer.h transformer.h gpu.h | $(BINDIR) raylib-5/libraylib.a
+$(BINDIR)/gentext2: gentext2.c nn.h node.h game.h tokenizer.h transformer.h gpu.h gpu_kernels.c | $(BINDIR) raylib-5/libraylib.a
 	cc $(CFLAGS) $< -o $@ $(LDFLAGS) -DVOCAB_HEADER='"$(VOCAB_HEADER)"' -DVOCAB_SIZE=$(VOCAB_SIZE)
+
+$(BINDIR)/test_gpu: test_gpu.c nn.h gpu.h gpu_kernels.c | $(BINDIR)
+	cc $(CFLAGS) $< -o $@ $(LDFLAGS)
 
 generated:
 	mkdir -p $@
