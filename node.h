@@ -584,7 +584,13 @@ Tensor* node_forward(Arena_Allocator* arena, Node* node, Tape_Node_Array* tape) 
       out->value = mat_alloc2(&arena->alloc, logits_tensor->value.rows, logits_tensor->value.cols);
       out->grad = mat_alloc2(&arena->alloc, logits_tensor->value.rows, logits_tensor->value.cols);
 
-      softmax_by_row(out->value, logits_tensor->value, node->as_softmax.temperature);
+      for (uint32_t i = 0; i < out->value.rows; i++) {
+        softmax_temperature(
+            mat_row(out->value, i),
+            mat_row(logits_tensor->value, i),
+            node->as_softmax.temperature
+        );
+      }
       break;
     }
 

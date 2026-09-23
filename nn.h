@@ -16,19 +16,39 @@
 #include <sys/semaphore.h>
 
 #include <raylib.h>
+#include <OpenCL/opencl.h>
 
 #include "allocator.h"
 
 #define ARRAY_LEN(a) (sizeof(a) / sizeof(*(a)))
 
+typedef struct __attribute__((packed)) {
+  cl_uint rows;              // 4 bytes
+  cl_uint cols;              // 4 bytes
+  cl_uint stride;            // 4 bytes
+  cl_uint offset;            // 4 bytes
+} MatrixData;                // 16 bytes
+
 typedef struct {
+#if GPU_COMPUTATION
+  float* elems;
+  union {
+    struct {
+      uint32_t rows;
+      uint32_t cols;
+      uint32_t stride;
+      uint32_t offset;
+    };
+    MatrixData data;
+  };
+  cl_mem buffer;
+#else
   float* elems;
   uint32_t rows;
   uint32_t cols;
   uint32_t stride;
+#endif
 } NMatrix;
-
-#include "gpu.h"
 
 typedef struct {
   NMatrix value;
@@ -42,7 +62,7 @@ Tensor tensor(NMatrix value, NMatrix grad) {
   };
 }
 
-#define NULL_MATRIX (NMatrix){NULL, 0, 0, 0}
+#define NULL_MATRIX ((NMatrix) {0})
 #define MAT_AT(m, row, col) ((m).elems[((m).stride)*(row) + (col)])
 
 #define VEC_AT(v, idx) MAT_AT((v), 0, (idx))
@@ -120,6 +140,10 @@ NMatrix mat_alloc(int rows, int cols) {
     .rows = rows,
     .cols = cols,
     .stride = cols,
+#if GPU_COMPUTATION
+    .offset = 0,
+    .buffer = NULL,
+#endif
   };
 }
 
@@ -129,6 +153,10 @@ NMatrix mat_init(int rows, int cols, float* data) {
     .rows = rows,
     .cols = cols,
     .stride = cols,
+#if GPU_COMPUTATION
+    .offset = 0,
+    .buffer = NULL,
+#endif
   };
 }
 
@@ -263,6 +291,10 @@ NMatrix mat_reshape(NMatrix x, uint32_t rows, uint32_t cols) {
     .rows = rows,
     .cols = cols,
     .stride = x.stride,
+#if GPU_COMPUTATION
+    .offset = x.offset,
+    .buffer = x.buffer,
+#endif
   };
 }
 
@@ -585,14 +617,20 @@ static inline void gemm_nt(
       }
 
       if (acc) {
-        di[j + 0] += s0;  di[j + 1] += s1;
-        di[j + 2] += s2;  di[j + 3] += s3;
+        di[j + 0] += s0;
+        di[j + 1] += s1;
+        di[j + 2] += s2;
+        di[j + 3] += s3;
       } else if (bias) {
-        di[j + 0] = s0 + bias[j + 0];  di[j + 1] = s1 + bias[j + 1];
-        di[j + 2] = s2 + bias[j + 2];  di[j + 3] = s3 + bias[j + 3];
+        di[j + 0] = s0 + bias[j + 0];
+        di[j + 1] = s1 + bias[j + 1];
+        di[j + 2] = s2 + bias[j + 2];
+        di[j + 3] = s3 + bias[j + 3];
       } else {
-        di[j + 0] = s0;  di[j + 1] = s1;
-        di[j + 2] = s2;  di[j + 3] = s3;
+        di[j + 0] = s0;
+        di[j + 1] = s1;
+        di[j + 2] = s2;
+        di[j + 3] = s3;
       }
     }
     for (; j < R; j++) {
@@ -1165,6 +1203,10 @@ NMatrix mat_row_slice(NMatrix m, uint32_t start, uint32_t size) {
     .rows = 1,
     .cols = size,
     .stride = m.stride,
+#if GPU_COMPUTATION
+    .offset = m.offset + 0*m.stride + start,
+    .buffer = m.buffer,
+#endif
   };
 }
 
@@ -1184,6 +1226,10 @@ NMatrix mat_slice(NMatrix m, uint32_t start, uint32_t size) {
     .rows = size,
     .cols = m.cols,
     .stride = m.stride,
+#if GPU_COMPUTATION
+    .offset = m.offset + start*m.stride + 0,
+    .buffer = m.buffer,
+#endif
   };
 }
 
@@ -1202,6 +1248,10 @@ NMatrix mat_row(NMatrix m, uint32_t row) {
     .rows = 1,
     .cols = m.cols,
     .stride = m.cols,
+#if GPU_COMPUTATION
+    .offset = m.offset + row*m.stride + 0,
+    .buffer = m.buffer,
+#endif
   };
 }
 
@@ -1211,24 +1261,32 @@ NMatrix mat_row_as(NMatrix m, uint32_t row, uint32_t rows, uint32_t cols) {
     .rows = rows,
     .cols = cols,
     .stride = cols,
+#if GPU_COMPUTATION
+    .offset = m.offset + row*m.stride + 0,
+    .buffer = m.buffer,
+#endif
   };
 }
 
-NMatrix mat_sub_matrix(NMatrix m, uint32_t start_row, uint32_t start_col, uint32_t end_row, uint32_t end_col) {
+NMatrix mat_sub_matrix(NMatrix m, uint32_t start_row, uint32_t start_col, uint32_t rows, uint32_t cols) {
   return (NMatrix) {
     .elems = &(MAT_AT(m, start_row, start_col)),
-    .rows = end_row - start_row,
-    .cols = end_col - start_col,
+    .rows = rows,
+    .cols = cols,
     .stride = m.stride,
+#if GPU_COMPUTATION
+    .offset = m.offset + start_row*m.stride + start_col,
+    .buffer = m.buffer,
+#endif
   };
 }
 
 NMatrix mat_cols(NMatrix m, uint32_t start_col, uint32_t count) {
-  return mat_sub_matrix(m, 0, start_col, m.rows, start_col + count);
+  return mat_sub_matrix(m, 0, start_col, m.rows, count);
 }
 
 NMatrix mat_rows(NMatrix m, uint32_t start_row, uint32_t count) {
-  return mat_sub_matrix(m, start_row, 0, start_row + count, m.cols);
+  return mat_sub_matrix(m, start_row, 0, count, m.cols);
 }
 
 /**
@@ -1564,59 +1622,19 @@ float softmax_cross_entropy_temperature(
 }
 
 // h = Softmax(z, t)
-// dL/dz = 1/t * h * [ dL/dh - dot(h, dL/dh) ]
-void dsoftmax_temperature(NMatrix dLdz, NMatrix h, NMatrix dLdh, float t) {
+// dz = 1/t * h * [ dL - dot(h, dL) ]
+void dsoftmax_temperature(NMatrix dz, NMatrix h, NMatrix dL, float t) {
   assert(h.rows == 1);
-  assert(dLdz.rows == 1);
+  assert(dz.rows == 1);
   assert(t > 0.0f);
 
   float dot = 0;
   for (uint32_t i = 0; i < h.cols; i++)
-    dot += VEC_AT(h, i) * VEC_AT(dLdh, i);
+    dot += VEC_AT(h, i) * VEC_AT(dL, i);
 
   float inv_t = 1.0f / t;
   for (uint32_t i = 0; i < h.cols; i++)
-    VEC_AT(dLdz, i) += inv_t * VEC_AT(h, i) * (VEC_AT(dLdh, i) - dot);
-}
-
-struct Softmax_Forward_Opts {
-  NMatrix out;
-  NMatrix x;
-  float temperature;
-};
-
-struct Softmax_Backward_Opts {
-  NMatrix dx;
-  NMatrix y;
-  NMatrix dy;
-  float temperature;
-};
-
-#define softmax_by_row(...) softmax_opts((struct Softmax_Forward_Opts) { __VA_ARGS__ })
-#define dsoftmax_by_row(...) dsoftmax_opts((struct Softmax_Backward_Opts) { __VA_ARGS__ })
-
-void softmax_opts(struct Softmax_Forward_Opts opts) {
-  assert(opts.out.rows == opts.x.rows);
-  assert(opts.out.cols == opts.x.cols);
-
-  for (uint32_t i = 0; i < opts.out.rows; i++) {
-    softmax_temperature(
-        mat_row(opts.out, i),
-        mat_row(opts.x, i),
-        opts.temperature
-    );
-  }
-}
-
-void dsoftmax_opts(struct Softmax_Backward_Opts opts) {
-  for (uint32_t i = 0; i < opts.dx.rows; i++) {
-    dsoftmax_temperature(
-        mat_row(opts.dx, i),
-        mat_row(opts.y, i),
-        mat_row(opts.dy, i),
-        opts.temperature
-    );
-  }
+    VEC_AT(dz, i) = inv_t * VEC_AT(h, i) * (VEC_AT(dL, i) - dot);
 }
 
 void softmax(NMatrix dst, NMatrix x) {

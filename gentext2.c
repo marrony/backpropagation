@@ -1,5 +1,7 @@
 #include "array.h"
+#include "gpu.h"
 #include "nn.h"
+#include <OpenCL/cl.h>
 #include <string.h>
 #include <time.h>
 #include <math.h>
@@ -323,6 +325,122 @@ typedef enum {
   SAMPLING_TOPP,
 } Sampling_Type;
 
+#define NUM_BLOCKS ((size_t)1)
+
+#if GPU_COMPUTATION
+cl_mem trans_out_opencl_buffer = NULL;
+cl_mem trans_out_blocks_opencl_buffer[NUM_BLOCKS] = {0};
+size_t trans_out_blocks_opencl_buffer_size[NUM_BLOCKS] = {0};
+
+void init_block_output_opencl(Block_Output* block_out) {
+  size_t offset = 0;
+
+  from_matrix2(block_out->opencl_buffer, &block_out->ln1.out.value, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ln1.out.grad, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ln1.mean, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ln1.rstd, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ln1.xhat, &offset);
+
+  from_matrix2(block_out->opencl_buffer, &block_out->attn.Q, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->attn.dQ, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->attn.dK, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->attn.dV, &offset);
+
+  from_matrix2(block_out->opencl_buffer, &block_out->attn.vals, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->attn.dvals, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->attn.out, &offset);
+
+  from_matrix2(block_out->opencl_buffer, &block_out->x1, &offset);
+
+  from_matrix2(block_out->opencl_buffer, &block_out->ln2.out.value, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ln2.out.grad, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ln2.mean, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ln2.rstd, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ln2.xhat, &offset);
+
+  from_matrix2(block_out->opencl_buffer, &block_out->ff1_out.value, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ff1_out.grad, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->relu_out.value, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->relu_out.grad, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->ff2_out, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->out.value, &offset);
+  from_matrix2(block_out->opencl_buffer, &block_out->out.grad, &offset);
+
+  assert(sizeof(float)*offset == block_out->opencl_buffer_size);
+}
+
+void init_transformer_output_opencl(Transformer_Output* trans_out) {
+  trans_out->opencl_buffer = trans_out_opencl_buffer;
+  for (size_t b = 0; b < trans_out->num_blocks; b++) {
+    trans_out->blocks[b].opencl_buffer = trans_out_blocks_opencl_buffer[b];
+  }
+
+  size_t offset = 0;
+
+  from_matrix2(trans_out->opencl_buffer, &trans_out->x0.value, &offset);
+  from_matrix2(trans_out->opencl_buffer, &trans_out->x0.grad, &offset);
+
+  from_matrix2(trans_out->opencl_buffer, &trans_out->ln.out.value, &offset);
+  from_matrix2(trans_out->opencl_buffer, &trans_out->ln.out.grad, &offset);
+  from_matrix2(trans_out->opencl_buffer, &trans_out->ln.mean, &offset);
+  from_matrix2(trans_out->opencl_buffer, &trans_out->ln.rstd, &offset);
+  from_matrix2(trans_out->opencl_buffer, &trans_out->ln.xhat, &offset);
+
+  from_matrix2(trans_out->opencl_buffer, &trans_out->logits.value, &offset);
+  from_matrix2(trans_out->opencl_buffer, &trans_out->logits.grad, &offset);
+
+  from_matrix2(trans_out->opencl_buffer, &trans_out->probs, &offset);
+  from_matrix2(trans_out->opencl_buffer, &trans_out->scores, &offset);
+  from_matrix2(trans_out->opencl_buffer, &trans_out->dscores, &offset);
+
+  assert(sizeof(float)*offset == trans_out->opencl_buffer_size);
+
+  for (size_t i = 0; i < trans_out->num_blocks; i++) {
+    init_block_output_opencl(&trans_out->blocks[i]);
+  }
+}
+
+void init_kv_cache_opencl(KVCache* kv_cache, size_t num_blocks) {
+  cl_int err = 0;
+  kv_cache->opencl_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, kv_cache->opencl_buffer_size, NULL, &err);
+  assert(err == CL_SUCCESS);
+
+  size_t offset = 0;
+  for (size_t i = 0; i < num_blocks; i++) {
+    from_matrix2(kv_cache->opencl_buffer, &kv_cache->k[i], &offset);
+    from_matrix2(kv_cache->opencl_buffer, &kv_cache->v[i], &offset);
+  }
+
+  assert(sizeof(float)*offset == kv_cache->opencl_buffer_size);
+}
+#endif
+
+size_t utf8_len(int c) {
+  if (c < 0x80)          return 1;
+  if ((c & 0xE0) == 0xC0) return 2;
+  if ((c & 0xF0) == 0xE0) return 3;
+  if ((c & 0xF8) == 0xF0) return 4;
+  return 1;                      /* invalid lead — emit as-is, don't stall */
+}
+
+int32_t sample_next_token(
+    Arena_Allocator* arena,
+    Sampling_Type sampling_type,
+    NMatrix last_token,
+    float topp
+) {
+  switch (sampling_type) {
+    case SAMPLING_GREEDY:
+      return mat_row_argmax(last_token);
+
+    case SAMPLING_INVERSE_CDF:
+      return sample(last_token);
+
+    case SAMPLING_TOPP:
+      return sample_topp(arena, last_token, topp);
+  }
+}
+
 void generate_text_from_prompt(
   Arena_Allocator* arena,
   Transformer* trans_in,
@@ -332,21 +450,52 @@ void generate_text_from_prompt(
   float temperature,
   float topp
 ) {
+  int64_t start = get_system_micros();
+
   size_t input_tokens = tokens->count;
-  size_t output_tokens = 0;
+  size_t tokens_base = 0;
 
   //const char* separator = "\u22c5";
   const char* separator = "";
 
-  for (size_t i = 0; i < tokens->count; i++)
-    printf("%s%s", vocabulary[tokens->elems[i]].token, separator);
-
   trans_in->kv_cache->len = 0;
 
-  for (size_t i = 0; i < max_tokens; i++) {
+  DEFINE_ARRAY_ALIAS(Float, float);
+
+  // fixme: probs_array cannot resize
+  Float_Array probs_array = ARRAY_CREATE(&arena->alloc);
+  array_ensure(&probs_array, max_tokens*2);
+
+  for (size_t i = 0; i < input_tokens; i++)
+    array_append(&probs_array, 1);
+
+#if GPU_COMPUTATION
+  copy_to_gpu(trans_in->opencl_byte_buffer, trans_in->opencl_buffer, NULL);
+
+  for (size_t i = 0; i < trans_in->num_blocks; i++) {
+    copy_to_gpu(trans_in->blocks[i].opencl_byte_buffer, trans_in->blocks[i].opencl_buffer, NULL);
+  }
+
+  for (size_t i = input_tokens; i < max_tokens; i++)
+    array_append(&probs_array, 1);
+
+  assert(copy_to_gpu(
+      byte_buffer_from_parts(tokens->elems, sizeof(cl_int)*tokens->count),
+      trans_in->opencl_tokens_buffer,
+      NULL
+  ) == CL_SUCCESS);
+
+  cl_mem done_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(cl_int), NULL, NULL);
+  cl_mem probs_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(float)*max_tokens, NULL, NULL);
+
+  assert(done_buffer != NULL);
+  assert(probs_buffer != NULL);
+#endif
+
+  // pre-fill
+  {
     size_t saved = SAVE(&arena->alloc);
 
-    size_t N = tokens->count;
     Transformer_Output trans_out = {0};
     init_transformer_output(
         .arena = arena,
@@ -357,73 +506,165 @@ void generate_text_from_prompt(
         .heads_count = trans_in->heads_count,
         .emb_size = trans_in->emb_size,
         .ff_size = trans_in->ff_size,
-        .sequence_size = N,
+        .sequence_size = tokens->count,
+        .clean_data = false,
     );
+
+#if GPU_COMPUTATION
+    init_transformer_output_opencl(&trans_out);
+#endif
 
     // 0.5 = deterministic
     // 1.0 = normal
     // 1.5 = creative
     // 3.0 = nonsensical
-    transformer_forward(*tokens, &trans_out, trans_in, temperature);
+    transformer_forward(*tokens, &trans_out, trans_in, temperature, 0);
 
-    NMatrix last_token = mat_row(trans_out.probs, N - 1);
+    tokens_base += tokens->count;
 
-    //One alternative that is worth knowing: the Gumbel-max trick — add −log(−log(u)) to each logit and take the argmax.
-    //Same distribution, and it never needs the softmax at all, so it's handy if you ever want to sample straight off logits.
-
-    int32_t next = 0;
-
-    switch (sampling_type) {
-      case SAMPLING_GREEDY:
-        next = mat_row_argmax(last_token);
-        break;
-
-      case SAMPLING_INVERSE_CDF:
-        next = sample(last_token);
-        break;
-
-      case SAMPLING_TOPP:
-        next = sample_topp(arena, last_token, topp);
-        break;
-    }
-
-    float red = 0.0f;
-    float green = 120.0f;
-    float alpha = VEC_AT(last_token, next);
-
-    int r, g, b;
-    hsl_to_rgb(green*alpha + (1.0f - alpha)*red, 1.0f, 0.5f, &r, &g, &b);
-    set_color(r, g, b);
-    int32_t print = next != '\r' ? next : '\n';
-    printf("%s%s", vocabulary[print].token, separator);
-    fflush(stdout);
-
-    output_tokens += 1;
-
-    tokens->count = 0;
-
-#if 0
-    size_t C = 512;
-    if (tokens->count >= C) {
-      for (size_t c = 0; c < C - 1; c++)
-        tokens->elems[c] = tokens->elems[c+1];
-      tokens->count -= 1;
-    }
+#if GPU_COMPUTATION
+    call_row_argmax_kernel(
+        trans_in->opencl_tokens_buffer,
+        probs_buffer,
+        done_buffer,
+        tokens->count,
+        trans_out.probs,
+        tokens->count - 1,
+        EOS_TOKEN
+    );
+#else
+    NMatrix last_token = mat_row(trans_out.probs, tokens->count - 1);
+    int32_t next = sample_next_token(arena, sampling_type, last_token, topp);
+    array_append(&probs_array, VEC_AT(last_token, next));
+    array_append(tokens, next);
 #endif
 
-    array_append(tokens, next);
-
     RESTORE(&arena->alloc, saved);
-
-    if (next == EOS_TOKEN)
-      break;
   }
 
+  size_t K = 16;
+  for (size_t i = 0; i < max_tokens; i += K) {
+    for (size_t k = 0; k < K; k++) {
+      size_t saved = SAVE(&arena->alloc);
+
+      Transformer_Output trans_out = {0};
+      init_transformer_output(
+          .arena = arena,
+          .trans_out = &trans_out,
+          .kv_cache = trans_in->kv_cache,
+          .num_blocks = trans_in->num_blocks,
+          .vocab_size = trans_in->vocab_size,
+          .heads_count = trans_in->heads_count,
+          .emb_size = trans_in->emb_size,
+          .ff_size = trans_in->ff_size,
+          .sequence_size = 1,
+          .clean_data = false,
+      );
+
+#if GPU_COMPUTATION
+      init_transformer_output_opencl(&trans_out);
+#endif
+
+      // 0.5 = deterministic
+      // 1.0 = normal
+      // 1.5 = creative
+      // 3.0 = nonsensical
+      transformer_forward(*tokens, &trans_out, trans_in, temperature, tokens_base);
+
+      tokens_base += 1;
+
+#if GPU_COMPUTATION
+      call_row_argmax_kernel(
+          trans_in->opencl_tokens_buffer,
+          probs_buffer,
+          done_buffer,
+          tokens_base,
+          trans_out.probs,
+          0,
+          EOS_TOKEN
+      );
+
+      (void)sampling_type;
+      (void)topp;
+#else
+      NMatrix last_token = mat_row(trans_out.probs, 0);
+
+      //One alternative that is worth knowing: the Gumbel-max trick — add −log(−log(u)) to each logit and take the argmax.
+      //Same distribution, and it never needs the softmax at all, so it's handy if you ever want to sample straight off logits.
+
+      int32_t next = sample_next_token(arena, sampling_type, last_token, topp);
+      array_append(&probs_array, VEC_AT(last_token, next));
+      array_append(tokens, next);
+#endif
+
+      RESTORE(&arena->alloc, saved);
+
+#if !GPU_COMPUTATION
+      if (next == EOS_TOKEN) {
+        i = max_tokens;
+        break;
+      }
+#endif
+    }
+
+#if GPU_COMPUTATION
+    int done = 0;
+    copy_to_cpu_sync(
+        byte_buffer_from_parts(&done, sizeof(int)),
+        done_buffer
+    );
+
+    if (done) break;
+#endif
+  }
+
+#if GPU_COMPUTATION
+  copy_to_cpu_sync(
+      byte_buffer_from_parts(tokens->elems, sizeof(cl_int)*max_tokens),
+      trans_in->opencl_tokens_buffer
+  );
+
+  copy_to_cpu_sync(
+      byte_buffer_from_parts(probs_array.elems, sizeof(float)*max_tokens),
+      probs_buffer
+  );
+#endif
+
+  int64_t time = get_system_micros() - start;
+
+  size_t token_index = 0;
+  while (token_index < max_tokens) {
+    int r = 255, g = 255, b = 255;
+    if (token_index >= input_tokens) {
+      float red = 0.0f;
+      float green = 120.0f;
+      float alpha = probs_array.elems[token_index];
+
+      hsl_to_rgb(green*alpha + (1.0f - alpha)*red, 1.0f, 0.5f, &r, &g, &b);
+    }
+    set_color(r, g, b);
+
+    size_t len = utf8_len(tokens->elems[token_index]);
+
+    for (size_t i = 0; i < len; i++) {
+      int next = tokens->elems[token_index + i];
+      int32_t print = next != '\r' ? next : '\n';
+      printf("%s%s", vocabulary[print].token, separator);
+
+      if (next == EOS_TOKEN) {
+        token_index = max_tokens;
+        break;
+      }
+    }
+
+    token_index += len;
+  }
   rst_color();
   printf("\n");
 
   printf("input tokens = %zu\n", input_tokens);
-  printf("output tokens = %zu\n", output_tokens);
+  printf("output tokens = %zu\n", tokens_base - input_tokens);
+  printf("total time = %llu micros\n", time);
 }
 
 void generate_text(
@@ -485,18 +726,6 @@ float cosine_learning_rate(
   return lr_min + 0.5f*(lr_max - lr_min) * (1.0f + cosf(alpha * M_PI));
 }
 
-void print_tokens(Transformer* trans_in) {
-  (void)trans_in;
-  // printf("\033[38;5;130m");
-  // printf("desert  = %.5f\n",
-  //   mat_row_similarity(
-  //     mat_row(trans_in->tok_emb.value, find_token("desert")),
-  //     mat_row(trans_in->tok_emb.value, find_token(" desert"))
-  //   )
-  // );
-  // printf("\033[0m");
-}
-
 typedef struct {
   int32_t offset;
   int32_t prompt_len;
@@ -552,9 +781,11 @@ void generate_text_from_dev(
 ) {
   int prompt_len;
   int total_len;
+
+  size_t sample = rand_between(0, dev->n_recs - 1);
   const int32_t *ids = example(
       dev,
-      rand_between(0, dev->n_recs - 1),
+      sample,
       &prompt_len,
       &total_len
   );
@@ -562,7 +793,8 @@ void generate_text_from_dev(
   size_t saved = SAVE(&arena->alloc);
   TokenID_Array tokens = ARRAY_CREATE(&arena->alloc);
 
-  array_ensure(&tokens, prompt_len);
+  // fixme: tokens cannot resize
+  array_ensure(&tokens, max_tokens*2);
 
   for (int i = 0; i < prompt_len; i++) {
     array_append(&tokens, ids[i]);
@@ -629,6 +861,14 @@ float evaluate(
   TokenID_Array tokens = ARRAY_CREATE(&arena->alloc);
   TokenID_Array targets = ARRAY_CREATE(&arena->alloc);
 
+#if GPU_COMPUTATION
+  copy_to_gpu(trans_in->opencl_byte_buffer, trans_in->opencl_buffer, NULL);
+
+  for (size_t i = 0; i < trans_in->num_blocks; i++) {
+    copy_to_gpu(trans_in->blocks[i].opencl_byte_buffer, trans_in->blocks[i].opencl_buffer, NULL);
+  }
+#endif
+
   for (size_t e = 0; e < nrecs; e++) {
     int prompt_len, total_len;
     const int32_t *ids = example(dev, e, &prompt_len, &total_len);
@@ -644,6 +884,14 @@ float evaluate(
       array_append(&tokens, ids[c]);
       array_append(&targets, ids[c+1]);
     }
+
+#if GPU_COMPUTATION
+    assert(copy_to_gpu(
+        byte_buffer_from_parts(tokens.elems, sizeof(cl_int)*tokens.count),
+        trans_in->opencl_tokens_buffer,
+        NULL
+    ) == CL_SUCCESS);
+#endif
 
     size_t saved = SAVE(&arena->alloc);
 
@@ -661,9 +909,18 @@ float evaluate(
         .emb_size = trans_in->emb_size,
         .ff_size = trans_in->ff_size,
         .sequence_size = N,
+        .clean_data = true,
     );
 
-    transformer_forward(tokens, &trans_out, trans_in, 1.0f);
+#if GPU_COMPUTATION
+    init_transformer_output_opencl(&trans_out);
+#endif
+
+    transformer_forward(tokens, &trans_out, trans_in, 1.0f, 0);
+
+#if GPU_COMPUTATION
+    copy_gpu_to_cpu_sync(trans_out.probs);
+#endif
 
     for (size_t i = (size_t)first; i < N; i++) {
       const int32_t target = targets.elems[i];
@@ -704,7 +961,15 @@ size_t histogram[MAX_VOCAB] = {0};
 size_t histogram_sorted[MAX_VOCAB] = {0};
 
 int main(int argc, char* argv[]) {
-  rng_state = (uint64_t)getpid() << (uint64_t)32;
+#if GPU_COMPUTATION
+  if (!init_opencl()) {
+    printf("Failed to init OpenCL\n");
+    return 1;
+  }
+#endif
+
+  rng_state = (uint64_t)1234 << (uint64_t)32;
+  // rng_state = (uint64_t)getpid() << (uint64_t)32;
 
   // Muennighoff et al. (2023), Scaling Data-Constrained Language Models, is the empirical answer:
   //
@@ -715,20 +980,14 @@ int main(int argc, char* argv[]) {
   size_t optimizer_steps = 0;
   size_t cursor = 0;
   Sampling_Type sampling_type = SAMPLING_GREEDY;
+  bool verbose = false;
   float temperature = 1.0f;
   float topp = 0.95f;
-  size_t ctx_size = 10*1024;
+  size_t ctx_size = 3*1024;
   size_t max_tokens = ctx_size;
-  size_t arena_size = 2L*1024*1024*1024;
+  size_t arena_size = 5L*1024*1024*1024;
+  Byte_Buffer prompt = NULL_BYTE_BUFFER;
 
-  Byte_Buffer prompt = from_cstring(
-      &mallocator.alloc,
-      "Given the sentence \"A man prepares morning coffee in a steel mug.\" can we conclude that \"A man vacuums the floor.\"?\n"
-      "  Options:\n"
-      "  - yes\n"
-      "  - it is not possible to tell\n"
-      "  - no Stream of thoughts\n"
-  );
   bool train = false;
   bool gen_text = false;
 
@@ -736,6 +995,9 @@ int main(int argc, char* argv[]) {
   for (int i = 1; i < argc; i++) {
     if (strncmp(argv[i], "--train", 7) == 0)
       train = true;
+
+    if (strncmp(argv[i], "--verbose", 9) == 0)
+      verbose = true;
 
     if (strncmp(argv[i], "--epoch=", 8) == 0) {
       sscanf(argv[i], "--epoch=%zu", &epoch);
@@ -748,15 +1010,15 @@ int main(int argc, char* argv[]) {
     }
 
     if (strncmp(argv[i], "--prompt", 8) == 0) {
-      FREE(&mallocator.alloc, prompt);
       buf = read_input(&mallocator.alloc, stdin);
-      prompt = byte_buffer_from_parts(buf.elems, buf.count);
-      gen_text = true;
 
-      if (prompt.len == 0) {
+      if (buf.count == 0) {
         printf("invalid prompt\n");
         return -1;
       }
+
+      prompt = byte_buffer_from_parts(buf.elems, buf.count);
+      gen_text = true;
     }
     if (strncmp(argv[i], "--sampling=", 11) == 0) {
       if (strncmp(argv[i], "--sampling=greedy", 17) == 0) {
@@ -866,10 +1128,9 @@ int main(int argc, char* argv[]) {
   size_t heads_count = 4;
   size_t F = D*heads_count;
   size_t V = MAX_VOCAB;
-  size_t num_blocks = 6;
 
-  Byte_Buffer model_name_par = model_name(&mallocator.alloc, V, D, F, 4, "adam");
-  Byte_Buffer model_name_bin = model_name(&mallocator.alloc, V, D, F, 4, "bin");
+  Byte_Buffer model_name_par = model_name(&mallocator.alloc, V, D, F, NUM_BLOCKS, "adam");
+  Byte_Buffer model_name_bin = model_name(&mallocator.alloc, V, D, F, NUM_BLOCKS, "bin");
 
   float peak_lr = 1e-3 * 0.2;
   float min_lr = peak_lr / 10.0f;
@@ -891,7 +1152,7 @@ int main(int argc, char* argv[]) {
   init_kv_cache(
       &arena.alloc,
       &kv_cache,
-      num_blocks,
+      NUM_BLOCKS,
       ctx_size,
       D
   );
@@ -899,43 +1160,93 @@ int main(int argc, char* argv[]) {
   Transformer trans_in = {0};
 
   init_transformer(
-      .alloc = &arena.alloc,
+      .arena = &arena,
       .trans = &trans_in,
       .kv_cache = &kv_cache,
       .tie_embeddings = true,
-      .num_blocks = num_blocks,
+      .num_blocks = NUM_BLOCKS,
       .heads_count = heads_count,
       .vocab_size = V,
       .emb_size = D,
       .ff_size = F,
   );
 
+#if GPU_COMPUTATION
+  init_kv_cache_opencl(&kv_cache, NUM_BLOCKS);
+
+  cl_int err = 0;
+  trans_in.opencl_tokens_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(cl_int)*ctx_size, NULL, &err);
+  assert(err == CL_SUCCESS);
+#endif
+
+  size_t max_transformer_out_size = 0;
+
+#if GPU_COMPUTATION
+  {
+    size_t saved = SAVE(&arena.alloc);
+
+    kv_cache.len = ctx_size;
+
+    Transformer_Output trans_out = {0};
+    max_transformer_out_size = init_transformer_output(
+        .arena = &arena,
+        .trans_out = &trans_out,
+        .kv_cache = &kv_cache,
+        .num_blocks = trans_in.num_blocks,
+        .vocab_size = trans_in.vocab_size,
+        .heads_count = trans_in.heads_count,
+        .emb_size = trans_in.emb_size,
+        .ff_size = trans_in.ff_size,
+        .sequence_size = ctx_size,
+        .clean_data = false,
+    );
+
+    kv_cache.len = 0;
+
+    RESTORE(&arena.alloc, saved);
+
+    cl_int err = 0;
+    trans_out_opencl_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, trans_out.opencl_buffer_size, NULL, &err);
+    assert(err == CL_SUCCESS);
+
+    for (size_t i = 0; i < trans_in.num_blocks; i++) {
+      trans_out_blocks_opencl_buffer_size[i] = trans_out.blocks[i].opencl_buffer_size;
+      trans_out_blocks_opencl_buffer[i] = clCreateBuffer(context, CL_MEM_READ_WRITE, trans_out_blocks_opencl_buffer_size[i], NULL, &err);
+      assert(err == CL_SUCCESS);
+    }
+  }
+#endif
+
   set_color(255, 165, 0);
-  printf("D = %zu\n", D);
-  printf("V = %zu\n", V);
-  printf("F = %zu\n", F);
-  printf("tie_embeddings = %s\n", trans_in.tie_embeddings ? "yes" : "no");
-  printf("heads_count = %zu\n", heads_count);
-  printf("head_dim = %zu\n", D / heads_count);
-  printf("block_count = %zu\n", num_blocks);
+  if (verbose) {
+    printf("max_transformer_out_size = %zu\n", max_transformer_out_size);
+    printf("D = %zu\n", D);
+    printf("V = %zu\n", V);
+    printf("F = %zu\n", F);
+    printf("tie_embeddings = %s\n", trans_in.tie_embeddings ? "yes" : "no");
+    printf("heads_count = %zu\n", heads_count);
+    printf("head_dim = %zu\n", D / heads_count);
+    printf("block_count = %zu\n", NUM_BLOCKS);
+  }
+
   {
     size_t params = count_parameters(&optimizer);
     register_tensor(&optimizer, trans_in.tok_emb, true);
-    printf("token_emdeddings = %zu\n", count_parameters(&optimizer) - params);
+    if (verbose) printf("token_emdeddings = %zu\n", count_parameters(&optimizer) - params);
   }
   {
     size_t params1 = count_parameters(&optimizer);
     if (!trans_in.tie_embeddings)
       register_tensor(&optimizer, trans_in.H.weight, true);
-    printf("output_head = %zu\n", count_parameters(&optimizer) - params1);
+    if (verbose) printf("output_head = %zu\n", count_parameters(&optimizer) - params1);
     size_t params2 = count_parameters(&optimizer);
     register_tensor(&optimizer, trans_in.H.bias, false);
-    printf("output_bias = %zu\n", count_parameters(&optimizer) - params2);
+    if (verbose) printf("output_bias = %zu\n", count_parameters(&optimizer) - params2);
   }
 
   {
     size_t params = count_parameters(&optimizer);
-    for (size_t i = 0; i < num_blocks; i++) {
+    for (size_t i = 0; i < NUM_BLOCKS; i++) {
       register_tensor(&optimizer, trans_in.blocks[i].ln1.gamma, false);
       register_tensor(&optimizer, trans_in.blocks[i].ln1.beta, false);
       register_tensor(&optimizer, trans_in.blocks[i].ln2.gamma, false);
@@ -955,41 +1266,43 @@ int main(int argc, char* argv[]) {
       register_tensor(&optimizer, trans_in.blocks[i].attn.O.weight, true);
       register_tensor(&optimizer, trans_in.blocks[i].attn.O.bias, false);
     }
-    printf("transformer_block = %zu\n", (count_parameters(&optimizer) - params) / num_blocks);
+    if (verbose) printf("transformer_block = %zu\n", (count_parameters(&optimizer) - params) / NUM_BLOCKS);
   }
 
   {
     size_t params0 = count_parameters(&optimizer);
     register_tensor(&optimizer, trans_in.ln.gamma, false);
     register_tensor(&optimizer, trans_in.ln.beta, false);
-    printf("final_layer_norm = %zu\n", count_parameters(&optimizer) - params0);
+    if (verbose) printf("final_layer_norm = %zu\n", count_parameters(&optimizer) - params0);
   }
 
-  size_t params = count_parameters(&optimizer);
-  printf("total_parameters = %zu\n", params);
-  printf("corpus_size (train) = %zu\n", corpus.n_recs);
-  printf("corpus_size (dev)   = %zu\n", corpus_dev.n_recs);
-  printf("tokens_count = %zu\n", sum_tokens);
-  printf("scored_tokens = %zu (%.2f%%)\n", scored_tokens, (float)scored_tokens/(float)sum_tokens * 100.0f);
-  printf("target_scored = %zu\n", target_scored);
-  printf("total_steps = %zu\n", total_steps);
-  printf("warmup_steps = %zu\n", warmup_steps);
-  printf("adam_beta1 = %.4f\n", adam_beta1);
-  printf("adam_beta2 = %.4f\n", adam_beta2);
-  printf("peak_lr = %.5e\n", peak_lr);
-  printf("min_lr = %.5e\n", min_lr);
-  printf("type frequency: p1=%zu p10=%zu p50=%zu p90=%zu max=%zu\n",
-       histogram_sorted[V/100], histogram_sorted[V/10], histogram_sorted[V/2],
-       histogram_sorted[9*V/10], histogram_sorted[V-1]);
-  printf("  %zu never appear, %zu appear <100x (%.1f%%)\n", dead, rare, 100.0*rare/MAX_VOCAB);
-  printf("chinchilla target = %zu tokens\n", 20*params);
-  printf("ratio = %.2f (total) / %.2f (scored) tokens per parameter\n",
-      sum_tokens / (float)params, scored_tokens / (float)params);
-  printf("epochs to get there = %.2f (total) / %0.2f (scored)\n",
-      (20*params) / (float)sum_tokens, (20*params) / (float)scored_tokens);
-  printf("ctx_size = %zu\n", ctx_size);
-  printf("max_tokens = %zu\n", max_tokens);
-  printf("arena_size = %zu\n", arena_size);
+  if (verbose) {
+    size_t params = count_parameters(&optimizer);
+    printf("total_parameters = %zu\n", params);
+    printf("corpus_size (train) = %zu\n", corpus.n_recs);
+    printf("corpus_size (dev)   = %zu\n", corpus_dev.n_recs);
+    printf("tokens_count = %zu\n", sum_tokens);
+    printf("scored_tokens = %zu (%.2f%%)\n", scored_tokens, (float)scored_tokens/(float)sum_tokens * 100.0f);
+    printf("target_scored = %zu\n", target_scored);
+    printf("total_steps = %zu\n", total_steps);
+    printf("warmup_steps = %zu\n", warmup_steps);
+    printf("adam_beta1 = %.4f\n", adam_beta1);
+    printf("adam_beta2 = %.4f\n", adam_beta2);
+    printf("peak_lr = %.5e\n", peak_lr);
+    printf("min_lr = %.5e\n", min_lr);
+    printf("type frequency: p1=%zu p10=%zu p50=%zu p90=%zu max=%zu\n",
+         histogram_sorted[V/100], histogram_sorted[V/10], histogram_sorted[V/2],
+         histogram_sorted[9*V/10], histogram_sorted[V-1]);
+    printf("  %zu never appear, %zu appear <100x (%.1f%%)\n", dead, rare, 100.0*rare/MAX_VOCAB);
+    printf("chinchilla target = %zu tokens\n", 20*params);
+    printf("ratio = %.2f (total) / %.2f (scored) tokens per parameter\n",
+        sum_tokens / (float)params, scored_tokens / (float)params);
+    printf("epochs to get there = %.2f (total) / %0.2f (scored)\n",
+        (20*params) / (float)sum_tokens, (20*params) / (float)scored_tokens);
+    printf("ctx_size = %zu\n", ctx_size);
+    printf("max_tokens = %zu\n", max_tokens);
+    printf("arena_size = %zu\n", arena_size);
+  }
   rst_color();
 
   bool loaded = load_model(&trans_in, model_name_bin);
@@ -1021,18 +1334,16 @@ int main(int argc, char* argv[]) {
   for (int i = 0; i < 2; i++) {
     nbytes = snprintf(prompt_fmt.cptr, nbytes+1, "User: %.*s\nAssistant: ", (int)prompt_len, prompt.cptr);
     if (nbytes < 0 || prompt_fmt.cptr != NULL) break;
-    prompt_fmt = ALLOC(&mallocator.alloc, nbytes);
+    prompt_fmt = ALLOC(&mallocator.alloc, nbytes+1);
   }
   array_destroy(&buf);
+
+  // remove \0 from prompt_fmt
+  prompt_fmt.len -= 1;
 
   if ((loaded && !train) || gen_text) {
     goto generate_text;
   }
-
-  init_opencl();
-  ensure_buffer_size(sizeof(float)*MAX_VOCAB*MAX_VOCAB);
-
-  print_tokens(&trans_in);
 
   set_color(0, 255, 0);
   print_timestamp(stdout);
@@ -1058,6 +1369,14 @@ int main(int argc, char* argv[]) {
   size_t win_tok = 0;
 
   while (optimizer_steps < total_steps) {
+#if GPU_COMPUTATION
+    copy_to_gpu(trans_in.opencl_byte_buffer, trans_in.opencl_buffer, NULL);
+
+    for (size_t i = 0; i < trans_in.num_blocks; i++) {
+      copy_to_gpu(trans_in.blocks[i].opencl_byte_buffer, trans_in.blocks[i].opencl_buffer, NULL);
+    }
+#endif
+
     float loss_sum = 0;
     size_t tokens_scored = 0;
     size_t tokens_count = 0;
@@ -1097,6 +1416,14 @@ int main(int argc, char* argv[]) {
         array_append(&targets, ids[c+1]);
       }
 
+#if GPU_COMPUTATION
+      assert(copy_to_gpu(
+          byte_buffer_from_parts(tokens.elems, sizeof(cl_int)*tokens.count),
+          trans_in.opencl_tokens_buffer,
+          NULL
+      ) == CL_SUCCESS);
+#endif
+
       kv_cache.len = 0;
       size_t N = tokens.count;
 
@@ -1113,13 +1440,54 @@ int main(int argc, char* argv[]) {
             .emb_size = trans_in.emb_size,
             .ff_size = trans_in.ff_size,
             .sequence_size = N,
+            .clean_data = false,
         );
 
-        transformer_forward(tokens, &trans_out, &trans_in, 1.0f);
+#if GPU_COMPUTATION
+        init_transformer_output_opencl(&trans_out);
+#endif
+
+#if GPU_COMPUTATION
+        call_zero_buffer(trans_out.opencl_buffer, trans_out.opencl_buffer_size);
+        for (size_t i = 0; i < NUM_BLOCKS; i++)
+          call_zero_buffer(trans_out.blocks[i].opencl_buffer, trans_out.blocks[i].opencl_buffer_size);
+#endif
+
+        transformer_forward(tokens, &trans_out, &trans_in, 1.0f, 0);
+
+#if GPU_COMPUTATION
+        copy_to_cpu_sync(trans_out.opencl_byte_buffer, trans_out.opencl_buffer);
+        for (size_t i = 0; i < NUM_BLOCKS; i++)
+          copy_to_cpu_sync(trans_out.blocks[i].opencl_byte_buffer, trans_out.blocks[i].opencl_buffer);
+#endif
+
+        // printf("x0            ="); mat_println(mat_row(trans_out.x0.value, N-1), 38);
+        // printf("block.ln1.rstd="); mat_println(trans_out.blocks[0].ln1.rstd, 38);
+        // printf("block.ln1.mean="); mat_println(trans_out.blocks[0].ln1.mean, 38);
+        // printf("block.ln1.xhat="); mat_println(mat_row(trans_out.blocks[0].ln1.xhat, N-1), 38);
+        // printf("block.ln1.out ="); mat_println(mat_row(trans_out.blocks[0].ln1.out.value, N-1), 38);
+        // printf("block.attn.Q  ="); mat_println(mat_row(trans_out.blocks[0].attn.Q, N-1), 38);
+        // printf("block.attn.val="); mat_println(mat_row(trans_out.blocks[0].attn.vals, N-1), 38);
+        // printf("block.attn.out="); mat_println(mat_row(trans_out.blocks[0].attn.out, N-1), 38);
+        // printf("block.ln2.rstd="); mat_println(trans_out.blocks[0].ln2.rstd, 38);
+        // printf("block.ln2.mean="); mat_println(trans_out.blocks[0].ln2.mean, 38);
+        // printf("block.ln2.xhat="); mat_println(mat_row(trans_out.blocks[0].ln2.xhat, N-1), 38);
+        // printf("block.ln2.out ="); mat_println(mat_row(trans_out.blocks[0].ln2.out.value, N-1), 38);
+        // printf("block.ff1_out ="); mat_println(mat_row(trans_out.blocks[0].ff1_out.value, N-1), 38);
+        // printf("block.relu_out="); mat_println(mat_row(trans_out.blocks[0].relu_out.value, N-1), 38);
+        // printf("block.ff2_out ="); mat_println(mat_row(trans_out.blocks[0].ff2_out, N-1), 38);
+        // printf("block.out     ="); mat_println(mat_row(trans_out.blocks[0].out.value, N-1), 38);
+        // exit(0);
 
         // dLoss/dlogits = softmax(logits) - onehot(target).
         NMatrix dlogits = trans_out.logits.grad;
         mat_copy(dlogits, trans_out.probs);
+
+        // {
+        //   NMatrix last_token = mat_row(trans_out.probs, N-1);
+        //   int argmax = mat_row_argmax(last_token);
+        //   printf("N = %4zu, argmax = %4d %28.25f\n", N, argmax, VEC_AT(last_token, argmax));
+        // }
 
         tokens_count += total_len;
         tokens_scored += npos;
@@ -1146,6 +1514,8 @@ int main(int argc, char* argv[]) {
 
     optimizer_steps += 1;
 
+    if (optimizer_steps > 98) exit(0);
+
     // cosine annealing
     optimizer.learning_rate = cosine_learning_rate(
         optimizer_steps,
@@ -1164,6 +1534,14 @@ int main(int argc, char* argv[]) {
         adam_beta2,
         scale
     );
+
+#if GPU_COMPUTATION
+    copy_to_gpu(trans_in.opencl_byte_buffer, trans_in.opencl_buffer, NULL);
+
+    for (size_t i = 0; i < trans_in.num_blocks; i++) {
+      copy_to_gpu(trans_in.blocks[i].opencl_byte_buffer, trans_in.blocks[i].opencl_buffer, NULL);
+    }
+#endif
 
     win_loss += loss_sum;
     win_tok += tokens_scored;
@@ -1212,6 +1590,10 @@ generate_text:
     generate_text(&arena, &trans_in, prompt_fmt, &tokens, merge_to, max_tokens, sampling_type, temperature, topp);
     RESTORE(&arena.alloc, saved);
   }
+
+#if GPU_COMPUTATION
+  destoy_opencl();
+#endif
   return 0;
 }
 

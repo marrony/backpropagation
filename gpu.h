@@ -1,198 +1,248 @@
-#include "nn.h"
+#ifndef GPU_H
+#define GPU_H
+
+typedef struct __attribute__((packed)) {
+  float v[32];
+} InvFreq;
+
+#if GPU_COMPUTATION
 #include <OpenCL/cl.h>
-#include <stdio.h>
+#include "bytebuffer.h"
+#include "nn.h"
 
-#include <OpenCL/opencl.h>
+#ifndef GPU_TS_MATRIX
+#define GPU_TS_MATRIX 16
+#endif
 
-#define STRINGFY(x) #x
+#ifndef GPU_BUILD_OPTS
+#define GPU_BUILD_OPTS "-DTS=16"
+#endif
 
-const char* matrix_mul_stride = STRINGFY(
-__kernel void matrix_mul_stride(
-  __global const float* A, 
-  __global const float* B, 
-  __global float* C,
-  const int A_rows,
-  const int A_cols,
-  const int A_stride,
-  const int B_rows,
-  const int B_cols,
-  const int B_stride,
-  const int C_stride
-) {
-  const int TS = 16;
+void from_matrix2(cl_mem buffer, NMatrix* mat, size_t* offset) {
+  assert(mat->stride == mat->cols);
 
-  __local float Asub[TS][TS];
-  __local float Bsub[TS][TS];
+  MatrixData data = {
+    .offset = *offset,
+    .rows   = mat->rows,
+    .cols   = mat->cols,
+    .stride = mat->stride,
+  };
 
-  int globalRow = get_global_id(1); 
-  int globalCol = get_global_id(0); 
-  int localRow  = get_local_id(1);
-  int localCol  = get_local_id(0);
+  mat->data = data;
+  mat->buffer = buffer;
 
-  float acc = 0.0f;
-  int numTiles = (A_cols + TS - 1) / TS;
-
-  for (int t = 0; t < numTiles; t++) {
-    int tiledCol = t * TS + localCol;
-    
-    // Load A utilizing explicit A_stride spacing calculation
-    if (globalRow < A_rows && tiledCol < A_cols) {
-      Asub[localRow][localCol] = A[globalRow * A_stride + tiledCol];
-    } else {
-      Asub[localRow][localCol] = 0.0f;
-    }
-    
-    int tiledRow = t * TS + localRow;
-    
-    // Load B utilizing explicit B_stride spacing calculation
-    if (tiledRow < B_rows && globalCol < B_cols) {
-      Bsub[localRow][localCol] = B[tiledRow * B_stride + globalCol];
-    } else {
-      Bsub[localRow][localCol] = 0.0f;
-    }
-    
-    barrier(CLK_LOCAL_MEM_FENCE);
-    for (int k = 0; k < TS; k++) {
-      acc += Asub[localRow][k] * Bsub[k][localCol];
-    }
-    barrier(CLK_LOCAL_MEM_FENCE);
-  }
-
-  // Store back into target slot safely using C_stride boundaries
-  if (globalRow < A_rows && globalCol < B_cols) {
-    C[globalRow * C_stride + globalCol] += acc;
-  }
+  *offset += mat->rows*mat->stride;
 }
-);
 
-const char* matrix_mul_At_stride = STRINGFY(
-__kernel void matrix_mul_At_stride(
-  __global const float* A, 
-  __global const float* B, 
-  __global float* C,
-  const int A_rows,
-  const int A_cols,
-  const int A_stride,
-  const int B_rows,
-  const int B_cols,
-  const int B_stride,
-  const int C_stride
-) {
-  const int TS = 16;
-  __local float Asub[TS][TS];
-  __local float Bsub[TS][TS];
-  
-  int globalRow = get_global_id(1); // M (Rows of A^T and C)
-  int globalCol = get_global_id(0); // N (Cols of B and C)
-  int localRow  = get_local_id(1);
-  int localCol  = get_local_id(0);
-  
-  float acc = 0.0f;
-  int numTiles = (A_rows + TS - 1) / TS; // K dimension is A_rows in physical layout
-  
-  for (int t = 0; t < numTiles; t++) {
-    int tiledCol = t * TS + localCol; // K index
-    
-    // Transposed Load: Physical rows and columns are swapped
-    if (globalRow < A_cols && tiledCol < A_rows) {
-      Asub[localRow][localCol] = A[tiledCol * A_stride + globalRow];
-    } else {
-      Asub[localRow][localCol] = 0.0f;
-    }
-    
-    int tiledRow = t * TS + localRow; // K index
-    if (tiledRow < B_rows && globalCol < B_cols) {
-      Bsub[localRow][localCol] = B[tiledRow * B_stride + globalCol];
-    } else {
-      Bsub[localRow][localCol] = 0.0f;
-    }
-    
-    barrier(CLK_LOCAL_MEM_FENCE);
-    for (int k = 0; k < TS; k++) {
-      acc += Asub[localRow][k] * Bsub[k][localCol];
-    }
-    barrier(CLK_LOCAL_MEM_FENCE);
-  }
-  
-  if (globalRow < A_cols && globalCol < B_cols) {
-    C[globalRow * C_stride + globalCol] += acc;
-  }
+void from_matrix3(cl_mem buffer, NMatrix* mat) {
+  size_t offset = 0;
+  from_matrix2(buffer, mat, &offset);
 }
-);
 
-const char* matrix_mul_Bt_stride = STRINGFY(
-__kernel void matrix_mul_Bt_stride(
-  __global const float* A, 
-  __global const float* B, 
-  __global float* C, 
-  const int A_rows,
-  const int A_cols,
-  const int A_stride,
-  const int B_rows,
-  const int B_cols,
-  const int B_stride,
-  const int C_stride
-) {
-  const int TS = 16;
-  __local float Asub[TS][TS];
-  __local float Bsub[TS][TS];
-  
-  int globalRow = get_global_id(1); // M (Rows of A and C)
-  int globalCol = get_global_id(0); // N (Rows of B, which are columns of B^T)
-  int localRow  = get_local_id(1);
-  int localCol  = get_local_id(0);
-  
-  float acc = 0.0f;
-  int numTiles = (A_cols + TS - 1) / TS; // K dimension
-  
-  for (int t = 0; t < numTiles; t++) {
-    int tiledCol = t * TS + localCol; // K index
-    if (globalRow < A_rows && tiledCol < A_cols) {
-      Asub[localRow][localCol] = A[globalRow * A_stride + tiledCol];
-    } else {
-      Asub[localRow][localCol] = 0.0f;
-    }
-    
-    int tiledRow = t * TS + localRow; // K index
-    
-    // Transposed Load: Access B along rows instead of columns
-    if (tiledRow < B_cols && globalCol < B_rows) {
-      Bsub[localRow][localCol] = B[globalCol * B_stride + tiledRow];
-    } else {
-      Bsub[localRow][localCol] = 0.0f;
-    }
-    
-    barrier(CLK_LOCAL_MEM_FENCE);
-    for (int k = 0; k < TS; k++) {
-      acc += Asub[localRow][k] * Bsub[k][localCol];
-    }
-    barrier(CLK_LOCAL_MEM_FENCE);
-  }
-  
-  if (globalRow < A_rows && globalCol < B_rows) {
-    C[globalRow * C_stride + globalCol] += acc;
-  }
-}
-);
+const char gpu_kernels[] = {
+  #embed "gpu_kernels.c"
+  , 0
+};
 
 cl_device_id device_id;             // compute device id 
 cl_context context;                 // compute context
 cl_command_queue commands;          // compute command queue
 cl_program program;                 // compute program
 cl_kernel matrix_mul_stride_kernel;
+cl_kernel matrix_mul_acc_stride_kernel;
 cl_kernel matrix_mul_At_stride_kernel;
+cl_kernel matrix_mul_At_acc_stride_kernel;
 cl_kernel matrix_mul_Bt_stride_kernel;
+cl_kernel matrix_mul_Bt_acc_stride_kernel;
+cl_kernel matrix_add_kernel;
+cl_kernel softmax_temperature_kernel;
+cl_kernel softmax_with_masking_kernel;
+cl_kernel dsoftmax_temperature_kernel;
+cl_kernel layer_norm_forward_kernel;
+cl_kernel layer_norm_backward_dx_kernel;
+cl_kernel layer_norm_backward_dgamma_dbeta_kernel;
+cl_kernel rope_kernel;
+cl_kernel drope_kernel;
+cl_kernel relu_kernel;
+cl_kernel drelu_kernel;
+cl_kernel broadcast_bias_kernel;
+cl_kernel dproject_db_kernel;
+cl_kernel embed_gatter_forward_kernel;
+cl_kernel row_argmax_kernel;
+cl_kernel gemm_nn_debug_kernel;
 
-cl_mem A;                       // device memory used for the input array
-cl_mem B;                       // device memory used for the output array
-cl_mem C;                       //
+// buffer_offset = buffer_origin[2] × buffer_slice_pitch + buffer_origin[1] × buffer_row_pitch + buffer_origin[0].
+// host_offset   = host_origin[2]   × host_slice_pitch   + host_origin[1]   × host_row_pitch   + host_origin[0]
+cl_int copy_gpu_to_cpu(NMatrix matrix, cl_event* event) {
+  size_t host_size = matrix.cols*sizeof(float)*matrix.rows;
 
-size_t max_buffer_size = 0;
+  bool copy_rect = true;
+
+  if (matrix.data.offset == 0) {
+    size_t buffer_size = 0;
+
+    clGetMemObjectInfo(
+        matrix.buffer,
+        CL_MEM_SIZE,
+        sizeof(buffer_size),
+        &buffer_size,
+        NULL
+    );
+
+    copy_rect = buffer_size != host_size;
+  }
+
+  if (copy_rect) {
+    size_t buffer_origin[3] = {matrix.data.offset*sizeof(float), 0, 0}; // offset relative to buffer
+    size_t host_origin[3] = {0*sizeof(float), 0, 0}; // offset relative to NMatrix
+    size_t region[3] = {matrix.cols*sizeof(float), matrix.rows, 1};
+
+    return clEnqueueReadBufferRect(
+        commands,
+        matrix.buffer,
+        CL_FALSE,
+        buffer_origin,
+        host_origin,
+        region,
+        matrix.stride * sizeof(float), // buffer_row_pitch
+        0, // buffer_slice_pitch
+        matrix.stride * sizeof(float), // host_row_pitch
+        0, // host_slice_pitch
+        matrix.elems,
+        0,
+        NULL,
+        event
+    );
+  } else {
+    return clEnqueueReadBuffer(
+        commands,
+        matrix.buffer,
+        CL_FALSE,
+        0,
+        host_size,
+        matrix.elems,
+        0,
+        NULL,
+        event
+    );
+  }
+}
+
+cl_int copy_to_gpu(Byte_Buffer bytes, cl_mem buffer, cl_event* event) {
+  return clEnqueueWriteBuffer(
+      commands,
+      buffer,
+      CL_FALSE,
+      0,
+      bytes.len,
+      bytes.ptr,
+      0,
+      NULL,
+      event
+  );
+}
+
+cl_int copy_to_cpu(Byte_Buffer bytes, cl_mem buffer, cl_event* event) {
+  return clEnqueueReadBuffer(
+      commands,
+      buffer,
+      CL_FALSE,
+      0,
+      bytes.len,
+      bytes.ptr,
+      0,
+      NULL,
+      event
+  );
+}
+
+void copy_to_gpu_sync(Byte_Buffer bytes, cl_mem buffer) {
+  cl_event event = NULL;
+  assert(copy_to_gpu(bytes, buffer, &event) == CL_SUCCESS);
+  clWaitForEvents(1, &event);
+  clReleaseEvent(event);
+}
+
+void copy_to_cpu_sync(Byte_Buffer bytes, cl_mem buffer) {
+  cl_event event = NULL;
+  assert(copy_to_cpu(bytes, buffer, &event) == CL_SUCCESS);
+  clWaitForEvents(1, &event);
+  clReleaseEvent(event);
+}
+
+cl_int copy_cpu_to_gpu(NMatrix matrix, cl_event* event) {
+  size_t host_size = matrix.cols*sizeof(float)*matrix.rows;
+
+  bool copy_rect = true;
+
+  if (matrix.data.offset == 0) {
+    size_t buffer_size = 0;
+
+    clGetMemObjectInfo(
+        matrix.buffer,
+        CL_MEM_SIZE,
+        sizeof(buffer_size),
+        &buffer_size,
+        NULL
+    );
+
+    copy_rect = buffer_size != host_size;
+  }
+
+  if (copy_rect) {
+    size_t buffer_origin[3] = {matrix.data.offset*sizeof(float), 0, 0}; // offset relative to buffer
+    size_t host_origin[3] = {0*sizeof(float), 0, 0}; // offset relative to NMatrix
+    size_t region[3] = {matrix.cols*sizeof(float), matrix.rows, 1};
+
+    return clEnqueueWriteBufferRect(
+        commands,
+        matrix.buffer,
+        CL_FALSE,
+        buffer_origin,
+        host_origin,
+        region,
+        matrix.stride * sizeof(float), // buffer_row_pitch
+        0, // buffer_slice_pitch
+        matrix.stride * sizeof(float), // host_row_pitch
+        0, // host_slice_pitch
+        matrix.elems,
+        0,
+        NULL,
+        event
+    );
+  } else {
+    return clEnqueueWriteBuffer(
+        commands,
+        matrix.buffer,
+        CL_FALSE,
+        0,
+        host_size,
+        matrix.elems,
+        0,
+        NULL,
+        event
+    );
+  }
+}
+
+void copy_gpu_to_cpu_sync(NMatrix matrix) {
+  cl_event copy_event[1];
+  assert(copy_gpu_to_cpu(matrix, &copy_event[0]) == CL_SUCCESS);
+  clWaitForEvents(1, copy_event);
+  clReleaseEvent(copy_event[0]);
+}
+
+void copy_cpu_to_gpu_sync(NMatrix matrix) {
+  cl_event copy_event[1];
+  assert(copy_cpu_to_gpu(matrix, &copy_event[0]) == CL_SUCCESS);
+  clWaitForEvents(1, copy_event);
+  clReleaseEvent(copy_event[0]);
+}
 
 bool init_opencl(void) {
   if (program) return true;
 
-  int err;                            // error code returned from api calls
+  int err;
 
   err = clGetDeviceIDs(NULL, CL_DEVICE_TYPE_GPU, 1, &device_id, NULL);
   if (err != CL_SUCCESS) {
@@ -213,31 +263,44 @@ bool init_opencl(void) {
   }
 
   const char* program_source[] = {
-    matrix_mul_stride,
-    matrix_mul_At_stride,
-    matrix_mul_Bt_stride,
+    gpu_kernels,
+    NULL
   };
 
-  program = clCreateProgramWithSource(context, 3, program_source, NULL, &err);
+  program = clCreateProgramWithSource(context, 1, program_source, NULL, &err);
   if (!program) {
       printf("Error: Failed to create compute program!\n");
       return false;
   }
 
-  err = clBuildProgram(program, 0, NULL, NULL, NULL, NULL);
+  err = clBuildProgram(program, 0, NULL, GPU_BUILD_OPTS, NULL, NULL);
   if (err != CL_SUCCESS) {
       size_t len = 0;
-      char buffer[2048];
-
       printf("Error: Failed to build program executable!\n");
-      clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, sizeof(buffer), buffer, &len);
-      buffer[len] = 0;
-      printf("%s\n", buffer);
+      clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, 0, NULL, &len);
+
+      char* buffer = malloc(len);
+      clGetProgramBuildInfo(program, device_id, CL_PROGRAM_BUILD_LOG, len, buffer, NULL);
+      printf("%.*s\n", (int)len, buffer);
+      free(buffer);
       return false;
   }
 
+  size_t binary_size = 0;
+  clGetProgramInfo(program, CL_PROGRAM_BINARY_SIZES, sizeof(size_t), &binary_size, NULL);
+  printf("Program size = %zu\n", binary_size);
+  void* program_binary = malloc(binary_size);
+  clGetProgramInfo(program, CL_PROGRAM_BINARIES, sizeof(unsigned char*), &program_binary, NULL);
+  free(program_binary);
+
   matrix_mul_stride_kernel = clCreateKernel(program, "matrix_mul_stride", &err);
   if (!matrix_mul_stride_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  matrix_mul_acc_stride_kernel = clCreateKernel(program, "matrix_mul_acc_stride", &err);
+  if (!matrix_mul_acc_stride_kernel || err != CL_SUCCESS) {
       printf("Error: Failed to create compute kernel!\n");
       return false;
   }
@@ -248,8 +311,116 @@ bool init_opencl(void) {
       return false;
   }
 
+  matrix_mul_At_acc_stride_kernel = clCreateKernel(program, "matrix_mul_At_acc_stride", &err);
+  if (!matrix_mul_At_acc_stride_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
   matrix_mul_Bt_stride_kernel = clCreateKernel(program, "matrix_mul_Bt_stride", &err);
-  if (!matrix_mul_At_stride_kernel || err != CL_SUCCESS) {
+  if (!matrix_mul_Bt_stride_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  matrix_mul_Bt_acc_stride_kernel = clCreateKernel(program, "matrix_mul_Bt_acc_stride", &err);
+  if (!matrix_mul_Bt_acc_stride_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  matrix_add_kernel = clCreateKernel(program, "matrix_add_kernel", &err);
+  if (!matrix_add_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  softmax_temperature_kernel = clCreateKernel(program, "softmax_temperature_kernel", &err);
+  if (!softmax_temperature_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  softmax_with_masking_kernel = clCreateKernel(program, "softmax_with_masking_kernel", &err);
+  if (!softmax_with_masking_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  dsoftmax_temperature_kernel = clCreateKernel(program, "dsoftmax_temperature_kernel", &err);
+  if (!dsoftmax_temperature_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  layer_norm_forward_kernel = clCreateKernel(program, "layer_norm_forward_kernel", &err);
+  if (!layer_norm_forward_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  layer_norm_backward_dx_kernel = clCreateKernel(program, "layer_norm_backward_dx_kernel", &err);
+  if (!layer_norm_backward_dx_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  layer_norm_backward_dgamma_dbeta_kernel = clCreateKernel(program, "layer_norm_backward_dgamma_dbeta_kernel", &err);
+  if (!layer_norm_backward_dgamma_dbeta_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  rope_kernel = clCreateKernel(program, "rope_kernel", &err);
+  if (!rope_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  drope_kernel = clCreateKernel(program, "drope_kernel", &err);
+  if (!drope_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  relu_kernel = clCreateKernel(program, "relu_kernel", &err);
+  if (!relu_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  drelu_kernel = clCreateKernel(program, "drelu_kernel", &err);
+  if (!drelu_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  broadcast_bias_kernel = clCreateKernel(program, "broadcast_bias_kernel", &err);
+  if (!broadcast_bias_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  dproject_db_kernel = clCreateKernel(program, "dproject_db_kernel", &err);
+  if (!dproject_db_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  embed_gatter_forward_kernel = clCreateKernel(program, "embed_gatter_forward_kernel", &err);
+  if (!embed_gatter_forward_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  row_argmax_kernel = clCreateKernel(program, "row_argmax_kernel", &err);
+  if (!row_argmax_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  gemm_nn_debug_kernel = clCreateKernel(program, "gemm_nn_debug_kernel", &err);
+  if (!gemm_nn_debug_kernel || err != CL_SUCCESS) {
       printf("Error: Failed to create compute kernel!\n");
       return false;
   }
@@ -257,126 +428,692 @@ bool init_opencl(void) {
   return true;
 }
 
-bool ensure_buffer_size(size_t buffer_size) {
-  if (buffer_size > max_buffer_size) {
-    clReleaseMemObject(A);
-    clReleaseMemObject(B);
-    clReleaseMemObject(C);
-  }
+void destoy_opencl(void) {
+  clFlush(commands);
+  clFinish(commands);
 
-  max_buffer_size = buffer_size;
-  A = clCreateBuffer(context, CL_MEM_READ_ONLY, buffer_size, NULL, NULL);
-  B = clCreateBuffer(context, CL_MEM_READ_ONLY, buffer_size, NULL, NULL);
-  C = clCreateBuffer(context, CL_MEM_READ_WRITE, buffer_size, NULL, NULL);
-  if (!A || !B || !C) {
-      printf("Error: Failed to allocate device memory!\n");
-      return false;
-  }
+  clReleaseKernel(matrix_mul_stride_kernel);
+  clReleaseKernel(matrix_mul_acc_stride_kernel);
+  clReleaseKernel(matrix_mul_At_stride_kernel);
+  clReleaseKernel(matrix_mul_At_acc_stride_kernel);
+  clReleaseKernel(matrix_mul_Bt_stride_kernel);
+  clReleaseKernel(matrix_mul_Bt_acc_stride_kernel);
+  clReleaseKernel(matrix_add_kernel);
+  clReleaseKernel(softmax_temperature_kernel);
+  clReleaseKernel(softmax_with_masking_kernel);
+  clReleaseKernel(dsoftmax_temperature_kernel);
+  clReleaseKernel(layer_norm_forward_kernel);
+  clReleaseKernel(layer_norm_backward_dx_kernel);
+  clReleaseKernel(layer_norm_backward_dgamma_dbeta_kernel);
+  clReleaseKernel(rope_kernel);
+  clReleaseKernel(drope_kernel);
+  clReleaseKernel(relu_kernel);
+  clReleaseKernel(drelu_kernel);
+  clReleaseKernel(broadcast_bias_kernel);
+  clReleaseKernel(dproject_db_kernel);
+  clReleaseKernel(embed_gatter_forward_kernel);
+  clReleaseKernel(row_argmax_kernel);
+  clReleaseKernel(gemm_nn_debug_kernel);
 
-  return true;
+  clReleaseProgram(program);
+  clReleaseCommandQueue(commands);
+
+  clReleaseContext(context);
 }
 
-int execute_kernel(
-    cl_command_queue commands,
-    cl_kernel kernel,
-    NMatrix A_,
-    NMatrix B_,
-    NMatrix C_,
-    bool At,
-    bool Bt
+#define ROUND_UP(size, tile) (((size) + (tile) - 1) / (tile) * (tile))
+
+cl_int call_matrix_mul_stride_kernel(
+  // outputs
+  NMatrix mat_output,
+  // inputs
+  NMatrix mat_x,
+  NMatrix mat_W
 ) {
-  int err;
+  cl_int err = 0;
 
-  size_t A_size = A_.rows * A_.stride * sizeof(float);
-  size_t B_size = B_.rows * B_.stride * sizeof(float);
-  size_t C_size = C_.rows * C_.stride * sizeof(float);
+  // inputs
+  err |= clSetKernelArg(matrix_mul_stride_kernel, 0, sizeof(cl_mem), &mat_x.buffer);
+  err |= clSetKernelArg(matrix_mul_stride_kernel, 1, sizeof(MatrixData), &mat_x.data);
+  err |= clSetKernelArg(matrix_mul_stride_kernel, 2, sizeof(cl_mem), &mat_W.buffer);
+  err |= clSetKernelArg(matrix_mul_stride_kernel, 3, sizeof(MatrixData), &mat_W.data);
+  assert(err == CL_SUCCESS);
+  // outputs
+  err  = clSetKernelArg(matrix_mul_stride_kernel, 4, sizeof(cl_mem), &mat_output.buffer);
+  err |= clSetKernelArg(matrix_mul_stride_kernel, 5, sizeof(MatrixData), &mat_output.data);
+  assert(err == CL_SUCCESS);
 
-  cl_int A_rows   = A_.rows;
-  cl_int A_cols   = A_.cols;
-  cl_int A_stride = A_.stride;
-  cl_int B_rows   = B_.rows;
-  cl_int B_cols   = B_.cols;
-  cl_int B_stride = B_.stride;
-  cl_int C_stride = C_.stride;
-
-  err = 0;
-  err |= clSetKernelArg(kernel, 0, sizeof(cl_mem), &A);
-  err |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &B);
-  err |= clSetKernelArg(kernel, 2, sizeof(cl_mem), &C);
-  if (err != CL_SUCCESS) {
-      printf("Error: Failed to set kernel buffers! %d\n", err);
-      return err;
-  }
-
-  err |= clSetKernelArg(kernel, 3, sizeof(cl_int), &A_rows);   // A_rows
-  err |= clSetKernelArg(kernel, 4, sizeof(cl_int), &A_cols);   // A_cols
-  err |= clSetKernelArg(kernel, 5, sizeof(cl_int), &A_stride); // A_stride
-  if (err != CL_SUCCESS) {
-      printf("Error: Failed to set kernel A parameters! %d\n", err);
-      return err;
-  }
-
-  err |= clSetKernelArg(kernel, 6, sizeof(cl_int), &B_rows);   // B_rows
-  err |= clSetKernelArg(kernel, 7, sizeof(cl_int), &B_cols);   // B_cols
-  err |= clSetKernelArg(kernel, 8, sizeof(cl_int), &B_stride); // B_stride
-  if (err != CL_SUCCESS) {
-      printf("Error: Failed to set kernel B parameters! %d\n", err);
-      return err;
-  }
-
-  err |= clSetKernelArg(kernel, 9, sizeof(cl_int), &C_stride); // C_stride
-  if (err != CL_SUCCESS) {
-      printf("Error: Failed to set kernel C parameters! %d\n", err);
-      return err;
-  }
-
-  err = clEnqueueWriteBuffer(commands, A, CL_FALSE, 0, A_size, A_.elems, 0, NULL, NULL);
-  if (err != CL_SUCCESS) {
-      printf("Error: Failed to write to source array!\n");
-      exit(1);
-  }
-
-  err = clEnqueueWriteBuffer(commands, B, CL_FALSE, 0, B_size, B_.elems, 0, NULL, NULL);
-  if (err != CL_SUCCESS) {
-      printf("Error: Failed to write to source array!\n");
-      exit(1);
-  }
-
-  err = clEnqueueWriteBuffer(commands, C, CL_FALSE, 0, C_size, C_.elems, 0, NULL, NULL);
-  if (err != CL_SUCCESS) {
-      printf("Error: Failed to write to source array!\n");
-      exit(1);
-  }
-
-  size_t local[2]  = {16, 16};
-  size_t global[2] = {
-      ((size_t)B_cols + 15) / 16 * 16, // Map columns to Dim 0 (X axis)
-      ((size_t)A_rows + 15) / 16 * 16  // Map rows to Dim 1 (Y axis)      
+  size_t local_ws[2]  = {GPU_TS_MATRIX, GPU_TS_MATRIX};
+  size_t global_ws[2] = {
+    ROUND_UP(mat_W.data.cols, GPU_TS_MATRIX), // D
+    ROUND_UP(mat_x.data.rows, GPU_TS_MATRIX), // N
   };
-
-  if (At) {
-    global[0] = ((size_t)B_cols + 15) / 16 * 16;
-    global[1] = ((size_t)A_cols + 15) / 16 * 16;
-  }
-
-  if (Bt) {
-    global[0] = ((size_t)B_rows + 15) / 16 * 16;
-    global[1] = ((size_t)A_rows + 15) / 16 * 16;
-  }
-
-  err = clEnqueueNDRangeKernel(commands, kernel, 2, NULL, global, local, 0, NULL, NULL);
-  if (err != CL_SUCCESS) {
-      printf("Error: Failed to execute kernel!\n");
-      return err;
-  }
-
-  err = clEnqueueReadBuffer(commands, C, CL_TRUE, 0, C_size, C_.elems, 0, NULL, NULL );  
-  if (err != CL_SUCCESS) {
-      printf("Error: Failed to read output array! %d\n", err);
-      exit(1);
-  }
-
-  // clFinish(commands);
-
-  return err;
+  return clEnqueueNDRangeKernel(
+      commands,
+      matrix_mul_stride_kernel,
+      2,
+      NULL,
+      global_ws,
+      local_ws,
+      0, NULL, NULL
+  );
 }
+
+cl_int call_matrix_mul_acc_stride_kernel(
+  // outputs
+  NMatrix mat_output,
+  // inputs
+  NMatrix mat_x,
+  NMatrix mat_W
+) {
+  cl_int err = 0;
+
+  // inputs
+  err |= clSetKernelArg(matrix_mul_acc_stride_kernel, 0, sizeof(cl_mem), &mat_x.buffer);
+  err |= clSetKernelArg(matrix_mul_acc_stride_kernel, 1, sizeof(MatrixData), &mat_x.data);
+  err |= clSetKernelArg(matrix_mul_acc_stride_kernel, 2, sizeof(cl_mem), &mat_W.buffer);
+  err |= clSetKernelArg(matrix_mul_acc_stride_kernel, 3, sizeof(MatrixData), &mat_W.data);
+  assert(err == CL_SUCCESS);
+  // outputs
+  err  = clSetKernelArg(matrix_mul_acc_stride_kernel, 4, sizeof(cl_mem), &mat_output.buffer);
+  err |= clSetKernelArg(matrix_mul_acc_stride_kernel, 5, sizeof(MatrixData), &mat_output.data);
+  assert(err == CL_SUCCESS);
+
+  size_t local_ws[2]  = {GPU_TS_MATRIX, GPU_TS_MATRIX};
+  size_t global_ws[2] = {
+    ROUND_UP(mat_W.data.cols, GPU_TS_MATRIX), // D
+    ROUND_UP(mat_x.data.rows, GPU_TS_MATRIX), // N
+  };
+  return clEnqueueNDRangeKernel(
+      commands,
+      matrix_mul_acc_stride_kernel,
+      2,
+      NULL,
+      global_ws,
+      local_ws,
+      0, NULL, NULL
+  );
+}
+
+cl_int call_matrix_mul_At_stride_kernel(
+  // outputs
+  NMatrix mat_output,
+  // inputs
+  NMatrix mat_x,
+  NMatrix mat_W
+) {
+  cl_int err = 0;
+
+  // inputs
+  err |= clSetKernelArg(matrix_mul_At_stride_kernel, 0, sizeof(cl_mem), &mat_x.buffer);
+  err |= clSetKernelArg(matrix_mul_At_stride_kernel, 1, sizeof(MatrixData), &mat_x.data);
+  err |= clSetKernelArg(matrix_mul_At_stride_kernel, 2, sizeof(cl_mem), &mat_W.buffer);
+  err |= clSetKernelArg(matrix_mul_At_stride_kernel, 3, sizeof(MatrixData), &mat_W.data);
+  assert(err == CL_SUCCESS);
+  // outputs
+  err  = clSetKernelArg(matrix_mul_At_stride_kernel, 4, sizeof(cl_mem), &mat_output.buffer);
+  err |= clSetKernelArg(matrix_mul_At_stride_kernel, 5, sizeof(MatrixData), &mat_output.data);
+  assert(err == CL_SUCCESS);
+
+  size_t local_ws[2]  = {GPU_TS_MATRIX, GPU_TS_MATRIX};
+  // size_t global_ws[2] = {
+  //   ROUND_UP(mat_W.data.rows, GPU_TS_MATRIX), // D
+  //   ROUND_UP(mat_x.data.rows, GPU_TS_MATRIX), // N
+  // };
+  size_t global_ws[2] = {
+    ROUND_UP(mat_W.data.rows, GPU_TS_MATRIX), // D
+    ROUND_UP(mat_W.data.cols, GPU_TS_MATRIX), // D
+  };
+  return clEnqueueNDRangeKernel(
+      commands,
+      matrix_mul_At_stride_kernel,
+      2,
+      NULL,
+      global_ws,
+      local_ws,
+      0, NULL, NULL
+  );
+}
+
+cl_int call_matrix_mul_At_acc_stride_kernel(
+  // outputs
+  NMatrix mat_output,
+  // inputs
+  NMatrix mat_x,
+  NMatrix mat_W
+) {
+  cl_int err = 0;
+
+  // inputs
+  err |= clSetKernelArg(matrix_mul_At_acc_stride_kernel, 0, sizeof(cl_mem), &mat_x.buffer);
+  err |= clSetKernelArg(matrix_mul_At_acc_stride_kernel, 1, sizeof(MatrixData), &mat_x.data);
+  err |= clSetKernelArg(matrix_mul_At_acc_stride_kernel, 2, sizeof(cl_mem), &mat_W.buffer);
+  err |= clSetKernelArg(matrix_mul_At_acc_stride_kernel, 3, sizeof(MatrixData), &mat_W.data);
+  assert(err == CL_SUCCESS);
+  // outputs
+  err  = clSetKernelArg(matrix_mul_At_acc_stride_kernel, 4, sizeof(cl_mem), &mat_output.buffer);
+  err |= clSetKernelArg(matrix_mul_At_acc_stride_kernel, 5, sizeof(MatrixData), &mat_output.data);
+  assert(err == CL_SUCCESS);
+
+  size_t local_ws[2]  = {GPU_TS_MATRIX, GPU_TS_MATRIX};
+  // size_t global_ws[2] = {
+  //   ROUND_UP(mat_W.data.rows, GPU_TS_MATRIX), // D
+  //   ROUND_UP(mat_x.data.rows, GPU_TS_MATRIX), // N
+  // };
+  size_t global_ws[2] = {
+    ROUND_UP(mat_W.data.rows, GPU_TS_MATRIX), // D
+    ROUND_UP(mat_W.data.cols, GPU_TS_MATRIX), // D
+  };
+  return clEnqueueNDRangeKernel(
+      commands,
+      matrix_mul_At_acc_stride_kernel,
+      2,
+      NULL,
+      global_ws,
+      local_ws,
+      0, NULL, NULL
+  );
+}
+
+cl_int call_matrix_mul_Bt_stride_kernel(
+  // outputs
+  NMatrix mat_output,
+  // inputs
+  NMatrix mat_x,
+  NMatrix mat_W
+) {
+  cl_int err = 0;
+
+  // inputs
+  err |= clSetKernelArg(matrix_mul_Bt_stride_kernel, 0, sizeof(cl_mem), &mat_x.buffer);
+  err |= clSetKernelArg(matrix_mul_Bt_stride_kernel, 1, sizeof(MatrixData), &mat_x.data);
+  err |= clSetKernelArg(matrix_mul_Bt_stride_kernel, 2, sizeof(cl_mem), &mat_W.buffer);
+  err |= clSetKernelArg(matrix_mul_Bt_stride_kernel, 3, sizeof(MatrixData), &mat_W.data);
+  assert(err == CL_SUCCESS);
+  // outputs
+  err  = clSetKernelArg(matrix_mul_Bt_stride_kernel, 4, sizeof(cl_mem), &mat_output.buffer);
+  err |= clSetKernelArg(matrix_mul_Bt_stride_kernel, 5, sizeof(MatrixData), &mat_output.data);
+  assert(err == CL_SUCCESS);
+
+  size_t local_ws[2]  = {GPU_TS_MATRIX, GPU_TS_MATRIX};
+  size_t global_ws[2] = {
+    ROUND_UP(mat_W.data.rows, GPU_TS_MATRIX), // D
+    ROUND_UP(mat_x.data.rows, GPU_TS_MATRIX), // N
+  };
+  return clEnqueueNDRangeKernel(
+      commands,
+      matrix_mul_Bt_stride_kernel,
+      2,
+      NULL,
+      global_ws,
+      local_ws,
+      0, NULL, NULL
+  );
+}
+
+cl_int call_matrix_mul_Bt_acc_stride_kernel(
+  // outputs
+  NMatrix mat_output,
+  // inputs
+  NMatrix mat_x,
+  NMatrix mat_W
+) {
+  cl_int err = 0;
+
+  // inputs
+  err |= clSetKernelArg(matrix_mul_Bt_acc_stride_kernel, 0, sizeof(cl_mem), &mat_x.buffer);
+  err |= clSetKernelArg(matrix_mul_Bt_acc_stride_kernel, 1, sizeof(MatrixData), &mat_x.data);
+  err |= clSetKernelArg(matrix_mul_Bt_acc_stride_kernel, 2, sizeof(cl_mem), &mat_W.buffer);
+  err |= clSetKernelArg(matrix_mul_Bt_acc_stride_kernel, 3, sizeof(MatrixData), &mat_W.data);
+  assert(err == CL_SUCCESS);
+  // outputs
+  err  = clSetKernelArg(matrix_mul_Bt_acc_stride_kernel, 4, sizeof(cl_mem), &mat_output.buffer);
+  err |= clSetKernelArg(matrix_mul_Bt_acc_stride_kernel, 5, sizeof(MatrixData), &mat_output.data);
+  assert(err == CL_SUCCESS);
+
+  size_t local_ws[2]  = {GPU_TS_MATRIX, GPU_TS_MATRIX};
+  size_t global_ws[2] = {
+    ROUND_UP(mat_W.data.rows, GPU_TS_MATRIX), // D
+    ROUND_UP(mat_x.data.rows, GPU_TS_MATRIX), // N
+  };
+  return clEnqueueNDRangeKernel(
+      commands,
+      matrix_mul_Bt_acc_stride_kernel,
+      2,
+      NULL,
+      global_ws,
+      local_ws,
+      0, NULL, NULL
+  );
+}
+
+cl_int call_matrix_add_kernel(
+  // outputs
+  NMatrix mat_out,
+  // inputs
+  NMatrix mat_a,
+  NMatrix mat_b
+) {
+  cl_int err = 0;
+
+  // outputs
+  err |= clSetKernelArg(matrix_add_kernel, 0, sizeof(cl_mem), &mat_out.buffer);
+  err |= clSetKernelArg(matrix_add_kernel, 1, sizeof(MatrixData), &mat_out.data);
+  assert(err == CL_SUCCESS);
+  // inputs
+  err |= clSetKernelArg(matrix_add_kernel, 2, sizeof(cl_mem), &mat_a.buffer);
+  err |= clSetKernelArg(matrix_add_kernel, 3, sizeof(MatrixData), &mat_a.data);
+  err  = clSetKernelArg(matrix_add_kernel, 4, sizeof(cl_mem), &mat_b.buffer);
+  err |= clSetKernelArg(matrix_add_kernel, 5, sizeof(MatrixData), &mat_b.data);
+  assert(err == CL_SUCCESS);
+
+  size_t local_ws[2]  = { 256, 1 };
+  size_t global_ws[2] = { 256, mat_out.data.rows };
+  return clEnqueueNDRangeKernel(
+      commands,
+      matrix_add_kernel,
+      2,
+      NULL,
+      global_ws,
+      local_ws,
+      0, NULL, NULL
+  );
+}
+
+cl_int call_project_kernel(
+  // outputs
+  NMatrix mat_output,
+  // inputs
+  NMatrix mat_x,
+  NMatrix mat_W,
+  NMatrix mat_b,
+  cl_int transpose_w
+) {
+  cl_int err = 0;
+
+  if (transpose_w) {
+    assert(call_matrix_mul_Bt_stride_kernel(mat_output, mat_x, mat_W) == CL_SUCCESS);
+  } else {
+    assert(call_matrix_mul_stride_kernel(mat_output, mat_x, mat_W) == CL_SUCCESS);
+  }
+
+  // outputs
+  err  = clSetKernelArg(broadcast_bias_kernel, 0, sizeof(cl_mem), &mat_output.buffer);
+  err |= clSetKernelArg(broadcast_bias_kernel, 1, sizeof(MatrixData), &mat_output.data);
+  assert(err == CL_SUCCESS);
+  // inputs
+  err |= clSetKernelArg(broadcast_bias_kernel, 2, sizeof(cl_mem), &mat_b.buffer);
+  err |= clSetKernelArg(broadcast_bias_kernel, 3, sizeof(MatrixData), &mat_b.data);
+  assert(err == CL_SUCCESS);
+
+  size_t global_ws[2] = { mat_output.data.cols, mat_output.data.rows };
+  return clEnqueueNDRangeKernel(
+      commands,
+      broadcast_bias_kernel,
+      2,
+      NULL,
+      global_ws,
+      NULL,
+      0, NULL, NULL
+  );
+}
+
+cl_int call_dproject_db_kernel(
+  // outputs
+  NMatrix mat_dx,
+  NMatrix mat_dW,
+  NMatrix mat_db,
+  // inputs
+  NMatrix mat_x,
+  NMatrix mat_W,
+  NMatrix mat_dout
+) {
+  size_t local_ws[2]  = { 1, 128 };
+  size_t global_ws[2] = { mat_db.data.cols, 128 };
+
+  cl_int err = 0;
+
+  // outputs
+  err  = clSetKernelArg(dproject_db_kernel, 0, sizeof(cl_mem), &mat_dx.buffer);
+  err |= clSetKernelArg(dproject_db_kernel, 1, sizeof(MatrixData), &mat_dx.data);
+  err |= clSetKernelArg(dproject_db_kernel, 2, sizeof(cl_mem), &mat_dW.buffer);
+  err |= clSetKernelArg(dproject_db_kernel, 3, sizeof(MatrixData), &mat_dW.data);
+  err |= clSetKernelArg(dproject_db_kernel, 4, sizeof(cl_mem), &mat_db.buffer);
+  err |= clSetKernelArg(dproject_db_kernel, 5, sizeof(MatrixData), &mat_db.data);
+  assert(err == CL_SUCCESS);
+
+  // inputs
+  err |= clSetKernelArg(dproject_db_kernel, 6, sizeof(cl_mem), &mat_x.buffer);
+  err |= clSetKernelArg(dproject_db_kernel, 7, sizeof(MatrixData), &mat_x.data);
+  err |= clSetKernelArg(dproject_db_kernel, 8, sizeof(cl_mem), &mat_W.buffer);
+  err |= clSetKernelArg(dproject_db_kernel, 9, sizeof(MatrixData), &mat_W.data);
+  err |= clSetKernelArg(dproject_db_kernel, 10, sizeof(cl_mem), &mat_dout.buffer);
+  err |= clSetKernelArg(dproject_db_kernel, 11, sizeof(MatrixData), &mat_dout.data);
+  err |= clSetKernelArg(dproject_db_kernel, 12, local_ws[1] * sizeof(float), NULL);
+  assert(err == CL_SUCCESS);
+
+  return clEnqueueNDRangeKernel(
+      commands,
+      dproject_db_kernel,
+      2,
+      NULL,
+      global_ws,
+      local_ws,
+      0, NULL, NULL
+  );
+}
+
+cl_int call_embed_gatter_forward_kernel(
+    NMatrix x0,
+    NMatrix tok_emb,
+    cl_mem opencl_tokens_buffer,
+    cl_int token_base
+) {
+  cl_int err = 0;
+
+  // outputs
+  err |= clSetKernelArg(embed_gatter_forward_kernel, 0, sizeof(cl_mem), &x0.buffer);
+  err |= clSetKernelArg(embed_gatter_forward_kernel, 1, sizeof(MatrixData), &x0.data);
+  assert(err == CL_SUCCESS);
+  // inputs
+  err |= clSetKernelArg(embed_gatter_forward_kernel, 2, sizeof(cl_mem), &tok_emb.buffer);
+  err |= clSetKernelArg(embed_gatter_forward_kernel, 3, sizeof(MatrixData), &tok_emb.data);
+  err |= clSetKernelArg(embed_gatter_forward_kernel, 4, sizeof(cl_mem), &opencl_tokens_buffer);
+  err |= clSetKernelArg(embed_gatter_forward_kernel, 5, sizeof(cl_int), &token_base);
+  assert(err == CL_SUCCESS);
+
+  size_t global_ws[2] = { x0.data.cols, x0.data.rows };
+  return clEnqueueNDRangeKernel(
+      commands,
+      embed_gatter_forward_kernel,
+      2,
+      NULL,
+      global_ws,
+      NULL,
+      0, NULL, NULL
+  );
+}
+
+cl_int call_layer_norm_forward_kernel(
+    // outputs
+    NMatrix mat_out,
+    NMatrix mat_mean,
+    NMatrix mat_rstd,
+    NMatrix mat_xhat,
+    // inputs
+    NMatrix mat_in,
+    NMatrix mat_gamma,
+    NMatrix mat_beta
+) {
+  /////////////////////////////////
+
+  cl_int err = 0;
+
+  // outputs
+  err |= clSetKernelArg(layer_norm_forward_kernel, 0, sizeof(cl_mem), &mat_out.buffer);
+  err |= clSetKernelArg(layer_norm_forward_kernel, 1, sizeof(MatrixData), &mat_out.data);
+  err |= clSetKernelArg(layer_norm_forward_kernel, 2, sizeof(cl_mem), &mat_mean.buffer);
+  err |= clSetKernelArg(layer_norm_forward_kernel, 3, sizeof(MatrixData), &mat_mean.data);
+  err |= clSetKernelArg(layer_norm_forward_kernel, 4, sizeof(cl_mem), &mat_rstd.buffer);
+  err |= clSetKernelArg(layer_norm_forward_kernel, 5, sizeof(MatrixData), &mat_rstd.data);
+  err |= clSetKernelArg(layer_norm_forward_kernel, 6, sizeof(cl_mem), &mat_xhat.buffer);
+  err |= clSetKernelArg(layer_norm_forward_kernel, 7, sizeof(MatrixData), &mat_xhat.data);
+  assert(err == CL_SUCCESS);
+
+  // inputs
+  err |= clSetKernelArg(layer_norm_forward_kernel, 8, sizeof(cl_mem), &mat_in.buffer);
+  err |= clSetKernelArg(layer_norm_forward_kernel, 9, sizeof(MatrixData), &mat_in.data);
+  err |= clSetKernelArg(layer_norm_forward_kernel, 10, sizeof(cl_mem), &mat_gamma.buffer);
+  err |= clSetKernelArg(layer_norm_forward_kernel, 11, sizeof(MatrixData), &mat_gamma.data);
+  err |= clSetKernelArg(layer_norm_forward_kernel, 12, sizeof(cl_mem), &mat_beta.buffer);
+  err |= clSetKernelArg(layer_norm_forward_kernel, 13, sizeof(MatrixData), &mat_beta.data);
+  assert(err == CL_SUCCESS);
+
+  size_t local_ws[2]  = { 256, 1 }; // 256 threads per row, 1 row deep per group
+  size_t global_ws[2] = { 256, mat_out.data.rows }; // Scale Y to equal total row count
+
+  // scratch
+  err |= clSetKernelArg(layer_norm_forward_kernel, 14, local_ws[0] * sizeof(float), NULL);
+  assert(err == CL_SUCCESS);
+
+  return clEnqueueNDRangeKernel(
+      commands,
+      layer_norm_forward_kernel,
+      2,              // work_dim = 2D Grid
+      NULL,
+      global_ws,      // Total threads {256, rows}
+      local_ws,       // Local layout {256, 1}
+      0, NULL, NULL
+  );
+}
+
+cl_int call_softmax_temperature_kernel(
+  // outputs
+  NMatrix out,
+  // inputs
+  NMatrix x,
+  float temperature
+) {
+  size_t local_ws[2]  = { 256, 1 }; // 256 threads per row, 1 row deep per group
+  size_t global_ws[2] = { 256, out.data.rows }; // Scale Y to equal total row count
+
+  // outputs
+  clSetKernelArg(softmax_temperature_kernel, 0, sizeof(cl_mem), &out.buffer);
+  clSetKernelArg(softmax_temperature_kernel, 1, sizeof(MatrixData), &out.data);
+  // inputs
+  clSetKernelArg(softmax_temperature_kernel, 2, sizeof(cl_mem), &x.buffer);
+  clSetKernelArg(softmax_temperature_kernel, 3, sizeof(MatrixData), &x.data);
+  clSetKernelArg(softmax_temperature_kernel, 4, sizeof(float), &temperature);
+  // scratch
+  clSetKernelArg(softmax_temperature_kernel, 5, local_ws[0] * sizeof(float), NULL);
+
+  return clEnqueueNDRangeKernel(
+      commands,
+      softmax_temperature_kernel,
+      2,              // work_dim = 2D Grid
+      NULL,
+      global_ws,      // Total threads {256, rows}
+      local_ws,       // Local layout {256, 1}
+      0, NULL, NULL
+  );
+}
+
+cl_int call_softmax_with_masking_kernel(
+  // outputs
+  NMatrix out,
+  // inputs
+  NMatrix x,
+  float temperature,
+  float scale,
+  cl_int base,
+  cl_int total
+) {
+  size_t local_ws[2]  = { 256, 1 }; // 256 threads per row, 1 row deep per group
+  size_t global_ws[2] = { 256, out.data.rows }; // Scale Y to equal total row count
+
+  // outputs
+  clSetKernelArg(softmax_with_masking_kernel, 0, sizeof(cl_mem), &out.buffer);
+  clSetKernelArg(softmax_with_masking_kernel, 1, sizeof(MatrixData), &out.data);
+  // inputs
+  clSetKernelArg(softmax_with_masking_kernel, 2, sizeof(cl_mem), &x.buffer);
+  clSetKernelArg(softmax_with_masking_kernel, 3, sizeof(MatrixData), &x.data);
+  clSetKernelArg(softmax_with_masking_kernel, 4, sizeof(float), &temperature);
+  clSetKernelArg(softmax_with_masking_kernel, 5, sizeof(float), &scale);
+  clSetKernelArg(softmax_with_masking_kernel, 6, sizeof(cl_int), &base);
+  clSetKernelArg(softmax_with_masking_kernel, 7, sizeof(cl_int), &total);
+  // scratch
+  clSetKernelArg(softmax_with_masking_kernel, 8, local_ws[0] * sizeof(float), NULL);
+
+  return clEnqueueNDRangeKernel(
+      commands,
+      softmax_with_masking_kernel,
+      2,              // work_dim = 2D Grid
+      NULL,
+      global_ws,      // Total threads {256, rows}
+      local_ws,       // Local layout {256, 1}
+      0, NULL, NULL
+  );
+}
+
+cl_int call_relu_kernel(
+  // outputs
+  NMatrix out,
+  // inputs
+  NMatrix x,
+  float a
+) {
+  size_t global_ws[2] = { out.data.cols, out.data.rows };
+
+  // outputs
+  clSetKernelArg(relu_kernel, 0, sizeof(cl_mem), &out.buffer);
+  clSetKernelArg(relu_kernel, 1, sizeof(MatrixData), &out.data);
+  // inputs
+  clSetKernelArg(relu_kernel, 2, sizeof(cl_mem), &x.buffer);
+  clSetKernelArg(relu_kernel, 3, sizeof(MatrixData), &x.data);
+  clSetKernelArg(relu_kernel, 4, sizeof(float), &a);
+
+  return clEnqueueNDRangeKernel(
+      commands,
+      relu_kernel,
+      2,              // work_dim = 2D Grid
+      NULL,
+      global_ws,      // Total threads {256, rows}
+      NULL,       // Local layout {256, 1}
+      0, NULL, NULL
+  );
+}
+
+cl_int call_rope_kernel(
+  // input/output
+  NMatrix qk,
+  // inputs
+  cl_int base,
+  cl_int d_head
+) {
+  size_t global_ws[2] = { qk.data.cols/2, qk.data.rows };
+
+  // ln(10000.0)
+  const double log_base = 9.210340371976184;
+
+  InvFreq inv_freq;
+  for (cl_int i = 0; i < d_head/2; i++) {
+    inv_freq.v[i] = (float)exp(-2.0 * i / (double)d_head * log_base);
+  }
+
+  cl_int err = CL_SUCCESS;
+
+  // input/output
+  err |= clSetKernelArg(rope_kernel, 0, sizeof(cl_mem), &qk.buffer);
+  err |= clSetKernelArg(rope_kernel, 1, sizeof(MatrixData), &qk.data);
+  assert(err == CL_SUCCESS);
+  // inputs
+  err |= clSetKernelArg(rope_kernel, 2, sizeof(cl_int), &base);
+  err |= clSetKernelArg(rope_kernel, 3, sizeof(cl_int), &d_head);
+  err |= clSetKernelArg(rope_kernel, 4, sizeof(InvFreq), &inv_freq);
+  assert(err == CL_SUCCESS);
+
+  return clEnqueueNDRangeKernel(
+      commands,
+      rope_kernel,
+      2,
+      NULL,
+      global_ws,
+      NULL,
+      0, NULL, NULL
+  );
+}
+
+cl_int call_row_argmax_kernel(
+  // outputs
+  cl_mem tokens_output,
+  cl_mem probs_buffer,
+  cl_mem done_buffer,
+  cl_int tokens_base,
+  // input
+  NMatrix probs,
+  cl_int last_token,
+  cl_int eos_token
+) {
+  size_t local_ws[2]  = { 256, 1 }; // 256 threads per row, 1 row deep per group
+  size_t global_ws[2] = { 256, 1 }; // Scale Y to equal total row count
+
+  cl_int err = 0;
+  // outputs
+  err |= clSetKernelArg(row_argmax_kernel, 0, sizeof(cl_mem), &tokens_output);
+  err |= clSetKernelArg(row_argmax_kernel, 1, sizeof(cl_mem), &probs_buffer);
+  err |= clSetKernelArg(row_argmax_kernel, 2, sizeof(cl_mem), &done_buffer);
+  err |= clSetKernelArg(row_argmax_kernel, 3, sizeof(cl_int), &tokens_base);
+  assert(err == CL_SUCCESS);
+  // inputs
+  err |= clSetKernelArg(row_argmax_kernel, 4, sizeof(cl_mem), &probs.buffer);
+  err |= clSetKernelArg(row_argmax_kernel, 5, sizeof(MatrixData), &probs.data);
+  err |= clSetKernelArg(row_argmax_kernel, 6, sizeof(cl_int), &last_token);
+  err |= clSetKernelArg(row_argmax_kernel, 7, sizeof(cl_int), &eos_token);
+  assert(err == CL_SUCCESS);
+  // scratch
+  err |= clSetKernelArg(row_argmax_kernel, 8, local_ws[0] * sizeof(float), NULL);
+  err |= clSetKernelArg(row_argmax_kernel, 9, local_ws[0] * sizeof(cl_int), NULL);
+  assert(err == CL_SUCCESS);
+
+  return clEnqueueNDRangeKernel(
+      commands,
+      row_argmax_kernel,
+      2,              // work_dim = 2D Grid
+      NULL,
+      global_ws,      // Total threads {256, rows}
+      local_ws,       // Local layout {256, 1}
+      0, NULL, NULL
+  );
+}
+
+cl_int call_gemm_nn_debug_kernel(
+    NMatrix out,
+    NMatrix a,
+    NMatrix b
+) {
+  cl_int err = CL_SUCCESS;
+
+  // outputs
+  err  = clSetKernelArg(gemm_nn_debug_kernel, 0, sizeof(cl_mem), &out.buffer);
+  err |= clSetKernelArg(gemm_nn_debug_kernel, 1, sizeof(MatrixData), &out.data);
+  assert(err == CL_SUCCESS);
+  // inputs
+  err |= clSetKernelArg(gemm_nn_debug_kernel, 2, sizeof(cl_mem), &a.buffer);
+  err |= clSetKernelArg(gemm_nn_debug_kernel, 3, sizeof(MatrixData), &a.data);
+  err |= clSetKernelArg(gemm_nn_debug_kernel, 4, sizeof(cl_mem), &b.buffer);
+  err |= clSetKernelArg(gemm_nn_debug_kernel, 5, sizeof(MatrixData), &b.data);
+  assert(err == CL_SUCCESS);
+
+  size_t global_ws[2] = {
+    out.cols,
+    out.rows
+  };
+  return clEnqueueNDRangeKernel(
+      commands,
+      gemm_nn_debug_kernel,
+      2,
+      NULL,
+      global_ws,
+      NULL,
+      0, NULL, NULL
+  );
+  assert(err == CL_SUCCESS);
+}
+
+cl_int call_zero_buffer(cl_mem buffer, size_t buffer_size) {
+  cl_int pattern = 0; // The value to fill the buffer with
+
+  return clEnqueueFillBuffer(
+      commands,        // Your cl_command_queue
+      buffer,          // The cl_mem buffer you want to zero
+      &pattern,        // Pointer to the pattern (0)
+      sizeof(pattern), // Size of the pattern
+      0,               // Offset within the buffer to start filling
+      buffer_size,     // Number of bytes to fill
+      0, NULL, NULL    // Event arguments
+  );
+}
+
+#endif
+
+#endif // GPU_H
