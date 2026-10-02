@@ -331,52 +331,6 @@ cl_mem trans_out_opencl_buffer = NULL;
 cl_mem trans_out_blocks_opencl_buffer[NUM_BLOCKS] = {0};
 size_t trans_out_blocks_opencl_buffer_size[NUM_BLOCKS] = {0};
 
-void init_block_opencl(Block* block) {
-  size_t offset = 0;
-
-  from_matrix2(block->opencl_buffer, &block->ln1.gamma.value, &offset);
-  from_matrix2(block->opencl_buffer, &block->ln1.gamma.grad, &offset);
-  from_matrix2(block->opencl_buffer, &block->ln1.beta.value, &offset);
-  from_matrix2(block->opencl_buffer, &block->ln1.beta.grad, &offset);
-
-  from_matrix2(block->opencl_buffer, &block->attn.Q.weight.value, &offset);
-  from_matrix2(block->opencl_buffer, &block->attn.Q.weight.grad, &offset);
-  from_matrix2(block->opencl_buffer, &block->attn.Q.bias.value, &offset);
-  from_matrix2(block->opencl_buffer, &block->attn.Q.bias.grad, &offset);
-
-  from_matrix2(block->opencl_buffer, &block->attn.K.weight.value, &offset);
-  from_matrix2(block->opencl_buffer, &block->attn.K.weight.grad, &offset);
-  from_matrix2(block->opencl_buffer, &block->attn.K.bias.value, &offset);
-  from_matrix2(block->opencl_buffer, &block->attn.K.bias.grad, &offset);
-
-  from_matrix2(block->opencl_buffer, &block->attn.V.weight.value, &offset);
-  from_matrix2(block->opencl_buffer, &block->attn.V.weight.grad, &offset);
-  from_matrix2(block->opencl_buffer, &block->attn.V.bias.value, &offset);
-  from_matrix2(block->opencl_buffer, &block->attn.V.bias.grad, &offset);
-
-  from_matrix2(block->opencl_buffer, &block->attn.O.weight.value, &offset);
-  from_matrix2(block->opencl_buffer, &block->attn.O.weight.grad, &offset);
-  from_matrix2(block->opencl_buffer, &block->attn.O.bias.value, &offset);
-  from_matrix2(block->opencl_buffer, &block->attn.O.bias.grad, &offset);
-
-  from_matrix2(block->opencl_buffer, &block->ln2.gamma.value, &offset);
-  from_matrix2(block->opencl_buffer, &block->ln2.gamma.grad, &offset);
-  from_matrix2(block->opencl_buffer, &block->ln2.beta.value, &offset);
-  from_matrix2(block->opencl_buffer, &block->ln2.beta.grad, &offset);
-
-  from_matrix2(block->opencl_buffer, &block->ff1.weight.value, &offset);
-  from_matrix2(block->opencl_buffer, &block->ff1.weight.grad, &offset);
-  from_matrix2(block->opencl_buffer, &block->ff1.bias.value, &offset);
-  from_matrix2(block->opencl_buffer, &block->ff1.bias.grad, &offset);
-
-  from_matrix2(block->opencl_buffer, &block->ff2.weight.value, &offset);
-  from_matrix2(block->opencl_buffer, &block->ff2.weight.grad, &offset);
-  from_matrix2(block->opencl_buffer, &block->ff2.bias.value, &offset);
-  from_matrix2(block->opencl_buffer, &block->ff2.bias.grad, &offset);
-
-  assert(sizeof(float)*offset == block->opencl_buffer_size);
-}
-
 void init_transformer_opencl(Transformer* trans_in) {
   cl_int err = 0;
   trans_in->opencl_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, trans_in->opencl_buffer_size, NULL, &err);
@@ -400,13 +354,6 @@ void init_transformer_opencl(Transformer* trans_in) {
   from_matrix2(trans_in->opencl_buffer, &trans_in->H.bias.grad, &offset);
 
   assert(sizeof(float)*offset == trans_in->opencl_buffer_size);
-
-  for (size_t i = 0; i < trans_in->num_blocks; i++) {
-    trans_in->blocks[i].opencl_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, trans_in->blocks[i].opencl_buffer_size, NULL, &err);
-    assert(err == CL_SUCCESS);
-
-    init_block_opencl(&trans_in->blocks[i]);
-  }
 }
 
 void init_block_output_opencl(Block_Output* block_out) {
@@ -1064,7 +1011,7 @@ int main(int argc, char* argv[]) {
   Transformer trans_in = {0};
 
   init_transformer(
-      .alloc = &arena.alloc,
+      .arena = &arena,
       .trans = &trans_in,
       .kv_cache = &kv_cache,
       .tie_embeddings = true,

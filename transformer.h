@@ -64,6 +64,7 @@ typedef struct {
   Linear_Layer ff1;     // [DxF]
   Linear_Layer ff2;     // [FxD]
 
+  Byte_Buffer opencl_byte_buffer;
   cl_mem opencl_buffer;
   size_t opencl_buffer_size;
 } Block;
@@ -204,9 +205,12 @@ void init_gamma_beta(Allocator* alloc, Tensor* gamma, Tensor* beta, size_t D) {
   mat_zero(beta->value);
 }
 
-void init_block(Allocator* alloc, Block* block, size_t D, size_t F, size_t num_layers) {
-  size_t saved = SAVE(alloc);
+void init_block(Arena_Allocator* arena, Block* block, size_t D, size_t F, size_t num_layers) {
+  Allocator* alloc = &arena->alloc;
 
+  void* saved_ptr = arena->buffer.uptr + arena->allocated;
+
+  size_t saved = SAVE(alloc);
   init_gamma_beta(alloc, &block->ln1.gamma, &block->ln1.beta, D);
   init_linear_layer(alloc, &block->attn.Q, D, D);
   init_linear_layer(alloc, &block->attn.K, D, D);
@@ -215,8 +219,54 @@ void init_block(Allocator* alloc, Block* block, size_t D, size_t F, size_t num_l
   init_gamma_beta(alloc, &block->ln2.gamma, &block->ln2.beta, D);
   init_linear_layer(alloc, &block->ff1, D, F);
   init_output_linear_layer(alloc, &block->ff2, F, D, num_layers);
-
   block->opencl_buffer_size = SAVE(alloc) - saved;
+
+  cl_int err = 0;
+  block->opencl_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, block->opencl_buffer_size, NULL, &err);
+  assert(err == CL_SUCCESS);
+
+ block->opencl_byte_buffer = byte_buffer_from_parts(saved_ptr, block->opencl_buffer_size);
+
+  size_t offset = 0;
+  from_matrix2(block->opencl_buffer, &block->ln1.gamma.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->ln1.gamma.grad, &offset);
+  from_matrix2(block->opencl_buffer, &block->ln1.beta.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->ln1.beta.grad, &offset);
+
+  from_matrix2(block->opencl_buffer, &block->attn.Q.weight.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.Q.weight.grad, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.Q.bias.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.Q.bias.grad, &offset);
+
+  from_matrix2(block->opencl_buffer, &block->attn.K.weight.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.K.weight.grad, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.K.bias.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.K.bias.grad, &offset);
+
+  from_matrix2(block->opencl_buffer, &block->attn.V.weight.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.V.weight.grad, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.V.bias.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.V.bias.grad, &offset);
+
+  from_matrix2(block->opencl_buffer, &block->attn.O.weight.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.O.weight.grad, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.O.bias.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->attn.O.bias.grad, &offset);
+
+  from_matrix2(block->opencl_buffer, &block->ln2.gamma.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->ln2.gamma.grad, &offset);
+  from_matrix2(block->opencl_buffer, &block->ln2.beta.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->ln2.beta.grad, &offset);
+
+  from_matrix2(block->opencl_buffer, &block->ff1.weight.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->ff1.weight.grad, &offset);
+  from_matrix2(block->opencl_buffer, &block->ff1.bias.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->ff1.bias.grad, &offset);
+
+  from_matrix2(block->opencl_buffer, &block->ff2.weight.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->ff2.weight.grad, &offset);
+  from_matrix2(block->opencl_buffer, &block->ff2.bias.value, &offset);
+  from_matrix2(block->opencl_buffer, &block->ff2.bias.grad, &offset);
 }
 
 void init_block_output(Arena_Allocator* arena, Block_Output* block_out, size_t N, size_t D, size_t H, size_t F, size_t cache_len, bool clean_data) {
@@ -278,7 +328,7 @@ void init_block_output(Arena_Allocator* arena, Block_Output* block_out, size_t N
 }
 
 struct Init_Transformer_Opts {
-  Allocator* alloc;
+  Arena_Allocator* arena;
   Transformer* trans;
   KVCache* kv_cache;
   bool tie_embeddings;
@@ -304,11 +354,12 @@ struct Init_Transformer_Output_Opts {
 
 #define init_transformer(...) \
   init_transformer_opts((struct Init_Transformer_Opts){ __VA_ARGS__ })
+
 #define init_transformer_output(...) \
   init_transformer_output_opts((struct Init_Transformer_Output_Opts){ __VA_ARGS__ })
 
 size_t init_transformer_opts(struct Init_Transformer_Opts opts) {
-  Allocator* alloc = opts.alloc;
+  Arena_Allocator* arena = opts.arena;
   Transformer* trans = opts.trans;
   size_t V = opts.vocab_size;
   size_t D = opts.emb_size;
@@ -322,32 +373,33 @@ size_t init_transformer_opts(struct Init_Transformer_Opts opts) {
   trans->ff_size = opts.ff_size;
 
   trans->num_blocks = opts.num_blocks;
-  trans->blocks = ALLOC(alloc, sizeof(Block)*trans->num_blocks).ptr;
+  trans->blocks = ALLOC(&arena->alloc, sizeof(Block)*trans->num_blocks).ptr;
 
-  size_t saved = SAVE(alloc);
+  size_t saved = SAVE(&arena->alloc);
 
-  alloc_tensor(alloc, &trans->tok_emb, V, D);
+  alloc_tensor(&arena->alloc, &trans->tok_emb, V, D);
   init_xavier_glorot(trans->tok_emb.value, V, D);
 
-  init_gamma_beta(alloc, &trans->ln.gamma, &trans->ln.beta, D);
+  init_gamma_beta(&arena->alloc, &trans->ln.gamma, &trans->ln.beta, D);
 
   if (!trans->tie_embeddings) {
-    alloc_tensor(alloc, &trans->H.weight, D, V);
+    alloc_tensor(&arena->alloc, &trans->H.weight, D, V);
     init_xavier_glorot(trans->H.weight.value, D, V);
   }
 
-  alloc_tensor(alloc, &trans->H.bias, 1, V);
+  alloc_tensor(&arena->alloc, &trans->H.bias, 1, V);
   mat_zero(trans->H.bias.value);
 
 #if GPU_COMPUTATION
-  trans->opencl_buffer_size = SAVE(alloc) - saved;
+  trans->opencl_buffer = NULL;
+  trans->opencl_buffer_size = SAVE(&arena->alloc) - saved;
 #endif
 
   for (size_t i = 0; i < trans->num_blocks; i++) {
-    init_block(alloc, &trans->blocks[i], D, F, trans->num_blocks);
+    init_block(arena, &trans->blocks[i], D, F, trans->num_blocks);
   }
 
-  return SAVE(alloc) - saved;
+  return SAVE(&arena->alloc) - saved;
 }
 
 size_t init_transformer_output_opts(struct Init_Transformer_Output_Opts opts) {
@@ -852,17 +904,6 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
   int32_t H = attn_out->heads_count;
   int32_t d_head = D / H;
 
-#if GPU_COMPUTATION
-  copy_cpu_to_gpu(attn_in->Q.weight.value, NULL);
-  copy_cpu_to_gpu(attn_in->Q.bias.value, NULL);
-  copy_cpu_to_gpu(attn_in->K.weight.value, NULL);
-  copy_cpu_to_gpu(attn_in->K.bias.value, NULL);
-  copy_cpu_to_gpu(attn_in->V.weight.value, NULL);
-  copy_cpu_to_gpu(attn_in->V.bias.value, NULL);
-  copy_cpu_to_gpu(attn_in->O.weight.value, NULL);
-  copy_cpu_to_gpu(attn_in->O.bias.value, NULL);
-#endif
-
   // Q = input*wQ + bQ
   project(
       .out = attn_out->Q,
@@ -877,12 +918,6 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
   NMatrix Qall = attn_out->Q;
   NMatrix Kall = mat_rows(cache->k[block], 0, total);
   NMatrix Vall = mat_rows(cache->v[block], 0, total);
-
-#if GPU_COMPUTATION
-  // todo: kv_cache needs to be global
-  copy_cpu_to_gpu(Kall, NULL);
-  copy_cpu_to_gpu(Vall, NULL);
-#endif
 
   // K = input*wK + bK
   project(
@@ -903,10 +938,6 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
 #if GPU_COMPUTATION
   call_rope_kernel(Qall, base, d_head);
   call_rope_kernel(Kwrite, base, d_head);
-
-  // todo: kv_cache needs to be global
-  copy_gpu_to_cpu_sync(Vwrite);
-  copy_gpu_to_cpu_sync(Kwrite);
 #else
   rope(Qall, base, d_head);
   rope(Kwrite, base, d_head);
@@ -1094,11 +1125,6 @@ void feed_forward_opts(struct Feed_Forward_Opts opts) {
   Block_Output* block_out = opts.out;
   Block* block_in = opts.in;
 
-#if GPU_COMPUTATION
-  copy_cpu_to_gpu(block_in->ff1.weight.value, NULL);
-  copy_cpu_to_gpu(block_in->ff1.bias.value, NULL);
-#endif
-
   // ff1_out = ln2_out*ff1W + ff1b
   project(
       .out = block_out->ff1_out.value,
@@ -1112,11 +1138,6 @@ void feed_forward_opts(struct Feed_Forward_Opts opts) {
   assert(call_relu_kernel(block_out->relu_out.value, block_out->ff1_out.value, 0.0f) == CL_SUCCESS);
 #else
   relu(block_out->relu_out.value, block_out->ff1_out.value, 0.0f);
-#endif
-
-#if GPU_COMPUTATION
-  copy_cpu_to_gpu(block_in->ff2.weight.value, NULL);
-  copy_cpu_to_gpu(block_in->ff2.bias.value, NULL);
 #endif
 
   // ff2_out = relu_out*ff2W + ff2b
@@ -1218,13 +1239,6 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
   // x1 = x0 + attention(norm(x0))
   ////////////////////////////////////////////////////
 
-#if GPU_COMPUTATION
-  {
-    Layer_Norm* ln_in = &block_in->ln1;
-    copy_cpu_to_gpu(ln_in->gamma.value, NULL);
-    copy_cpu_to_gpu(ln_in->beta.value, NULL);
-  }
-#endif
   // ln1_out = norm(x0)
   layer_norm_forward(
       .ln_out = &block_out->ln1,
@@ -1256,14 +1270,6 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
   ////////////////////////////////////////////////////
   // x2 = x1 + feed_forward(norm(x1))
   ////////////////////////////////////////////////////
-
-#if GPU_COMPUTATION
-  {
-    Layer_Norm* ln_in = &block_in->ln2;
-    copy_cpu_to_gpu(ln_in->gamma.value, NULL);
-    copy_cpu_to_gpu(ln_in->beta.value, NULL);
-  }
-#endif
 
   // ln2_out = norm(x1)
   layer_norm_forward(
@@ -1439,7 +1445,14 @@ void transformer_forward(
   copy_cpu_to_gpu(in->tok_emb.value, NULL);
   if (!in->tie_embeddings) copy_cpu_to_gpu(in->H.weight.value, NULL);
   copy_cpu_to_gpu(in->H.bias.value, NULL);
+  copy_cpu_to_gpu(in->ln.gamma.value, NULL);
+  copy_cpu_to_gpu(in->ln.beta.value, NULL);
+
+  for (size_t i = 0; i < in->num_blocks; i++) {
+    copy_to_gpu(in->blocks[i].opencl_byte_buffer, in->blocks[i].opencl_buffer, NULL);
+  }
 #endif
+
 
   // x0 = tok_embs
   embed_gatter_forward(
@@ -1471,14 +1484,6 @@ void transformer_forward(
   }
 
   in->kv_cache->len = total;
-
-#if GPU_COMPUTATION
-  {
-    Layer_Norm* ln_in = &in->ln;
-    copy_cpu_to_gpu(ln_in->gamma.value, NULL);
-    copy_cpu_to_gpu(ln_in->beta.value, NULL);
-  }
-#endif
 
   // out_ln = norm(x[N])
   layer_norm_forward(

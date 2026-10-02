@@ -2,6 +2,7 @@
 #define GPU_H
 
 #if GPU_COMPUTATION
+#include "bytebuffer.h"
 #include "nn.h"
 
 void from_matrix2(cl_mem buffer, NMatrix* mat, size_t* offset) {
@@ -109,6 +110,20 @@ cl_int copy_gpu_to_cpu(NMatrix matrix, cl_event* event) {
         event
     );
   }
+}
+
+cl_int copy_to_gpu(Byte_Buffer bytes, cl_mem buffer, cl_event* event) {
+  return clEnqueueWriteBuffer(
+      commands,
+      buffer,
+      CL_FALSE,
+      0,
+      bytes.len,
+      bytes.ptr,
+      0,
+      NULL,
+      event
+  );
 }
 
 cl_int copy_cpu_to_gpu(NMatrix matrix, cl_event* event) {
