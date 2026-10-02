@@ -98,6 +98,8 @@ typedef struct {
   size_t ff_size;
 
   cl_mem opencl_tokens_buffer;
+
+  Byte_Buffer opencl_byte_buffer;
   cl_mem opencl_buffer;
   size_t opencl_buffer_size;
 } Transformer;
@@ -220,12 +222,12 @@ void init_block(Arena_Allocator* arena, Block* block, size_t D, size_t F, size_t
   init_linear_layer(alloc, &block->ff1, D, F);
   init_output_linear_layer(alloc, &block->ff2, F, D, num_layers);
   block->opencl_buffer_size = SAVE(alloc) - saved;
+ block->opencl_byte_buffer = byte_buffer_from_parts(saved_ptr, block->opencl_buffer_size);
 
+#if GPU_COMPUTATION
   cl_int err = 0;
   block->opencl_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, block->opencl_buffer_size, NULL, &err);
   assert(err == CL_SUCCESS);
-
- block->opencl_byte_buffer = byte_buffer_from_parts(saved_ptr, block->opencl_buffer_size);
 
   size_t offset = 0;
   from_matrix2(block->opencl_buffer, &block->ln1.gamma.value, &offset);
@@ -267,6 +269,7 @@ void init_block(Arena_Allocator* arena, Block* block, size_t D, size_t F, size_t
   from_matrix2(block->opencl_buffer, &block->ff2.weight.grad, &offset);
   from_matrix2(block->opencl_buffer, &block->ff2.bias.value, &offset);
   from_matrix2(block->opencl_buffer, &block->ff2.bias.grad, &offset);
+#endif
 }
 
 void init_block_output(Arena_Allocator* arena, Block_Output* block_out, size_t N, size_t D, size_t H, size_t F, size_t cache_len, bool clean_data) {
@@ -375,6 +378,7 @@ size_t init_transformer_opts(struct Init_Transformer_Opts opts) {
   trans->num_blocks = opts.num_blocks;
   trans->blocks = ALLOC(&arena->alloc, sizeof(Block)*trans->num_blocks).ptr;
 
+  void* saved_ptr = arena->buffer.uptr + arena->allocated;
   size_t saved = SAVE(&arena->alloc);
 
   alloc_tensor(&arena->alloc, &trans->tok_emb, V, D);
@@ -390,9 +394,32 @@ size_t init_transformer_opts(struct Init_Transformer_Opts opts) {
   alloc_tensor(&arena->alloc, &trans->H.bias, 1, V);
   mat_zero(trans->H.bias.value);
 
-#if GPU_COMPUTATION
-  trans->opencl_buffer = NULL;
   trans->opencl_buffer_size = SAVE(&arena->alloc) - saved;
+  trans->opencl_byte_buffer = byte_buffer_from_parts(saved_ptr, trans->opencl_buffer_size);
+
+#if GPU_COMPUTATION
+  cl_int err = 0;
+  trans->opencl_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, trans->opencl_buffer_size, NULL, &err);
+  assert(err == CL_SUCCESS);
+
+  size_t offset = 0;
+  from_matrix2(trans->opencl_buffer, &trans->tok_emb.value, &offset);
+  from_matrix2(trans->opencl_buffer, &trans->tok_emb.grad, &offset);
+
+  from_matrix2(trans->opencl_buffer, &trans->ln.gamma.value, &offset);
+  from_matrix2(trans->opencl_buffer, &trans->ln.gamma.grad, &offset);
+  from_matrix2(trans->opencl_buffer, &trans->ln.beta.value, &offset);
+  from_matrix2(trans->opencl_buffer, &trans->ln.beta.grad, &offset);
+
+  if (!trans->tie_embeddings) {
+    from_matrix2(trans->opencl_buffer, &trans->H.weight.value, &offset);
+    from_matrix2(trans->opencl_buffer, &trans->H.weight.grad, &offset);
+  }
+
+  from_matrix2(trans->opencl_buffer, &trans->H.bias.value, &offset);
+  from_matrix2(trans->opencl_buffer, &trans->H.bias.grad, &offset);
+
+  assert(sizeof(float)*offset == trans->opencl_buffer_size);
 #endif
 
   for (size_t i = 0; i < trans->num_blocks; i++) {
@@ -1385,15 +1412,9 @@ struct Embed_Gatter_Forward_Opts {
 
 void embed_gatter_forward_opts(struct Embed_Gatter_Forward_Opts opts) {
 #if GPU_COMPUTATION
-  assert(clEnqueueWriteBuffer(
-      commands,
+  assert(copy_to_gpu(
+      byte_buffer_from_parts(opts.tokens.elems, sizeof(cl_int)*opts.tokens.count),
       opts.opencl_tokens_buffer,
-      CL_FALSE,
-      0,
-      sizeof(cl_int)*opts.tokens.count,
-      opts.tokens.elems,
-      0,
-      NULL,
       NULL
   ) == CL_SUCCESS);
 
@@ -1440,19 +1461,6 @@ void transformer_forward(
 
   assert(N == out->x0.value.rows);
   assert(N == out->sequence_size);
-
-#if GPU_COMPUTATION
-  copy_cpu_to_gpu(in->tok_emb.value, NULL);
-  if (!in->tie_embeddings) copy_cpu_to_gpu(in->H.weight.value, NULL);
-  copy_cpu_to_gpu(in->H.bias.value, NULL);
-  copy_cpu_to_gpu(in->ln.gamma.value, NULL);
-  copy_cpu_to_gpu(in->ln.beta.value, NULL);
-
-  for (size_t i = 0; i < in->num_blocks; i++) {
-    copy_to_gpu(in->blocks[i].opencl_byte_buffer, in->blocks[i].opencl_buffer, NULL);
-  }
-#endif
-
 
   // x0 = tok_embs
   embed_gatter_forward(
@@ -1509,10 +1517,6 @@ void transformer_forward(
       .x = out->logits.value,
       .temperature = temperature,
   );
-
-#if GPU_COMPUTATION
-  copy_gpu_to_cpu_sync(out->probs);
-#endif
 }
 
 void transformer_backward(

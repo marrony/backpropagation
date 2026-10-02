@@ -106,7 +106,7 @@ kernel void matrix_mul_At_stride(
   }
 
   if (globalRow < mat_a.cols && globalCol < mat_b.cols) {
-    buffer_c[mat_c_offset + globalCol] += acc;
+    buffer_c[mat_c_offset + globalCol] = acc;
   }
 }
 
@@ -156,7 +156,7 @@ kernel void matrix_mul_Bt_stride(
   }
 
   if (globalRow < mat_a.rows && globalCol < mat_b.rows) {
-    buffer_c[mat_c_offset + globalCol] += acc;
+    buffer_c[mat_c_offset + globalCol] = acc;
   }
 }
 

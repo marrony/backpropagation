@@ -331,31 +331,6 @@ cl_mem trans_out_opencl_buffer = NULL;
 cl_mem trans_out_blocks_opencl_buffer[NUM_BLOCKS] = {0};
 size_t trans_out_blocks_opencl_buffer_size[NUM_BLOCKS] = {0};
 
-void init_transformer_opencl(Transformer* trans_in) {
-  cl_int err = 0;
-  trans_in->opencl_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, trans_in->opencl_buffer_size, NULL, &err);
-  assert(err == CL_SUCCESS);
-
-  size_t offset = 0;
-  from_matrix2(trans_in->opencl_buffer, &trans_in->tok_emb.value, &offset);
-  from_matrix2(trans_in->opencl_buffer, &trans_in->tok_emb.grad, &offset);
-
-  from_matrix2(trans_in->opencl_buffer, &trans_in->ln.gamma.value, &offset);
-  from_matrix2(trans_in->opencl_buffer, &trans_in->ln.gamma.grad, &offset);
-  from_matrix2(trans_in->opencl_buffer, &trans_in->ln.beta.value, &offset);
-  from_matrix2(trans_in->opencl_buffer, &trans_in->ln.beta.grad, &offset);
-
-  if (!trans_in->tie_embeddings) {
-    from_matrix2(trans_in->opencl_buffer, &trans_in->H.weight.value, &offset);
-    from_matrix2(trans_in->opencl_buffer, &trans_in->H.weight.grad, &offset);
-  }
-
-  from_matrix2(trans_in->opencl_buffer, &trans_in->H.bias.value, &offset);
-  from_matrix2(trans_in->opencl_buffer, &trans_in->H.bias.grad, &offset);
-
-  assert(sizeof(float)*offset == trans_in->opencl_buffer_size);
-}
-
 void init_block_output_opencl(Block_Output* block_out) {
   size_t offset = 0;
 
@@ -446,6 +421,8 @@ void generate_text_from_prompt(
   float temperature,
   float topp
 ) {
+  int64_t start = get_system_micros();
+
   size_t input_tokens = tokens->count;
   size_t output_tokens = 0;
 
@@ -456,6 +433,14 @@ void generate_text_from_prompt(
     printf("%s%s", vocabulary[tokens->elems[i]].token, separator);
 
   trans_in->kv_cache->len = 0;
+
+#if GPU_COMPUTATION
+  copy_to_gpu(trans_in->opencl_byte_buffer, trans_in->opencl_buffer, NULL);
+
+  for (size_t i = 0; i < trans_in->num_blocks; i++) {
+    copy_to_gpu(trans_in->blocks[i].opencl_byte_buffer, trans_in->blocks[i].opencl_buffer, NULL);
+  }
+#endif
 
   for (size_t i = 0; i < max_tokens; i++) {
     size_t saved = SAVE(&arena->alloc);
@@ -489,6 +474,10 @@ void generate_text_from_prompt(
     // 1.5 = creative
     // 3.0 = nonsensical
     transformer_forward(*tokens, &trans_out, trans_in, temperature);
+
+#if GPU_COMPUTATION
+    copy_gpu_to_cpu_sync(trans_out.probs);
+#endif
 
     NMatrix last_token = mat_row(trans_out.probs, N - 1);
 
@@ -546,8 +535,11 @@ void generate_text_from_prompt(
   rst_color();
   printf("\n");
 
+  int64_t time = get_system_micros() - start;
+
   printf("input tokens = %zu\n", input_tokens);
   printf("output tokens = %zu\n", output_tokens);
+  printf("total time = %llu micros\n", time);
 }
 
 void generate_text(
@@ -741,6 +733,14 @@ float evaluate(
   TokenID_Array tokens = ARRAY_CREATE(&arena->alloc);
   TokenID_Array targets = ARRAY_CREATE(&arena->alloc);
 
+#if GPU_COMPUTATION
+  copy_to_gpu(trans_in->opencl_byte_buffer, trans_in->opencl_buffer, NULL);
+
+  for (size_t i = 0; i < trans_in->num_blocks; i++) {
+    copy_to_gpu(trans_in->blocks[i].opencl_byte_buffer, trans_in->blocks[i].opencl_buffer, NULL);
+  }
+#endif
+
   for (size_t e = 0; e < nrecs; e++) {
     int prompt_len, total_len;
     const int32_t *ids = example(dev, e, &prompt_len, &total_len);
@@ -777,6 +777,10 @@ float evaluate(
     );
 
     transformer_forward(tokens, &trans_out, trans_in, 1.0f);
+
+#if GPU_COMPUTATION
+    copy_gpu_to_cpu_sync(trans_out.probs);
+#endif
 
     for (size_t i = (size_t)first; i < N; i++) {
       const int32_t target = targets.elems[i];
@@ -835,6 +839,7 @@ int main(int argc, char* argv[]) {
   size_t optimizer_steps = 0;
   size_t cursor = 0;
   Sampling_Type sampling_type = SAMPLING_GREEDY;
+  bool verbose = false;
   float temperature = 1.0f;
   float topp = 0.95f;
   size_t ctx_size = 3*1024;
@@ -849,6 +854,9 @@ int main(int argc, char* argv[]) {
   for (int i = 1; i < argc; i++) {
     if (strncmp(argv[i], "--train", 7) == 0)
       train = true;
+
+    if (strncmp(argv[i], "--verbose", 9) == 0)
+      verbose = true;
 
     if (strncmp(argv[i], "--epoch=", 8) == 0) {
       sscanf(argv[i], "--epoch=%zu", &epoch);
@@ -1024,7 +1032,6 @@ int main(int argc, char* argv[]) {
 
 #if GPU_COMPUTATION
   init_kv_cache_opencl(&kv_cache, NUM_BLOCKS);
-  init_transformer_opencl(&trans_in);
 
   cl_int err = 0;
   trans_in.opencl_tokens_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(cl_int)*max_tokens, NULL, &err);
@@ -1070,28 +1077,30 @@ int main(int argc, char* argv[]) {
 #endif
 
   set_color(255, 165, 0);
+  if (verbose) {
+    printf("max_transformer_out_size = %zu\n", max_transformer_out_size);
+    printf("D = %zu\n", D);
+    printf("V = %zu\n", V);
+    printf("F = %zu\n", F);
+    printf("tie_embeddings = %s\n", trans_in.tie_embeddings ? "yes" : "no");
+    printf("heads_count = %zu\n", heads_count);
+    printf("head_dim = %zu\n", D / heads_count);
+    printf("block_count = %zu\n", NUM_BLOCKS);
+  }
 
-  printf("max_transformer_out_size = %zu\n", max_transformer_out_size);
-  printf("D = %zu\n", D);
-  printf("V = %zu\n", V);
-  printf("F = %zu\n", F);
-  printf("tie_embeddings = %s\n", trans_in.tie_embeddings ? "yes" : "no");
-  printf("heads_count = %zu\n", heads_count);
-  printf("head_dim = %zu\n", D / heads_count);
-  printf("block_count = %zu\n", NUM_BLOCKS);
   {
     size_t params = count_parameters(&optimizer);
     register_tensor(&optimizer, trans_in.tok_emb, true);
-    printf("token_emdeddings = %zu\n", count_parameters(&optimizer) - params);
+    if (verbose) printf("token_emdeddings = %zu\n", count_parameters(&optimizer) - params);
   }
   {
     size_t params1 = count_parameters(&optimizer);
     if (!trans_in.tie_embeddings)
       register_tensor(&optimizer, trans_in.H.weight, true);
-    printf("output_head = %zu\n", count_parameters(&optimizer) - params1);
+    if (verbose) printf("output_head = %zu\n", count_parameters(&optimizer) - params1);
     size_t params2 = count_parameters(&optimizer);
     register_tensor(&optimizer, trans_in.H.bias, false);
-    printf("output_bias = %zu\n", count_parameters(&optimizer) - params2);
+    if (verbose) printf("output_bias = %zu\n", count_parameters(&optimizer) - params2);
   }
 
   {
@@ -1116,41 +1125,43 @@ int main(int argc, char* argv[]) {
       register_tensor(&optimizer, trans_in.blocks[i].attn.O.weight, true);
       register_tensor(&optimizer, trans_in.blocks[i].attn.O.bias, false);
     }
-    printf("transformer_block = %zu\n", (count_parameters(&optimizer) - params) / NUM_BLOCKS);
+    if (verbose) printf("transformer_block = %zu\n", (count_parameters(&optimizer) - params) / NUM_BLOCKS);
   }
 
   {
     size_t params0 = count_parameters(&optimizer);
     register_tensor(&optimizer, trans_in.ln.gamma, false);
     register_tensor(&optimizer, trans_in.ln.beta, false);
-    printf("final_layer_norm = %zu\n", count_parameters(&optimizer) - params0);
+    if (verbose) printf("final_layer_norm = %zu\n", count_parameters(&optimizer) - params0);
   }
 
-  size_t params = count_parameters(&optimizer);
-  printf("total_parameters = %zu\n", params);
-  printf("corpus_size (train) = %zu\n", corpus.n_recs);
-  printf("corpus_size (dev)   = %zu\n", corpus_dev.n_recs);
-  printf("tokens_count = %zu\n", sum_tokens);
-  printf("scored_tokens = %zu (%.2f%%)\n", scored_tokens, (float)scored_tokens/(float)sum_tokens * 100.0f);
-  printf("target_scored = %zu\n", target_scored);
-  printf("total_steps = %zu\n", total_steps);
-  printf("warmup_steps = %zu\n", warmup_steps);
-  printf("adam_beta1 = %.4f\n", adam_beta1);
-  printf("adam_beta2 = %.4f\n", adam_beta2);
-  printf("peak_lr = %.5e\n", peak_lr);
-  printf("min_lr = %.5e\n", min_lr);
-  printf("type frequency: p1=%zu p10=%zu p50=%zu p90=%zu max=%zu\n",
-       histogram_sorted[V/100], histogram_sorted[V/10], histogram_sorted[V/2],
-       histogram_sorted[9*V/10], histogram_sorted[V-1]);
-  printf("  %zu never appear, %zu appear <100x (%.1f%%)\n", dead, rare, 100.0*rare/MAX_VOCAB);
-  printf("chinchilla target = %zu tokens\n", 20*params);
-  printf("ratio = %.2f (total) / %.2f (scored) tokens per parameter\n",
-      sum_tokens / (float)params, scored_tokens / (float)params);
-  printf("epochs to get there = %.2f (total) / %0.2f (scored)\n",
-      (20*params) / (float)sum_tokens, (20*params) / (float)scored_tokens);
-  printf("ctx_size = %zu\n", ctx_size);
-  printf("max_tokens = %zu\n", max_tokens);
-  printf("arena_size = %zu\n", arena_size);
+  if (verbose) {
+    size_t params = count_parameters(&optimizer);
+    printf("total_parameters = %zu\n", params);
+    printf("corpus_size (train) = %zu\n", corpus.n_recs);
+    printf("corpus_size (dev)   = %zu\n", corpus_dev.n_recs);
+    printf("tokens_count = %zu\n", sum_tokens);
+    printf("scored_tokens = %zu (%.2f%%)\n", scored_tokens, (float)scored_tokens/(float)sum_tokens * 100.0f);
+    printf("target_scored = %zu\n", target_scored);
+    printf("total_steps = %zu\n", total_steps);
+    printf("warmup_steps = %zu\n", warmup_steps);
+    printf("adam_beta1 = %.4f\n", adam_beta1);
+    printf("adam_beta2 = %.4f\n", adam_beta2);
+    printf("peak_lr = %.5e\n", peak_lr);
+    printf("min_lr = %.5e\n", min_lr);
+    printf("type frequency: p1=%zu p10=%zu p50=%zu p90=%zu max=%zu\n",
+         histogram_sorted[V/100], histogram_sorted[V/10], histogram_sorted[V/2],
+         histogram_sorted[9*V/10], histogram_sorted[V-1]);
+    printf("  %zu never appear, %zu appear <100x (%.1f%%)\n", dead, rare, 100.0*rare/MAX_VOCAB);
+    printf("chinchilla target = %zu tokens\n", 20*params);
+    printf("ratio = %.2f (total) / %.2f (scored) tokens per parameter\n",
+        sum_tokens / (float)params, scored_tokens / (float)params);
+    printf("epochs to get there = %.2f (total) / %0.2f (scored)\n",
+        (20*params) / (float)sum_tokens, (20*params) / (float)scored_tokens);
+    printf("ctx_size = %zu\n", ctx_size);
+    printf("max_tokens = %zu\n", max_tokens);
+    printf("arena_size = %zu\n", arena_size);
+  }
   rst_color();
 
   bool loaded = load_model(&trans_in, model_name_bin);
@@ -1216,6 +1227,14 @@ int main(int argc, char* argv[]) {
   float win_loss = 0;
   size_t win_tok = 0;
 
+#if GPU_COMPUTATION
+  copy_to_gpu(trans_in.opencl_byte_buffer, trans_in.opencl_buffer, NULL);
+
+  for (size_t i = 0; i < trans_in.num_blocks; i++) {
+    copy_to_gpu(trans_in.blocks[i].opencl_byte_buffer, trans_in.blocks[i].opencl_buffer, NULL);
+  }
+#endif
+
   while (optimizer_steps < total_steps) {
     float loss_sum = 0;
     size_t tokens_scored = 0;
@@ -1276,6 +1295,10 @@ int main(int argc, char* argv[]) {
         );
 
         transformer_forward(tokens, &trans_out, &trans_in, 1.0f);
+
+#if GPU_COMPUTATION
+        copy_gpu_to_cpu_sync(trans_out.probs);
+#endif
 
         // dLoss/dlogits = softmax(logits) - onehot(target).
         NMatrix dlogits = trans_out.logits.grad;

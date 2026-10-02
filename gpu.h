@@ -514,18 +514,6 @@ cl_int call_project_kernel(
 ) {
   cl_int err = 0;
 
-  cl_uint pattern = 0;
-  err = clEnqueueFillBuffer(
-      commands,
-      mat_output.buffer,
-      &pattern,
-      sizeof(pattern),
-      sizeof(float) * mat_output.data.offset,
-      sizeof(float) * mat_output.data.rows * mat_output.data.stride,
-      0, NULL, NULL
-  );
-  assert(err == CL_SUCCESS);
-
   if (transpose_W) {
     assert(call_matrix_mul_Bt_stride_kernel(mat_output, mat_x, mat_W) == CL_SUCCESS);
   } else {
