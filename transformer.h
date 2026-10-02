@@ -565,6 +565,54 @@ void dsoftmax_opts(struct Softmax_Backward_Opts opts) {
   }
 }
 
+void softmax_with_masking(
+  NMatrix out,
+  NMatrix scores,
+  float temperature,
+  float scale,
+  size_t base,
+  size_t total
+) {
+#if GPU_COMPUTATION
+  call_softmax_with_masking_kernel(
+      out,
+      scores,
+      temperature,
+      scale,
+      base,
+      total
+  );
+#else
+  size_t N = out.rows;
+
+  // scores = scores / sqrt(d_head)
+  mat_scale(scores, scores, scale);
+
+  // Rows = N
+  // Cols = Total
+  //
+  //    K    e    y
+  // Q  s00  -inf -inf -inf -inf
+  // u  s10  s11  -inf -inf -inf
+  // e  s20  s21  s22  -inf -inf
+  // r  s30  s31  s32  s33  -inf
+  // y  s40  s41  s42  s43  s44
+  for (size_t i = 0; i < N; i++) {    // 0..N
+    for (size_t j = base+i+1; j < total; j++) {  // i..N
+      MAT_AT(scores, i, j) = -INFINITY;
+    }
+  }
+
+  // Aw[h] = softmax(scores)
+  softmax_by_row(
+      .out = out,
+      .x = scores,
+      .temperature = temperature,
+  );
+#endif
+}
+
+
 //////////////////////////////////////////////
 // Linear Projection
 //////////////////////////////////////////////
@@ -807,6 +855,12 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
 #if GPU_COMPUTATION
   copy_cpu_to_gpu(attn_in->Q.weight.value, NULL);
   copy_cpu_to_gpu(attn_in->Q.bias.value, NULL);
+  copy_cpu_to_gpu(attn_in->K.weight.value, NULL);
+  copy_cpu_to_gpu(attn_in->K.bias.value, NULL);
+  copy_cpu_to_gpu(attn_in->V.weight.value, NULL);
+  copy_cpu_to_gpu(attn_in->V.bias.value, NULL);
+  copy_cpu_to_gpu(attn_in->O.weight.value, NULL);
+  copy_cpu_to_gpu(attn_in->O.bias.value, NULL);
 #endif
 
   // Q = input*wQ + bQ
@@ -816,9 +870,6 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
       .W   = attn_in->Q.weight.value,
       .b   = attn_in->Q.bias.value,
   );
-#if GPU_COMPUTATION
-  copy_gpu_to_cpu_sync(attn_out->Q);
-#endif
 
   NMatrix Kwrite = mat_rows(cache->k[block], cache->len, N);
   NMatrix Vwrite = mat_rows(cache->v[block], cache->len, N);
@@ -828,8 +879,9 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
   NMatrix Vall = mat_rows(cache->v[block], 0, total);
 
 #if GPU_COMPUTATION
-  copy_cpu_to_gpu(attn_in->K.weight.value, NULL);
-  copy_cpu_to_gpu(attn_in->K.bias.value, NULL);
+  // todo: kv_cache needs to be global
+  copy_cpu_to_gpu(Kall, NULL);
+  copy_cpu_to_gpu(Vall, NULL);
 #endif
 
   // K = input*wK + bK
@@ -840,11 +892,6 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
       .b   = attn_in->K.bias.value,
   );
 
-#if GPU_COMPUTATION
-  copy_cpu_to_gpu(attn_in->V.weight.value, NULL);
-  copy_cpu_to_gpu(attn_in->V.bias.value, NULL);
-#endif
-
   // V = input*wV + bV
   project(
       .out = Vwrite,
@@ -852,13 +899,18 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
       .W   = attn_in->V.weight.value,
       .b   = attn_in->V.bias.value,
   );
-#if GPU_COMPUTATION
-  copy_gpu_to_cpu_sync(Kwrite);
-  copy_gpu_to_cpu_sync(Vwrite);
-#endif
 
+#if GPU_COMPUTATION
+  call_rope_kernel(Qall, base, d_head);
+  call_rope_kernel(Kwrite, base, d_head);
+
+  // todo: kv_cache needs to be global
+  copy_gpu_to_cpu_sync(Vwrite);
+  copy_gpu_to_cpu_sync(Kwrite);
+#else
   rope(Qall, base, d_head);
   rope(Kwrite, base, d_head);
+#endif
 
   float scale = 1.0f / sqrtf(d_head);
 
@@ -872,47 +924,29 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
     NMatrix Awh = mat_row_as(attn_out->weights[h], 0, N, total);
 
     // scores = Q[h] * K[h]^T
-    mat_mult_A_and_B_transposed(scores, Qh, Kh);
-
-    // scores = scores / sqrt(d_head)
-    mat_scale(scores, scores, scale);
-
-    //    K    e    y
-    // Q  s00  -inf -inf -inf -inf
-    // u  s10  s11  -inf -inf -inf
-    // e  s20  s21  s22  -inf -inf
-    // r  s30  s31  s32  s33  -inf
-    // y  s40  s41  s42  s43  s44
-    for (size_t i = 0; i < N; i++) {    // 0..N
-      for (size_t j = base+i+1; j < total; j++) {  // i..N
-        MAT_AT(scores, i, j) = -INFINITY;
-      }
-    }
-
 #if GPU_COMPUTATION
-    copy_cpu_to_gpu(scores, NULL);
+    call_matrix_mul_Bt_stride_kernel(scores, Qh, Kh);
+#else
+    mat_mult_A_and_B_transposed(scores, Qh, Kh);
 #endif
 
-    // Aw[h] = softmax(scores)
-    softmax_by_row(
-        .out = Awh,
-        .x = scores,
-        .temperature = 1.0f,
+    // Aw[h] = softmax(masked(scores))
+    softmax_with_masking(
+        Awh,
+        scores,
+        1.0f,
+        scale,
+        base,
+        total
     );
 
-#if GPU_COMPUTATION
-    copy_gpu_to_cpu_sync(Awh);
-#endif
-
     // A[h] = Aw[h] * V[h]
-    mat_mult(Ah, Awh, Vh);
-  }
-
 #if GPU_COMPUTATION
-  copy_cpu_to_gpu(attn_out->vals, NULL);
-  copy_cpu_to_gpu(attn_in->O.weight.value, NULL);
-  copy_cpu_to_gpu(attn_in->O.bias.value, NULL);
+    call_matrix_mul_stride_kernel(Ah, Awh, Vh);
+#else
+    mat_mult(Ah, Awh, Vh);
 #endif
+  }
 
   // out = A*wO + bO
   project(
@@ -1212,12 +1246,12 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
       .in_v     = block_out->ln1.out,
   );
 
-#if GPU_COMPUTATION
-  copy_gpu_to_cpu_sync(block_out->attn.out);
-#endif
-
   // x1 = x0 + attn_out
+#if GPU_COMPUTATION
+  call_matrix_add_kernel(block_out->x1, x0, block_out->attn.out);
+#else
   mat_add(block_out->x1, x0, block_out->attn.out);
+#endif
 
   ////////////////////////////////////////////////////
   // x2 = x1 + feed_forward(norm(x1))
@@ -1226,7 +1260,6 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
 #if GPU_COMPUTATION
   {
     Layer_Norm* ln_in = &block_in->ln2;
-    copy_cpu_to_gpu(block_out->x1, NULL);
     copy_cpu_to_gpu(ln_in->gamma.value, NULL);
     copy_cpu_to_gpu(ln_in->beta.value, NULL);
   }
@@ -1245,12 +1278,12 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
       .out = block_out,
   );
 
-#if GPU_COMPUTATION
-  copy_gpu_to_cpu_sync(block_out->ff2_out);
-#endif
-
   // out = x1 + ff2_out
+#if GPU_COMPUTATION
+  assert(call_matrix_add_kernel(block_out->out.value, block_out->x1, block_out->ff2_out) == CL_SUCCESS);
+#else
   mat_add(block_out->out.value, block_out->x1, block_out->ff2_out);
+#endif
 }
 
 // forward:
@@ -1416,11 +1449,6 @@ void transformer_forward(
       .opencl_tokens_buffer = in->opencl_tokens_buffer,
   );
 
-#if GPU_COMPUTATION
-  // removes after `x1 = x0 + attn_out` uses gpu
-  copy_gpu_to_cpu_sync(out->x0.value);
-#endif
-
   NMatrix x = out->x0.value;
 
   size_t base = in->kv_cache->len;
@@ -1440,11 +1468,6 @@ void transformer_forward(
     );
 
     x = out->blocks[i].out.value;
-
-#if GPU_COMPUTATION
-    // removes after `out = x1 + ff2_out` uses gpu
-    copy_cpu_to_gpu(x, NULL);
-#endif
   }
 
   in->kv_cache->len = total;

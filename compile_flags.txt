@@ -17,7 +17,9 @@
 -Dpow=
 -Dcos=
 -Dsin=
+-Dsincos=_sincos
 -Duint=int
+-Dfloat2=Vector2
 -DCLK_LOCAL_MEM_FENCE=1
 -DINFINITY=0
 -DGPU_COMPUTATION=1

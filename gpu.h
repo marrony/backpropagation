@@ -37,7 +37,9 @@ cl_program program;                 // compute program
 cl_kernel matrix_mul_stride_kernel;
 cl_kernel matrix_mul_At_stride_kernel;
 cl_kernel matrix_mul_Bt_stride_kernel;
+cl_kernel matrix_add_kernel;
 cl_kernel softmax_temperature_kernel;
+cl_kernel softmax_with_masking_kernel;
 cl_kernel dsoftmax_temperature_kernel;
 cl_kernel layer_norm_forward_kernel;
 cl_kernel layer_norm_backward_dx_kernel;
@@ -250,8 +252,20 @@ bool init_opencl(void) {
       return false;
   }
 
+  matrix_add_kernel = clCreateKernel(program, "matrix_add_kernel", &err);
+  if (!matrix_add_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
   softmax_temperature_kernel = clCreateKernel(program, "softmax_temperature_kernel", &err);
   if (!softmax_temperature_kernel || err != CL_SUCCESS) {
+      printf("Error: Failed to create compute kernel!\n");
+      return false;
+  }
+
+  softmax_with_masking_kernel = clCreateKernel(program, "softmax_with_masking_kernel", &err);
+  if (!softmax_with_masking_kernel || err != CL_SUCCESS) {
       printf("Error: Failed to create compute kernel!\n");
       return false;
   }
@@ -344,7 +358,9 @@ void destoy_opencl(void) {
   clReleaseKernel(matrix_mul_stride_kernel);
   clReleaseKernel(matrix_mul_At_stride_kernel);
   clReleaseKernel(matrix_mul_Bt_stride_kernel);
+  clReleaseKernel(matrix_add_kernel);
   clReleaseKernel(softmax_temperature_kernel);
+  clReleaseKernel(softmax_with_masking_kernel);
   clReleaseKernel(dsoftmax_temperature_kernel);
   clReleaseKernel(layer_norm_forward_kernel);
   clReleaseKernel(layer_norm_backward_dx_kernel);
@@ -431,6 +447,39 @@ cl_int call_matrix_mul_Bt_stride_kernel(
   return clEnqueueNDRangeKernel(
       commands,
       matrix_mul_Bt_stride_kernel,
+      2,
+      NULL,
+      global_ws,
+      local_ws,
+      0, NULL, NULL
+  );
+}
+
+cl_int call_matrix_add_kernel(
+  // outputs
+  NMatrix mat_out,
+  // inputs
+  NMatrix mat_a,
+  NMatrix mat_b
+) {
+  cl_int err = 0;
+
+  // outputs
+  err |= clSetKernelArg(matrix_add_kernel, 0, sizeof(cl_mem), &mat_out.buffer);
+  err |= clSetKernelArg(matrix_add_kernel, 1, sizeof(MatrixData), &mat_out.data);
+  assert(err == CL_SUCCESS);
+  // inputs
+  err |= clSetKernelArg(matrix_add_kernel, 2, sizeof(cl_mem), &mat_a.buffer);
+  err |= clSetKernelArg(matrix_add_kernel, 3, sizeof(MatrixData), &mat_a.data);
+  err  = clSetKernelArg(matrix_add_kernel, 4, sizeof(cl_mem), &mat_b.buffer);
+  err |= clSetKernelArg(matrix_add_kernel, 5, sizeof(MatrixData), &mat_b.data);
+  assert(err == CL_SUCCESS);
+
+  size_t local_ws[2]  = { 256, 1 };
+  size_t global_ws[2] = { 256, mat_out.data.rows };
+  return clEnqueueNDRangeKernel(
+      commands,
+      matrix_add_kernel,
       2,
       NULL,
       global_ws,
@@ -750,6 +799,43 @@ cl_int call_softmax_temperature_kernel(
   );
 }
 
+cl_int call_softmax_with_masking_kernel(
+  // outputs
+  NMatrix out,
+  // inputs
+  NMatrix x,
+  float temperature,
+  float scale,
+  cl_int base,
+  cl_int total
+) {
+  size_t local_ws[2]  = { 256, 1 }; // 256 threads per row, 1 row deep per group
+  size_t global_ws[2] = { 256, out.data.rows }; // Scale Y to equal total row count
+
+  // outputs
+  clSetKernelArg(softmax_with_masking_kernel, 0, sizeof(cl_mem), &out.buffer);
+  clSetKernelArg(softmax_with_masking_kernel, 1, sizeof(MatrixData), &out.data);
+  // inputs
+  clSetKernelArg(softmax_with_masking_kernel, 2, sizeof(cl_mem), &x.buffer);
+  clSetKernelArg(softmax_with_masking_kernel, 3, sizeof(MatrixData), &x.data);
+  clSetKernelArg(softmax_with_masking_kernel, 4, sizeof(float), &temperature);
+  clSetKernelArg(softmax_with_masking_kernel, 5, sizeof(float), &scale);
+  clSetKernelArg(softmax_with_masking_kernel, 6, sizeof(cl_int), &base);
+  clSetKernelArg(softmax_with_masking_kernel, 7, sizeof(cl_int), &total);
+  // scratch
+  clSetKernelArg(softmax_with_masking_kernel, 8, local_ws[0] * sizeof(float), NULL);
+
+  return clEnqueueNDRangeKernel(
+      commands,
+      softmax_with_masking_kernel,
+      2,              // work_dim = 2D Grid
+      NULL,
+      global_ws,      // Total threads {256, rows}
+      local_ws,       // Local layout {256, 1}
+      0, NULL, NULL
+  );
+}
+
 cl_int call_relu_kernel(
   // outputs
   NMatrix out,
@@ -771,6 +857,34 @@ cl_int call_relu_kernel(
   return clEnqueueNDRangeKernel(
       commands,
       relu_kernel,
+      2,              // work_dim = 2D Grid
+      NULL,
+      global_ws,      // Total threads {256, rows}
+      local_ws,       // Local layout {256, 1}
+      0, NULL, NULL
+  );
+}
+
+cl_int call_rope_kernel(
+  // input/output
+  NMatrix qk,
+  // inputs
+  cl_int base,
+  cl_int d_head
+) {
+  size_t local_ws[2]  = { 256, 1 }; // 256 threads per row, 1 row deep per group
+  size_t global_ws[2] = { 256, qk.data.rows }; // Scale Y to equal total row count
+
+  // input/output
+  clSetKernelArg(rope_kernel, 0, sizeof(cl_mem), &qk.buffer);
+  clSetKernelArg(rope_kernel, 1, sizeof(MatrixData), &qk.data);
+  // inputs
+  clSetKernelArg(rope_kernel, 2, sizeof(cl_int), &base);
+  clSetKernelArg(rope_kernel, 3, sizeof(cl_int), &d_head);
+
+  return clEnqueueNDRangeKernel(
+      commands,
+      rope_kernel,
       2,              // work_dim = 2D Grid
       NULL,
       global_ws,      // Total threads {256, rows}

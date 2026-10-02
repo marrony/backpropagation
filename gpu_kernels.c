@@ -56,7 +56,7 @@ kernel void matrix_mul_stride(
 
   // Store back into target slot safely using C_stride boundaries
   if (globalRow < mat_a.rows && globalCol < mat_b.cols) {
-    buffer_c[mat_c_offset + globalCol] += acc;
+    buffer_c[mat_c_offset + globalCol] = acc;
   }
 }
 
@@ -160,6 +160,28 @@ kernel void matrix_mul_Bt_stride(
   }
 }
 
+kernel void matrix_add_kernel(
+  // outputs
+  global       float* restrict buffer_out, MatrixData mat_out,
+  // inputs
+  global const float* restrict buffer_a,   MatrixData mat_a,
+  global const float* restrict buffer_b,   MatrixData mat_b
+) {
+  int r = get_group_id(1);
+  if (r >= mat_out.rows) return;
+
+  int local_col  = get_local_id(0);
+  int local_size = get_local_size(0);
+
+  global float* out_ptr = buffer_out + mat_out.offset + r * mat_out.stride;
+  global const float* a_ptr = buffer_a + mat_a.offset + r * mat_a.stride;
+  global const float* b_ptr = buffer_b + mat_b.offset + r * mat_b.stride;
+
+  for (int d = local_col; d < mat_out.cols; d += local_size) {
+    out_ptr[d] = a_ptr[d] + b_ptr[d];
+  }
+}
+
 // h = softmax(x)
 //
 // local  = {256, 1}
@@ -232,6 +254,39 @@ kernel void softmax_temperature_kernel(
     buffer_out[out_offset + i] *= inv_sum;
   }
 }
+
+kernel void softmax_with_masking_kernel(
+  // outputs
+  global       float* restrict buffer_out, MatrixData mat_out,
+  // inputs
+  global       float* restrict buffer_x,   MatrixData mat_x,
+  float temperature, float scale, int base, int total,
+  // scratch
+  local        float* local_scratch
+) {
+  int r = get_group_id(1);
+  if (r >= mat_out.rows) return;
+
+  int local_col  = get_local_id(0);
+  int local_size = get_local_size(0);
+
+  global float* x_ptr = buffer_x + mat_x.offset + r * mat_x.stride;
+
+  for (int i = local_col; i < mat_x.cols; i += local_size) {
+    if (i >= base+r+1 && i < total)
+      x_ptr[i] = -INFINITY;
+    else
+      x_ptr[i] *= scale;
+  }
+
+  softmax_temperature_kernel(
+      buffer_out, mat_out,
+      buffer_x, mat_x,
+      temperature,
+      local_scratch
+  );
+}
+
 
 // h  = softmax(x)
 // dz = 1/t * h * [ dL - dot(h, dL) ]
@@ -461,6 +516,12 @@ kernel void layer_norm_backward_dgamma_dbeta_kernel(
 
   buffer_dgamma[dgamma_offset] = dgamma;
   buffer_dbeta[dbeta_offset] = dbeta;
+}
+
+typedef struct { float x, y; } Vector2;
+float _sincos(float phi, float *cos_phi) {
+  *cos_phi = cos(phi);
+  return sin(phi);
 }
 
 kernel void rope_kernel(
