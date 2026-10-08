@@ -704,7 +704,7 @@ size_t histogram[MAX_VOCAB] = {0};
 size_t histogram_sorted[MAX_VOCAB] = {0};
 
 int main(int argc, char* argv[]) {
-  rng_state = (uint64_t)getpid() << (uint64_t)32;
+  rng_state = (uint64_t)1234 << (uint64_t)32;
 
   // Muennighoff et al. (2023), Scaling Data-Constrained Language Models, is the empirical answer:
   //
@@ -866,10 +866,10 @@ int main(int argc, char* argv[]) {
   size_t heads_count = 4;
   size_t F = D*heads_count;
   size_t V = MAX_VOCAB;
-  size_t num_blocks = 6;
+  size_t num_blocks = 1;
 
-  Byte_Buffer model_name_par = model_name(&mallocator.alloc, V, D, F, 4, "adam");
-  Byte_Buffer model_name_bin = model_name(&mallocator.alloc, V, D, F, 4, "bin");
+  Byte_Buffer model_name_par = model_name(&mallocator.alloc, V, D, F, num_blocks, "adam");
+  Byte_Buffer model_name_bin = model_name(&mallocator.alloc, V, D, F, num_blocks, "bin");
 
   float peak_lr = 1e-3 * 0.2;
   float min_lr = peak_lr / 10.0f;
@@ -1120,6 +1120,12 @@ int main(int argc, char* argv[]) {
         // dLoss/dlogits = softmax(logits) - onehot(target).
         NMatrix dlogits = trans_out.logits.grad;
         mat_copy(dlogits, trans_out.probs);
+
+        {
+          NMatrix last_token = mat_row(trans_out.probs, N-1);
+          int argmax = mat_row_argmax(last_token);
+          printf("N = %4zu, argmax = %4d %28.25f\n", N, argmax, VEC_AT(last_token, argmax));
+        }
 
         tokens_count += total_len;
         tokens_scored += npos;

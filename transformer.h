@@ -22,7 +22,7 @@ typedef struct {
 typedef struct {
   Tensor  out;      // [NxD]
   NMatrix mean;     // [1xN]
-  NMatrix var;      // [1xN]
+  NMatrix rstd;     // [1xN]
   NMatrix xhat;     // [NxD]
 } Layer_Norm_Output;
 
@@ -96,7 +96,7 @@ void layer_norm_forward_opts(struct Layer_Norm_Forward_Opts opts) {
   NMatrix beta = opts.ln_in->beta.value;
   NMatrix out = opts.ln_out->out.value;
   NMatrix mean = opts.ln_out->mean;
-  NMatrix var = opts.ln_out->var;
+  NMatrix rstd = opts.ln_out->rstd;
   NMatrix xhat = opts.ln_out->xhat;
   NMatrix in = opts.in.value;
 
@@ -113,9 +113,10 @@ void layer_norm_forward_opts(struct Layer_Norm_Forward_Opts opts) {
       v += diff * diff;
     }
     v /= out.cols;
-    VEC_AT(var, i) = v;
 
     float inv_std = 1.0f / sqrtf(v + 1e-5f);
+    VEC_AT(rstd, i) = inv_std;
+
     for (uint32_t d = 0; d < out.cols; d++) { // 0..D
       float hat = (MAT_AT(in, i, d) - m) * inv_std;
       MAT_AT(xhat, i, d) = hat;
@@ -128,13 +129,13 @@ void layer_norm_backward_opts(struct Layer_Norm_Backward_Opts opts) {
   NMatrix gamma = opts.ln_in->gamma.value;
   NMatrix dgamma = opts.ln_in->gamma.grad;
   NMatrix dbeta = opts.ln_in->beta.grad;
-  NMatrix var = opts.ln_out->var;
+  NMatrix rstd = opts.ln_out->rstd;
   NMatrix xhat = opts.ln_out->xhat;
   NMatrix dout = opts.ln_out->out.grad;
   NMatrix din = opts.in.grad;
 
   for (uint32_t i = 0; i < dout.rows; i++) { // 0..N
-    float inv_std = 1.0f / sqrtf(VEC_AT(var, i) + 1e-5f);
+    float inv_std = VEC_AT(rstd, i);
 
     float sum_dx_hat = 0;
     float sum_dx_hat_x_hat = 0;
@@ -237,10 +238,10 @@ void init_block(Allocator* alloc, Block* block, size_t D, size_t F, size_t num_l
 void init_block_output(Arena_Allocator* arena, Block_Output* block_out, size_t N, size_t D, size_t H, size_t F, size_t cache_len) {
   alloc_tensor(&arena->alloc, &block_out->ln1.out, N, D);
   block_out->ln1.mean     = mat_alloc2(&arena->alloc, 1, N);
-  block_out->ln1.var      = mat_alloc2(&arena->alloc, 1, N);
+  block_out->ln1.rstd     = mat_alloc2(&arena->alloc, 1, N);
   block_out->ln1.xhat     = mat_alloc2(&arena->alloc, N, D);
   mat_zero(block_out->ln1.mean);
-  mat_zero(block_out->ln1.var);
+  mat_zero(block_out->ln1.rstd);
   mat_zero(block_out->ln1.xhat);
   block_out->attn.Q  = mat_alloc2(&arena->alloc, N, D);
   block_out->attn.dQ = mat_alloc2(&arena->alloc, N, D);
@@ -264,10 +265,10 @@ void init_block_output(Arena_Allocator* arena, Block_Output* block_out, size_t N
   mat_zero(block_out->x1);
   alloc_tensor(&arena->alloc, &block_out->ln2.out, N, D);
   block_out->ln2.mean     = mat_alloc2(&arena->alloc, 1, N);
-  block_out->ln2.var      = mat_alloc2(&arena->alloc, 1, N);
+  block_out->ln2.rstd     = mat_alloc2(&arena->alloc, 1, N);
   block_out->ln2.xhat     = mat_alloc2(&arena->alloc, N, D);
   mat_zero(block_out->ln2.mean);
-  mat_zero(block_out->ln2.var);
+  mat_zero(block_out->ln2.rstd);
   mat_zero(block_out->ln2.xhat);
   alloc_tensor(&arena->alloc, &block_out->ff1_out, N, F);
   alloc_tensor(&arena->alloc, &block_out->relu_out, N, F);
@@ -1012,7 +1013,14 @@ void init_transformer_opts(struct Init_Transformer_Opts opts) {
   init_xavier_glorot(trans->tok_emb.value, V, D);
 
   init_gamma_beta(alloc, &trans->ln.gamma, &trans->ln.beta, D);
-  init_linear_layer(alloc, &trans->H, D, V);
+
+  if (!trans->tie_embeddings) {
+    alloc_tensor(alloc, &trans->H.weight, D, V);
+    init_xavier_glorot(trans->H.weight.value, D, V);
+  }
+
+  alloc_tensor(alloc, &trans->H.bias, 1, V);
+  mat_zero(trans->H.bias.value);
 
   trans->num_blocks = opts.num_blocks;
   trans->blocks = ALLOC(alloc, sizeof(Block)*trans->num_blocks).ptr;
@@ -1045,10 +1053,10 @@ void init_transformer_output_opts(struct Init_Transformer_Output_Opts opts) {
 
   alloc_tensor(&arena->alloc, &trans_out->ln.out, N, D);
   trans_out->ln.mean     = mat_alloc2(&arena->alloc, 1, N);
-  trans_out->ln.var      = mat_alloc2(&arena->alloc, 1, N);
+  trans_out->ln.rstd     = mat_alloc2(&arena->alloc, 1, N);
   trans_out->ln.xhat     = mat_alloc2(&arena->alloc, N, D);
   mat_zero(trans_out->ln.mean);
-  mat_zero(trans_out->ln.var);
+  mat_zero(trans_out->ln.rstd);
   mat_zero(trans_out->ln.xhat);
 
   alloc_tensor(&arena->alloc, &trans_out->logits, N, V);
