@@ -1576,7 +1576,7 @@ void dsoftmax_temperature(NMatrix dLdz, NMatrix h, NMatrix dLdh, float t) {
 
   float inv_t = 1.0f / t;
   for (uint32_t i = 0; i < h.cols; i++)
-    VEC_AT(dLdz, i) += inv_t * VEC_AT(h, i) * (VEC_AT(dLdh, i) - dot);
+    VEC_AT(dLdz, i) = inv_t * VEC_AT(h, i) * (VEC_AT(dLdh, i) - dot);
 }
 
 struct Softmax_Forward_Opts {

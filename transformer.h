@@ -40,12 +40,11 @@ typedef struct {
 } Attention;
 
 typedef struct {
+  size_t heads_count;
   NMatrix Q;             // [NxD]
   NMatrix dQ;            // [NxD]
   NMatrix dK;            // [NxD]
   NMatrix dV;            // [NxD]
-  NMatrix weights;       // [HxNxN]
-  NMatrix dweights;      // [HxNxN]
   NMatrix vals;          // [NxD]
   NMatrix dvals;         // [NxD]
   NMatrix out;           // [NxD]
@@ -235,7 +234,7 @@ void init_block(Allocator* alloc, Block* block, size_t D, size_t F, size_t num_l
   init_output_linear_layer(alloc, &block->ff2, F, D, num_layers);
 }
 
-void init_block_output(Arena_Allocator* arena, Block_Output* block_out, size_t N, size_t D, size_t H, size_t F, size_t cache_len) {
+void init_block_output(Arena_Allocator* arena, Block_Output* block_out, size_t N, size_t D, size_t H, size_t F) {
   alloc_tensor(&arena->alloc, &block_out->ln1.out, N, D);
   block_out->ln1.mean     = mat_alloc2(&arena->alloc, 1, N);
   block_out->ln1.rstd     = mat_alloc2(&arena->alloc, 1, N);
@@ -243,6 +242,7 @@ void init_block_output(Arena_Allocator* arena, Block_Output* block_out, size_t N
   mat_zero(block_out->ln1.mean);
   mat_zero(block_out->ln1.rstd);
   mat_zero(block_out->ln1.xhat);
+  block_out->attn.heads_count = H;
   block_out->attn.Q  = mat_alloc2(&arena->alloc, N, D);
   block_out->attn.dQ = mat_alloc2(&arena->alloc, N, D);
   block_out->attn.dK = mat_alloc2(&arena->alloc, N, D);
@@ -251,10 +251,6 @@ void init_block_output(Arena_Allocator* arena, Block_Output* block_out, size_t N
   mat_zero(block_out->attn.dQ);
   mat_zero(block_out->attn.dK);
   mat_zero(block_out->attn.dV);
-  block_out->attn.weights = mat_alloc2(&arena->alloc, H, N*(N+cache_len));
-  block_out->attn.dweights = mat_alloc2(&arena->alloc, H, N*(N+cache_len));
-  mat_zero(block_out->attn.weights);
-  mat_zero(block_out->attn.dweights);
   block_out->attn.vals = mat_alloc2(&arena->alloc, N, D);
   block_out->attn.dvals = mat_alloc2(&arena->alloc, N, D);
   mat_zero(block_out->attn.vals);
@@ -390,19 +386,32 @@ void dropout_backward(NMatrix dx, NMatrix mask, float p) {
 //                       =  qᵀ · R(−mθ) · R(nθ) · k
 //                       =  qᵀ · R((n−m)θ) · k
 void rope(NMatrix tensor, size_t base, size_t d_head) {
-  float inv_d = 1.0f / (float)d_head;
+  // // ln(10000.0)
+  // const double log_base = 9.210340371976184;
+  //
+  // InvFreq inv_freq;
+  // for (size_t i = 0; i < d_head/2; i++) {
+  //   inv_freq.v[i] = (float)exp(-2.0 * i / (double)d_head * log_base);
+  // }
+
+  const float log_base = 9.21034037197f;
+  float inv_d = -1.0f / (float)d_head;
 
   for (uint32_t m = 0; m < tensor.rows; m++) {
     for (uint32_t i = 0; i < tensor.cols; i += 2) {
       size_t local_i = i % d_head;
-      float theta = powf(10000, -(float)local_i * inv_d);
-      float phi = (base+m) * theta;
+      // float theta = inv_freq.v[local_i >> 1];
+      float theta = expf((float)local_i * inv_d * log_base);
+      float phi = (float)(base+m) * theta;
 
       float p0 = MAT_AT(tensor, m, i+0);
       float p1 = MAT_AT(tensor, m, i+1);
 
-      MAT_AT(tensor, m, i+0) = p0*cosf(phi) - p1*sinf(phi);
-      MAT_AT(tensor, m, i+1) = p0*sinf(phi) + p1*cosf(phi);
+      float cos_phi = cosf(phi);
+      float sin_phi = sinf(phi);
+
+      MAT_AT(tensor, m, i+0) = p0*cos_phi - p1*sin_phi;
+      MAT_AT(tensor, m, i+1) = p0*sin_phi + p1*cos_phi;
     }
   }
 }
@@ -410,20 +419,33 @@ void rope(NMatrix tensor, size_t base, size_t d_head) {
 // tensor = [NxD]
 // d_head = D/H
 // dout = [NxD]
-void drope(NMatrix dtensor, size_t d_head, NMatrix dout) {
-  float inv_d = 1.0f / (float)d_head;
+void drope(NMatrix dtensor, size_t base, size_t d_head, NMatrix dout) {
+  // // ln(10000.0)
+  // const double log_base = 9.210340371976184;
+  //
+  // InvFreq inv_freq;
+  // for (size_t i = 0; i < d_head/2; i++) {
+  //   inv_freq.v[i] = (float)exp(-2.0 * i / (double)d_head * log_base);
+  // }
+
+  const float log_base = 9.21034037197f;
+  float inv_d = -1.0f / (float)d_head;
 
   for (uint32_t m = 0; m < dout.rows; m++) {
     for (uint32_t i = 0; i < dout.cols; i += 2) {
       size_t local_i = i % d_head;
-      float theta = powf(10000, -(float)local_i * inv_d);
-      float phi = m * theta;
+      // float theta = inv_freq.v[local_i >> 1];
+      float theta = expf((float)local_i * inv_d * log_base);
+      float phi = (float)(base+m) * theta;
 
       float dout0 = MAT_AT(dout, m, i+0);
       float dout1 = MAT_AT(dout, m, i+1);
 
-      MAT_AT(dtensor, m, i+0) = dout0*cosf(phi) + dout1*sinf(phi);
-      MAT_AT(dtensor, m, i+1) = dout1*cosf(phi) - dout0*sinf(phi);
+      float cos_phi = cosf(phi);
+      float sin_phi = sinf(phi);
+
+      MAT_AT(dtensor, m, i+0) = dout0*cos_phi + dout1*sin_phi;
+      MAT_AT(dtensor, m, i+1) = dout1*cos_phi - dout0*sin_phi;
     }
   }
 }
@@ -451,6 +473,7 @@ struct Attention_Backward_Opts {
   size_t block;
   size_t total;
   NMatrix dout;
+  NMatrix scores;
   NMatrix dscores;
 };
 
@@ -471,7 +494,7 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
 
   size_t N = in_q.value.rows;
   int32_t D = in_q.value.cols;
-  int32_t H = attn_out->weights.rows;
+  int32_t H = attn_out->heads_count;
   int32_t d_head = D / H;
 
   // Q = input*wQ + bQ
@@ -517,7 +540,6 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
     NMatrix Kh = mat_cols(Kall, head_start, d_head);
     NMatrix Vh = mat_cols(Vall, head_start, d_head);
     NMatrix Ah = mat_cols(attn_out->vals, head_start, d_head);
-    NMatrix Awh = mat_row_as(attn_out->weights, h, N, total);
 
     // scores = Q[h] * K[h]^T
     mat_mult_A_and_B_transposed(scores, Qh, Kh);
@@ -537,15 +559,15 @@ void attention_forward_opts(struct Attention_Forward_Opts opts) {
       }
     }
 
-    // Aw[h] = softmax(scores)
+    // scores = softmax(scores)
     softmax_by_row(
-        .out = Awh,
+        .out = scores,
         .x = scores,
         .temperature = 1.0f,
     );
 
-    // A[h] = Aw[h] * V[h]
-    mat_mult(Ah, Awh, Vh);
+    // A[h] = scores * V[h]
+    mat_mult(Ah, scores, Vh);
   }
 
   // out = A*wO + bO
@@ -564,15 +586,17 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
   Attention_Output* attn_out = opts.attn_out;
   Attention* attn_in = opts.attn_in;
   NMatrix dout = opts.dout;
+  NMatrix scores = opts.scores;
   NMatrix dscores = opts.dscores;
   KVCache* kv_cache = opts.kv_cache;
   size_t block = opts.block;
   size_t total = opts.total;
+  size_t base = 0;
 
-  int32_t N = in_q.value.rows;
-  int32_t D = in_q.value.cols;
-  int32_t H = attn_out->weights.rows;
-  int32_t d_head = D / H;
+  size_t N = in_q.value.rows;
+  size_t D = in_q.value.cols;
+  size_t H = attn_out->heads_count;
+  size_t d_head = D / H;
 
   assert((size_t)N == total);
 
@@ -590,11 +614,8 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
 
   float scale = 1.0f / sqrtf(d_head);
 
-  for (int32_t h = 0; h < H; h++) {      // 0..H
+  for (size_t h = 0; h < H; h++) {      // 0..H
     int head_start = h*d_head;
-
-    NMatrix Awh = mat_row_as(attn_out->weights, h, N, N);
-    NMatrix dAwh = mat_row_as(attn_out->dweights, h, N, N);
 
     NMatrix Qh = mat_cols(Qall, head_start, d_head);
     NMatrix Kh = mat_cols(Kall, head_start, d_head);
@@ -606,26 +627,52 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
 
     NMatrix dAh = mat_cols(attn_out->dvals, head_start, d_head);
 
-    // A[h] = Aw[h] * V[h]
+///////////////
+    // scores = Q[h] * K[h]^T
+    mat_mult_A_and_B_transposed(scores, Qh, Kh);
+
+    // scores = scores / sqrt(d_head)
+    mat_scale(scores, scores, scale);
+
+    //    K    e    y
+    // Q  s00  -inf -inf -inf -inf
+    // u  s10  s11  -inf -inf -inf
+    // e  s20  s21  s22  -inf -inf
+    // r  s30  s31  s32  s33  -inf
+    // y  s40  s41  s42  s43  s44
+    for (size_t i = 0; i < N; i++) {    // 0..N
+      for (size_t j = base+i+1; j < total; j++) {  // i..N
+        MAT_AT(scores, i, j) = -INFINITY;
+      }
+    }
+
+    // scores = softmax(scores)
+    softmax_by_row(
+        .out = scores,
+        .x = scores,
+        .temperature = 1.0f,
+    );
+///////////////
+
+    // A[h] = scores * V[h]
     //
     // dAw[h] = dA[h] * V[h]^T
-    // dV[h] = Aw[h]^T * dA[h]
-    mat_mult_A_and_B_transposed_acc(dAwh, dAh, Vh);
-    mat_mult_A_transposed_and_B_acc(dVh, Awh, dAh);
+    // dV[h] = scores^T * dA[h]
+    mat_mult_A_and_B_transposed(dscores, dAh, Vh);
+    mat_mult_A_transposed_and_B_acc(dVh, scores, dAh);
 
     // attn_weights = softmax(scores)
     //
     // dscores = dsoftmax(attn_weights, dweights)
-    mat_zero(dscores);
     dsoftmax_by_row(
         .dx = dscores,
-        .y = Awh,
-        .dy = dAwh,
+        .y = scores,
+        .dy = dscores,
         .temperature = 1.0f,
     );
 
-    for (int32_t i = 0; i < N; i++) {
-      for (int32_t j = i+1; j < N; j++) {
+    for (size_t i = 0; i < N; i++) {
+      for (size_t j = i+1; j < N; j++) {
         MAT_AT(dscores, i, j) = 0.0f; 
       }
     }
@@ -641,8 +688,8 @@ void attention_backward_opts(struct Attention_Backward_Opts opts) {
     mat_mult_A_transposed_and_B_acc(dKh, dscores, Qh);
   }
 
-  drope(attn_out->dQ, d_head, attn_out->dQ);
-  drope(attn_out->dK, d_head, attn_out->dK);
+  drope(attn_out->dQ, 0, d_head, attn_out->dQ);
+  drope(attn_out->dK, 0, d_head, attn_out->dK);
 
   // V = input*wV + bV
   dproject(
@@ -765,6 +812,7 @@ struct Block_Backward_Opts {
   size_t total;
   Tensor in;
   NMatrix dout;
+  NMatrix scores;
   NMatrix dscores;
 };
 
@@ -812,9 +860,6 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
       .in_k     = block_out->ln1.out,
       .in_v     = block_out->ln1.out,
   );
-
-  // mask = dropout(attn_out)
-  // dropout_forward(block_out->attn.out, block_out->attn.mask, block_in->attn.p);
 
   // x1 = x0 + attn_out
   mat_add(block_out->x1, x0.value, block_out->attn.out);
@@ -866,6 +911,7 @@ void block_forward_opts(struct Block_Forward_Opts opts) {
 void block_backward_opts(struct Block_Backward_Opts opts) {
   Tensor x0 = opts.in;
   NMatrix dout = opts.dout;
+  NMatrix scores = opts.scores;
   NMatrix dscores = opts.dscores;
   Block* block_in = opts.block_in;
   Block_Output* block_out = opts.block_out;
@@ -908,6 +954,7 @@ void block_backward_opts(struct Block_Backward_Opts opts) {
       .in_v     = block_out->ln1.out,
       .attn_out = &block_out->attn,
       .attn_in  = &block_in->attn,
+      .scores   = scores,
       .dscores  = dscores,
       .dout     = x0.grad,
   );
@@ -963,6 +1010,7 @@ typedef struct {
   Tensor logits;
   NMatrix probs;
   NMatrix scores;
+  NMatrix dscores;
 
   // configs
   size_t sequence_size;
@@ -1048,7 +1096,7 @@ void init_transformer_output_opts(struct Init_Transformer_Output_Opts opts) {
   trans_out->blocks = ALLOC(&arena->alloc, sizeof(Block_Output)*trans_out->num_blocks).ptr;
 
   for (size_t i = 0; i < trans_out->num_blocks; i++) {
-    init_block_output(arena, &trans_out->blocks[i], N, D, H, F, kv_cache->len);
+    init_block_output(arena, &trans_out->blocks[i], N, D, H, F);
   }
 
   alloc_tensor(&arena->alloc, &trans_out->ln.out, N, D);
@@ -1062,8 +1110,10 @@ void init_transformer_output_opts(struct Init_Transformer_Output_Opts opts) {
   alloc_tensor(&arena->alloc, &trans_out->logits, N, V);
   trans_out->probs = mat_alloc2(&arena->alloc, N, V);
   trans_out->scores = mat_alloc2(&arena->alloc, N, N + kv_cache->len);
+  trans_out->dscores = mat_alloc2(&arena->alloc, N, N + kv_cache->len);
   mat_zero(trans_out->probs);
   mat_zero(trans_out->scores);
+  mat_zero(trans_out->dscores);
 }
 
 void transformer_forward(
@@ -1083,9 +1133,6 @@ void transformer_forward(
         mat_row(in->tok_emb.value, tokens.elems[i])
     );
   }
-
-  // mask = dropout(x0)
-  // dropout_forward(out->x0.value, out->x0_mask, in->x0_p);
 
   Tensor x = out->x0;
 
@@ -1187,7 +1234,8 @@ void transformer_backward(
         .total     = N,
         .in        = x1,
         .dout      = x2.grad,
-        .dscores   = out->scores,
+        .scores    = out->scores,
+        .dscores   = out->dscores,
         .block_in  = &in->blocks[i],
         .block_out = &out->blocks[i],
     );

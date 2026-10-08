@@ -1117,15 +1117,33 @@ int main(int argc, char* argv[]) {
 
         transformer_forward(tokens, &trans_out, &trans_in, 1.0f);
 
+        // printf("x0            ="); mat_println(mat_row(trans_out.x0.value, N-1), 38);
+        // printf("block.ln1.rstd="); mat_println(trans_out.blocks[0].ln1.rstd, 38);
+        // printf("block.ln1.mean="); mat_println(trans_out.blocks[0].ln1.mean, 38);
+        // printf("block.ln1.xhat="); mat_println(mat_row(trans_out.blocks[0].ln1.xhat, N-1), 38);
+        // printf("block.ln1.out ="); mat_println(mat_row(trans_out.blocks[0].ln1.out.value, N-1), 38);
+        printf("block.attn.Q  ="); mat_println(mat_row(trans_out.blocks[0].attn.Q, N-1), 38);
+        printf("block.attn.val="); mat_println(mat_row(trans_out.blocks[0].attn.vals, N-1), 38);
+        // printf("block.attn.out="); mat_println(mat_row(trans_out.blocks[0].attn.out, N-1), 38);
+        // printf("block.ln2.rstd="); mat_println(trans_out.blocks[0].ln2.rstd, 38);
+        // printf("block.ln2.mean="); mat_println(trans_out.blocks[0].ln2.mean, 38);
+        // printf("block.ln2.xhat="); mat_println(mat_row(trans_out.blocks[0].ln2.xhat, N-1), 38);
+        // printf("block.ln2.out ="); mat_println(mat_row(trans_out.blocks[0].ln2.out.value, N-1), 38);
+        // printf("block.ff1_out ="); mat_println(mat_row(trans_out.blocks[0].ff1_out.value, N-1), 38);
+        // printf("block.relu_out="); mat_println(mat_row(trans_out.blocks[0].relu_out.value, N-1), 38);
+        // printf("block.ff2_out ="); mat_println(mat_row(trans_out.blocks[0].ff2_out, N-1), 38);
+        // printf("block.out     ="); mat_println(mat_row(trans_out.blocks[0].out.value, N-1), 38);
+        exit(0);
+
         // dLoss/dlogits = softmax(logits) - onehot(target).
         NMatrix dlogits = trans_out.logits.grad;
         mat_copy(dlogits, trans_out.probs);
 
-        {
-          NMatrix last_token = mat_row(trans_out.probs, N-1);
-          int argmax = mat_row_argmax(last_token);
-          printf("N = %4zu, argmax = %4d %28.25f\n", N, argmax, VEC_AT(last_token, argmax));
-        }
+        // {
+        //   NMatrix last_token = mat_row(trans_out.probs, N-1);
+        //   int argmax = mat_row_argmax(last_token);
+        //   printf("N = %4zu, argmax = %4d %28.25f\n", N, argmax, VEC_AT(last_token, argmax));
+        // }
 
         tokens_count += total_len;
         tokens_scored += npos;
@@ -1136,10 +1154,13 @@ int main(int argc, char* argv[]) {
           if (i >= (size_t)first) {
             MAT_AT(dlogits, i, target) -= 1.0f;
             loss_sum -= logf(MAT_AT(trans_out.probs, i, target) + 1e-10f);
+            printf("%.38f ", MAT_AT(trans_out.probs, i, target));
           } else {
             mat_zero(mat_row(dlogits, i));
           }
         }
+        printf("\n");
+        exit(0);
 
         transformer_backward(tokens, &trans_out, &trans_in);
       }
